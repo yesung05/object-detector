@@ -43,7 +43,7 @@ SOURCES := src/main.c src/postprocess.c src/draw.c src/detector_ort.c \
 OBJECTS := $(SOURCES:.c=.o)
 TARGET := yolo11-person
 
-.PHONY: all clean test test-media check-deps check-ffmpeg debug i5-4200u
+.PHONY: all clean test test-fast test-detector test-all test-media check-deps check-ffmpeg debug i5-4200u
 
 all: check-deps $(TARGET)
 
@@ -62,18 +62,40 @@ $(TARGET): $(OBJECTS)
 %.o: %.c
 	$(CC) $(CPPFLAGS) $(FFMPEG_CFLAGS) $(ORT_CFLAGS) $(CFLAGS) $(WARNINGS) -std=c11 -c $< -o $@
 
-test: build/test_core
+test-fast: build/test_core
 	./build/test_core
+
+# 하위 호환 별칭: make test은 외부 의존 없는 단위 테스트만 실행합니다.
+test: test-fast
 
 # 테스트 실행 파일은 제품 실행 파일과 분리하여 build/ 아래에 만듭니다.
 test-media: check-ffmpeg build/test_media
 	@echo "Run build/test_media INPUT OUTPUT to exercise FFmpeg streaming I/O."
 
-build/test_core: tests/test_core.c src/postprocess.c src/draw.c src/tracker.c \
-                 include/yolo11.h include/tracker.h
+MODEL_PATH ?= yolo11n-416.onnx
+
+test-detector: check-deps build/test_detector
+	./build/test_detector $(MODEL_PATH)
+
+test-all: test-fast test-detector
+
+build/test_core: tests/test_core.c tests/test_runner.h \
+                 src/postprocess.c src/draw.c src/tracker.c src/platform.c \
+                 include/yolo11.h include/tracker.h include/platform.h
 	@mkdir -p build
-	$(CC) $(CPPFLAGS) -O1 -g $(WARNINGS) -std=c11 \
-		tests/test_core.c src/postprocess.c src/draw.c src/tracker.c -lm -o $@
+	$(CC) $(CPPFLAGS) -Itests -O1 -g $(WARNINGS) -std=c11 \
+		tests/test_core.c src/postprocess.c src/draw.c \
+		src/tracker.c src/platform.c -lm -o $@
+
+build/test_detector: tests/test_detector.c tests/test_runner.h \
+                     src/postprocess.c src/draw.c src/tracker.c \
+                     src/platform.c src/detector_ort.c \
+                     include/yolo11.h include/tracker.h include/platform.h
+	@mkdir -p build
+	$(CC) $(CPPFLAGS) $(ORT_CFLAGS) -Itests -O1 -g $(WARNINGS) -std=c11 \
+		tests/test_detector.c src/postprocess.c src/draw.c \
+		src/tracker.c src/platform.c src/detector_ort.c \
+		$(ORT_LIBS) -lm -o $@
 
 build/test_media: tests/test_media.c src/media_ffmpeg.c src/platform.c \
                   include/media.h include/platform.h
@@ -92,5 +114,5 @@ i5-4200u:
 
 # 자동 생성 파일만 삭제하고 사람이 작성한 소스와 입력/결과 파일은 유지합니다.
 clean:
-	rm -f $(OBJECTS) $(TARGET) build/test_core build/test_media
-	rm -rf build/test_core.dSYM build/test_media.dSYM
+	rm -f $(OBJECTS) $(TARGET) build/test_core build/test_media build/test_detector
+	rm -rf build/test_core.dSYM build/test_media.dSYM build/test_detector.dSYM

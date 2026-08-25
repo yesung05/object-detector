@@ -489,6 +489,83 @@ static int drain_decoder(AVCodecContext *decoder, AVFrame *frame,
     }
 }
 
+/*
+ * avdevice_list_input_sources를 선택한 이유:
+ * ffmpeg -list_devices 와 동일한 내부 경로로 dshow/v4l2 장치 목록을 얻는
+ * 유일한 공개 API입니다. Win32 DirectShow COM API로도 같은 결과를 얻을 수
+ * 있지만 코드가 훨씬 복잡해집니다. 이 함수는 FFmpeg 4.0 이상에서 사용 가능합니다.
+ */
+int media_first_video_device(const char *format, char *buf, size_t bufsize) {
+    const AVInputFormat *fmt;
+    AVDeviceInfoList *device_list = NULL; /* avdevice_free_list_devices로 해제 */
+    int i, j, rc = -1;
+
+    if (!format || !buf || bufsize == 0)
+        return -1;
+
+    avdevice_register_all();
+    av_log_set_level(AV_LOG_FATAL); /* 열거 중 FFmpeg 내부 로그를 숨깁니다. */
+
+    fmt = av_find_input_format(format);
+    if (!fmt)
+        return -1;
+
+    /* device_name=NULL → 형식별 전체 장치 목록을 반환합니다. */
+    if (avdevice_list_input_sources(fmt, NULL, NULL, &device_list) < 0
+        || !device_list)
+        return -1;
+
+    /*
+     * dshow의 AVDeviceInfo 필드 의미:
+     *   device_name        = "@device_pnp_..." 형식의 하드웨어 경로 (항상 '@'로 시작)
+     *   device_description = "e2eSoft iVCam" 같은 사람이 읽을 수 있는 친숙한 이름
+     *
+     * FFmpeg dshow input은 두 형식을 모두 인식하지만, 친숙한 이름(device_description)이
+     * video_size/framerate 협상을 더 안정적으로 처리합니다.
+     * 우선순위: ① dshow에서 device_description 보유 장치 → ② 나머지 첫 번째 비디오 장치
+     */
+    for (i = 0; i < device_list->nb_devices && rc != 0; ++i) {
+        AVDeviceInfo *dev = device_list->devices[i];
+        int has_video = (dev->nb_media_types == 0);
+        const char *desc;
+        for (j = 0; j < dev->nb_media_types; ++j) {
+            if (dev->media_types[j] == AVMEDIA_TYPE_VIDEO) { has_video = 1; break; }
+        }
+        if (!has_video) continue;
+
+        desc = dev->device_description;
+        if (strcmp(format, "dshow") == 0) {
+            /* device_description(친숙한 이름)이 있으면 우선 사용합니다. */
+            if (!desc || desc[0] == '\0') continue;
+            snprintf(buf, bufsize, "video=%s", desc);
+        } else {
+            if (!dev->device_name) continue;
+            snprintf(buf, bufsize, "%s", dev->device_name);
+        }
+        rc = 0;
+    }
+    /* fallback: device_description이 없는 환경에서는 device_name을 씁니다. */
+    if (rc != 0) {
+        for (i = 0; i < device_list->nb_devices; ++i) {
+            AVDeviceInfo *dev = device_list->devices[i];
+            int has_video = (dev->nb_media_types == 0);
+            for (j = 0; j < dev->nb_media_types; ++j) {
+                if (dev->media_types[j] == AVMEDIA_TYPE_VIDEO) { has_video = 1; break; }
+            }
+            if (!has_video || !dev->device_name) continue;
+            if (strcmp(format, "dshow") == 0)
+                snprintf(buf, bufsize, "video=%s", dev->device_name);
+            else
+                snprintf(buf, bufsize, "%s", dev->device_name);
+            rc = 0;
+            break;
+        }
+    }
+
+    avdevice_free_list_devices(&device_list); /* AVDeviceInfoList 전체 해제 */
+    return rc;
+}
+
 int media_process(const char *input_path, const char *output_path,
                   const MediaOptions *options, FrameCallback callback,
                   void *opaque, char *error, size_t error_size) {
@@ -542,6 +619,11 @@ int media_process(const char *input_path, const char *output_path,
             /* Most current Mac cameras expose NV12 but not planar yuv420p. */
             av_dict_set(&input_options, "pixel_format", "nv12", 0);
             av_dict_set(&input_options, "drop_late_frames", "1", 0);
+        }
+        if (strcmp(options->input_format, "dshow") == 0) {
+            /* 기본 rtbufsize(3MB)는 고해상도 카메라에서 쉽게 넘칩니다.
+             * 30MB로 늘려 "real-time buffer too full" frame-drop 경고를 줄입니다. */
+            av_dict_set(&input_options, "rtbufsize", "30M", 0);
         }
     }
 

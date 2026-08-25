@@ -63,4 +63,14 @@ int media_process(const char *input_path, const char *output_path,
                   const MediaOptions *options, FrameCallback callback,
                   void *opaque, char *error, size_t error_size);
 
+/*
+ * format(dshow/v4l2/avfoundation)에서 첫 번째 비디오 장치를 찾아
+ * buf에 FFmpeg input 경로 형식으로 씁니다.
+ *   Windows dshow  → "video=<장치이름>"
+ *   Linux v4l2     → "/dev/videoN"
+ *   macOS avfound. → "N" (인덱스 문자열)
+ * 성공 시 0, 장치 없음·열거 실패 시 -1.
+ */
+int media_first_video_device(const char *format, char *buf, size_t bufsize);
+
 #endif

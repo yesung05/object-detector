@@ -88,7 +88,12 @@ static const char *default_camera_device(void) {
 #elif defined(__linux__)
     return "/dev/video0";
 #elif defined(_WIN32)
-    return "video=Integrated Camera";
+    /* 고정 장치명은 기기마다 달라 오작동을 일으킵니다. avdevice_list_input_sources로
+     * 첫 번째 dshow 비디오 장치를 동적으로 찾습니다. */
+    static char buf[256];
+    if (media_first_video_device("dshow", buf, sizeof(buf)) == 0)
+        return buf;
+    return NULL;
 #else
     return NULL;
 #endif
@@ -112,8 +117,8 @@ static void usage(const char *program) {
         "Options:\n"
         "  --camera-device DEVICE  FFmpeg device name/index (default: platform camera 0)\n"
         "  --camera-format FORMAT  FFmpeg input device (avfoundation/v4l2/dshow)\n"
-        "  --camera-size WxH       capture resolution (default: 640x480)\n"
-        "  --camera-fps N          capture frame rate (default: 30)\n"
+        "  --camera-size WxH       capture resolution (device default if unset)\n"
+        "  --camera-fps N          capture frame rate (device default if unset)\n"
         "  --max-frames N          stop after N frames (default: unlimited)\n"
         "  --detect-every N        full inference interval (default: 1)\n"
         "  --track / --no-track    track boxes between skipped frames (default: off)\n"
@@ -204,8 +209,9 @@ static int parse_arguments(int argc, char **argv, Arguments *args) {
     args->detector.device_id = 0;
     args->media.codec = "auto";
     args->media.quality = 23;
-    args->media.video_size = "640x480";
-    args->media.framerate = "30";
+    /* video_size·framerate는 기본값을 주지 않습니다. NULL이면 dshow/v4l2/avfoundation이
+     * 장치 자체 포맷으로 협상하므로, 해상도를 거부하는 가상 카메라에서도 열립니다.
+     * 원하는 해상도가 있으면 --camera-size/--camera-fps 로 명시합니다. */
     args->media.interrupt_callback = should_stop;
     args->detect_every = 1;
     args->tracking = 0;
@@ -334,6 +340,8 @@ static int parse_arguments(int argc, char **argv, Arguments *args) {
         args->input = args->camera_device
                           ? args->camera_device
                           : default_camera_device();
+        if (!args->camera_device && args->input)
+            fprintf(stderr, "camera: auto-detected %s\n", args->input);
         args->media.realtime = 1;
         if (!args->media.input_format || !args->input) {
             fprintf(stderr,
