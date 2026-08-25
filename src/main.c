@@ -1,0 +1,674 @@
+#include "media.h"
+#include "platform.h"
+#include "tracker.h"
+#include "yolo11.h"
+
+#include <errno.h>
+#include <limits.h>
+#include <signal.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#if defined(_WIN32)
+#define popen _popen
+#define pclose _pclose
+#endif
+
+/*
+ * 프로그램 전체에서 한 번만 만들고 모든 프레임이 함께 쓰는 상태입니다.
+ * detector와 detections를 재사용하므로 프레임마다 큰 메모리를 새로 만들지 않습니다.
+ */
+typedef struct {
+    Detector *detector;
+    DetectionList detections;
+    LightTracker *tracker;
+    FILE *detection_log;
+    FILE *preview_pipe;
+    int detect_every;
+    int tracking;
+    int preview;
+    int preview_fps;
+    int64_t frames;
+    int64_t inference_runs;
+    int64_t tracked_frames;
+    int64_t reused_frames;
+    int64_t adaptive_runs;
+    double tracking_seconds;
+    double drawing_seconds;
+    DetectorRunStats detector_stats;
+} AppContext;
+
+/* 명령줄에서 읽은 경로와 프로그램 내부 기본 설정을 한곳에 모읍니다. */
+typedef struct {
+    const char *model;
+    const char *input;
+    const char *output;
+    const char *camera_device;
+    const char *camera_format;
+    const char *detections_path;
+    const char *metrics_path;
+    DetectorOptions detector;
+    MediaOptions media;
+    int detect_every;
+    int tracking;
+    int preview;
+    int preview_fps;
+    int camera;
+} Arguments;
+
+/* SIGINT/SIGTERM 처리기는 비동기 신호에 안전한 sig_atomic_t 값만 변경합니다. */
+static volatile sig_atomic_t stop_requested = 0;
+
+static void request_stop(int signal_number) {
+    (void)signal_number;
+    stop_requested = 1;
+}
+
+static int should_stop(void *opaque) {
+    (void)opaque;
+    return stop_requested != 0;
+}
+
+static const char *default_camera_format(void) {
+#if defined(__APPLE__)
+    return "avfoundation";
+#elif defined(__linux__)
+    return "v4l2";
+#elif defined(_WIN32)
+    return "dshow";
+#else
+    return NULL;
+#endif
+}
+
+static const char *default_camera_device(void) {
+#if defined(__APPLE__)
+    return "0:none";
+#elif defined(__linux__)
+    return "/dev/video0";
+#elif defined(_WIN32)
+    return "video=Integrated Camera";
+#else
+    return NULL;
+#endif
+}
+
+/* 사용법만 출력합니다. stderr는 일반 결과가 아닌 안내/오류용 출력 통로입니다. */
+static void usage(const char *program) {
+    fprintf(stderr,
+        "YOLO11n person detector (streaming, bounded memory)\n"
+        "\n"
+        "Usage:\n"
+        "  %s --model yolo11n.onnx --input in.mp4 --output out.mp4 [options]\n"
+        "  %s --model yolo11n.onnx --camera --output capture.mp4 [options]\n"
+        "\n"
+        "Required:\n"
+        "  -m, --model PATH        fixed-shape YOLO11/YOLO11n ONNX model\n"
+        "  -i, --input PATH        input image/video (mutually exclusive with --camera)\n"
+        "  --camera                capture from the default camera until Ctrl+C\n"
+        "  -o, --output PATH       annotated image/video (optional with camera preview)\n"
+        "\n"
+        "Options:\n"
+        "  --camera-device DEVICE  FFmpeg device name/index (default: platform camera 0)\n"
+        "  --camera-format FORMAT  FFmpeg input device (avfoundation/v4l2/dshow)\n"
+        "  --camera-size WxH       capture resolution (default: 640x480)\n"
+        "  --camera-fps N          capture frame rate (default: 30)\n"
+        "  --max-frames N          stop after N frames (default: unlimited)\n"
+        "  --detect-every N        full inference interval (default: 1)\n"
+        "  --track / --no-track    track boxes between skipped frames (default: off)\n"
+        "  --confidence F          confidence threshold (default: 0.25)\n"
+        "  --threads N             ONNX intra-op threads, 1 or 2 (default: 1)\n"
+        "  --provider NAME         cpu or directml (Windows default: directml)\n"
+        "  --device-id N           DirectML adapter index (default: 0)\n"
+        "  --preprocess MODE       fast or reference (default: fast)\n"
+        "  --graph-opt LEVEL       all or extended (default: all)\n"
+        "  --allow-spinning 0|1    ORT worker busy-waiting (default: 0)\n"
+        "  --codec NAME            auto, h264, h264_qsv, mpeg4, mjpeg\n"
+        "  --preview               show annotated frames in an ffplay window\n"
+        "  --detections PATH       write per-frame detection CSV\n"
+        "  --metrics PATH          write performance metrics JSON\n"
+        "\n",
+        program, program);
+}
+
+/*
+ * strtol()은 실패해도 숫자 0을 반환할 수 있으므로 errno와 end를 함께 확인합니다.
+ * end가 문자열 끝('\0')을 가리켜야 "12abc" 같은 잘못된 입력을 거를 수 있습니다.
+ */
+static int parse_long(const char *text, long low, long high, long *value) {
+    char *end = NULL;
+    long parsed;
+    errno = 0;
+    parsed = strtol(text, &end, 10);
+    if (errno || !end || *end != '\0' || parsed < low || parsed > high)
+        return -1;
+    *value = parsed;
+    return 0;
+}
+
+/* 실수 옵션도 문자열 전체가 올바른 숫자이고 허용 범위 안인지 검사합니다. */
+static int parse_float(const char *text, float low, float high, float *value) {
+    char *end = NULL;
+    float parsed;
+    errno = 0;
+    parsed = strtof(text, &end);
+    if (errno || !end || *end != '\0' || parsed < low || parsed > high)
+        return -1;
+    *value = parsed;
+    return 0;
+}
+
+static int valid_video_size(const char *text) {
+    int width;
+    int height;
+    char trailing;
+    return text && sscanf(text, "%dx%d%c", &width, &height, &trailing) == 2 &&
+           width >= 16 && width <= 8192 && height >= 16 && height <= 8192;
+}
+
+/*
+ * "--model" 다음처럼 옵션 뒤에 값이 있는지 확인합니다.
+ * index 자체를 포인터로 받아 다음 인수의 위치로 한 칸 이동시킵니다.
+ */
+static int require_value(int argc, char **argv, int *index,
+                         const char **value) {
+    if (*index + 1 >= argc) {
+        fprintf(stderr, "missing value after %s\n", argv[*index]);
+        return -1;
+    }
+    *value = argv[++(*index)];
+    return 0;
+}
+
+static int parse_arguments(int argc, char **argv, Arguments *args) {
+    /*
+     * 구조체 전체를 0으로 초기화한 뒤 기본값을 덮어씁니다. 이렇게 하면 새 멤버가
+     * 추가되어도 초기화되지 않은 쓰레기 값이 들어갈 가능성이 줄어듭니다.
+     */
+    memset(args, 0, sizeof(*args));
+    args->detector.confidence = 0.25f;
+    args->detector.iou = 0.45f;
+    args->detector.max_candidates = 1024;
+    args->detector.max_detections = 64;
+    args->detector.threads = 1;
+    args->detector.resize_mode = RESIZE_BILINEAR;
+    args->detector.fast_preprocess = 1;
+    args->detector.graph_optimization_all = 1;
+    args->detector.allow_spinning = 0;
+#if defined(_WIN32)
+    args->detector.provider = DETECTOR_PROVIDER_DIRECTML;
+#else
+    args->detector.provider = DETECTOR_PROVIDER_CPU;
+#endif
+    args->detector.device_id = 0;
+    args->media.codec = "auto";
+    args->media.quality = 23;
+    args->media.video_size = "640x480";
+    args->media.framerate = "30";
+    args->media.interrupt_callback = should_stop;
+    args->detect_every = 1;
+    args->tracking = 0;
+    args->preview_fps = 30;
+
+    /* argv[0]은 실행 파일 이름이므로 실제 옵션은 argv[1]부터 읽습니다. */
+    for (int i = 1; i < argc; ++i) {
+        const char *value = NULL;
+        long parsed;
+        if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
+            usage(argv[0]);
+            return 1;
+        } else if (strcmp(argv[i], "-m") == 0 ||
+                   strcmp(argv[i], "--model") == 0) {
+            if (require_value(argc, argv, &i, &args->model) != 0) return -1;
+        } else if (strcmp(argv[i], "-i") == 0 ||
+                   strcmp(argv[i], "--input") == 0) {
+            if (require_value(argc, argv, &i, &args->input) != 0) return -1;
+        } else if (strcmp(argv[i], "-o") == 0 ||
+                   strcmp(argv[i], "--output") == 0) {
+            if (require_value(argc, argv, &i, &args->output) != 0) return -1;
+        } else if (strcmp(argv[i], "--camera") == 0) {
+            args->camera = 1;
+        } else if (strcmp(argv[i], "--camera-device") == 0) {
+            if (require_value(argc, argv, &i, &args->camera_device) != 0)
+                return -1;
+            args->camera = 1;
+        } else if (strcmp(argv[i], "--camera-format") == 0) {
+            if (require_value(argc, argv, &i, &args->camera_format) != 0)
+                return -1;
+            args->camera = 1;
+        } else if (strcmp(argv[i], "--camera-size") == 0) {
+            if (require_value(argc, argv, &i, &value) != 0 ||
+                !valid_video_size(value))
+                return -1;
+            args->media.video_size = value;
+            args->camera = 1;
+        } else if (strcmp(argv[i], "--camera-fps") == 0) {
+            if (require_value(argc, argv, &i, &value) != 0 ||
+                parse_long(value, 1, 240, &parsed) != 0)
+                return -1;
+            args->media.framerate = value;
+            args->preview_fps = (int)parsed;
+            args->camera = 1;
+        } else if (strcmp(argv[i], "--max-frames") == 0) {
+            if (require_value(argc, argv, &i, &value) != 0 ||
+                parse_long(value, 1, INT_MAX, &parsed) != 0)
+                return -1;
+            args->media.max_frames = (int)parsed;
+        } else if (strcmp(argv[i], "--detect-every") == 0) {
+            if (require_value(argc, argv, &i, &value) != 0 ||
+                parse_long(value, 1, 1000, &parsed) != 0) return -1;
+            args->detect_every = (int)parsed;
+        } else if (strcmp(argv[i], "--confidence") == 0) {
+            if (require_value(argc, argv, &i, &value) != 0 ||
+                parse_float(value, 0.0f, 1.0f,
+                            &args->detector.confidence) != 0) return -1;
+        } else if (strcmp(argv[i], "--threads") == 0) {
+            if (require_value(argc, argv, &i, &value) != 0 ||
+                parse_long(value, 1, 2, &parsed) != 0) return -1;
+            args->detector.threads = (int)parsed;
+        } else if (strcmp(argv[i], "--provider") == 0) {
+            if (require_value(argc, argv, &i, &value) != 0) return -1;
+            if (strcmp(value, "cpu") == 0)
+                args->detector.provider = DETECTOR_PROVIDER_CPU;
+            else if (strcmp(value, "directml") == 0)
+                args->detector.provider = DETECTOR_PROVIDER_DIRECTML;
+            else
+                return -1;
+        } else if (strcmp(argv[i], "--device-id") == 0) {
+            if (require_value(argc, argv, &i, &value) != 0 ||
+                parse_long(value, 0, 31, &parsed) != 0) return -1;
+            args->detector.device_id = (int)parsed;
+        } else if (strcmp(argv[i], "--track") == 0) {
+            args->tracking = 1;
+        } else if (strcmp(argv[i], "--no-track") == 0) {
+            args->tracking = 0;
+        } else if (strcmp(argv[i], "--preprocess") == 0) {
+            if (require_value(argc, argv, &i, &value) != 0) return -1;
+            if (strcmp(value, "fast") == 0)
+                args->detector.fast_preprocess = 1;
+            else if (strcmp(value, "reference") == 0)
+                args->detector.fast_preprocess = 0;
+            else
+                return -1;
+        } else if (strcmp(argv[i], "--graph-opt") == 0) {
+            if (require_value(argc, argv, &i, &value) != 0) return -1;
+            if (strcmp(value, "all") == 0)
+                args->detector.graph_optimization_all = 1;
+            else if (strcmp(value, "extended") == 0)
+                args->detector.graph_optimization_all = 0;
+            else
+                return -1;
+        } else if (strcmp(argv[i], "--allow-spinning") == 0) {
+            if (require_value(argc, argv, &i, &value) != 0 ||
+                parse_long(value, 0, 1, &parsed) != 0) return -1;
+            args->detector.allow_spinning = (int)parsed;
+        } else if (strcmp(argv[i], "--codec") == 0) {
+            if (require_value(argc, argv, &i, &value) != 0) return -1;
+            if (strcmp(value, "auto") != 0 && strcmp(value, "h264") != 0 &&
+                strcmp(value, "h264_qsv") != 0 &&
+                strcmp(value, "mpeg4") != 0 && strcmp(value, "mjpeg") != 0)
+                return -1;
+            args->media.codec = value;
+        } else if (strcmp(argv[i], "--preview") == 0) {
+            args->preview = 1;
+        } else if (strcmp(argv[i], "--detections") == 0) {
+            if (require_value(argc, argv, &i, &args->detections_path) != 0)
+                return -1;
+        } else if (strcmp(argv[i], "--metrics") == 0) {
+            if (require_value(argc, argv, &i, &args->metrics_path) != 0)
+                return -1;
+        } else {
+            fprintf(stderr, "unknown option: %s\n", argv[i]);
+            return -1;
+        }
+    }
+    if (!args->model || (!args->output && !(args->camera && args->preview)) ||
+        (args->camera && args->input) ||
+        (!args->camera && !args->input))
+        return -1;
+    if (args->camera) {
+        args->media.input_format = args->camera_format
+                                       ? args->camera_format
+                                       : default_camera_format();
+        args->input = args->camera_device
+                          ? args->camera_device
+                          : default_camera_device();
+        args->media.realtime = 1;
+        if (!args->media.input_format || !args->input) {
+            fprintf(stderr,
+                    "no default camera backend on this platform; use "
+                    "--camera-format and --camera-device\n");
+            return -1;
+        }
+    } else {
+        /* 카메라 전용 옵션을 일반 파일 demuxer에 전달하지 않습니다. */
+        args->media.video_size = NULL;
+        args->media.framerate = NULL;
+    }
+    return 0;
+}
+
+static const char *provider_name(DetectorProvider provider) {
+    return provider == DETECTOR_PROVIDER_DIRECTML ? "directml" : "cpu";
+}
+
+static int log_detections(AppContext *app, int64_t frame_index,
+                          const char *kind, char *error, size_t error_size) {
+    if (!app->detection_log) return 0;
+    for (size_t i = 0; i < app->detections.count; ++i) {
+        const Detection *d = &app->detections.items[i];
+        if (fprintf(app->detection_log,
+                    "%lld,%s,%.4f,%.4f,%.4f,%.4f,%.6f\n",
+                    (long long)frame_index, kind, d->x1, d->y1,
+                    d->x2, d->y2, d->score) < 0) {
+            snprintf(error, error_size, "failed to write detection log");
+            return -1;
+        }
+    }
+    return 0;
+}
+
+static void preview_frame(AppContext *app, const RgbFrame *frame) {
+    if (!app->preview) return;
+    if (!app->preview_pipe) {
+        char command[512];
+        snprintf(command, sizeof(command),
+                 "ffplay -loglevel error -fflags nobuffer -flags low_delay "
+                 "-probesize 32 -analyzeduration 0 -framedrop -sync ext "
+                 "-f rawvideo -pixel_format rgb24 -video_size %dx%d "
+                 "-framerate %d -window_title \"YOLO11 Person Detector\" -i -",
+                 frame->width, frame->height, app->preview_fps * 4);
+#if defined(_WIN32)
+        app->preview_pipe = popen(command, "wb");
+#else
+        app->preview_pipe = popen(command, "w");
+#endif
+        if (!app->preview_pipe) {
+            fprintf(stderr, "warning: failed to start ffplay preview\n");
+            app->preview = 0;
+            return;
+        }
+        setvbuf(app->preview_pipe, NULL, _IONBF, 0);
+    }
+    for (int y = 0; y < frame->height; ++y) {
+        const uint8_t *row = frame->data + y * frame->stride;
+        size_t bytes = (size_t)frame->width * 3;
+        if (fwrite(row, 1, bytes, app->preview_pipe) != bytes) {
+            fprintf(stderr, "warning: preview window closed; recording continues\n");
+            pclose(app->preview_pipe);
+            app->preview_pipe = NULL;
+            app->preview = 0;
+            break;
+        }
+    }
+}
+
+/*
+ * FFmpeg가 RGB 프레임 하나를 준비할 때마다 호출하는 콜백입니다.
+ *
+ * detect-every가 3이면 0, 3, 6...번 프레임에서만 YOLO를 실행하고, 그 사이
+ * 프레임에는 detections 배열에 남아 있는 직전 박스를 다시 그립니다.
+ */
+static int process_frame(RgbFrame *frame, void *opaque,
+                         char *error, size_t error_size) {
+    AppContext *app = (AppContext *)opaque;
+    int run_detector = frame->index % app->detect_every == 0;
+    int tracked = 0;
+    int requested = 0;
+    const char *kind = "reused";
+    double started;
+
+    if (!run_detector && app->tracking) {
+        started = platform_monotonic_seconds();
+        if (tracker_update(app->tracker, frame->data, frame->width,
+                           frame->height, frame->stride, &app->detections,
+                           &requested, error, error_size) != 0)
+            return -1;
+        app->tracking_seconds += platform_monotonic_seconds() - started;
+        if (requested) {
+            run_detector = 1;
+            app->adaptive_runs++;
+        } else {
+            tracked = 1;
+            app->tracked_frames++;
+            kind = "tracked";
+        }
+    }
+    if (run_detector) {
+        DetectorRunStats run_stats;
+        if (detector_run(app->detector, frame->data, frame->width,
+                         frame->height, frame->stride, &app->detections,
+                         error, error_size) != 0)
+            return -1;
+        detector_get_last_stats(app->detector, &run_stats);
+        app->detector_stats.preprocess_seconds += run_stats.preprocess_seconds;
+        app->detector_stats.inference_seconds += run_stats.inference_seconds;
+        app->detector_stats.postprocess_seconds += run_stats.postprocess_seconds;
+        app->inference_runs++;
+        kind = requested ? "adaptive" : "inference";
+        if (app->tracking) {
+            started = platform_monotonic_seconds();
+            if (tracker_reset(app->tracker, frame->data, frame->width,
+                              frame->height, frame->stride,
+                              error, error_size) != 0)
+                return -1;
+            app->tracking_seconds += platform_monotonic_seconds() - started;
+        }
+    } else if (!tracked) {
+        app->reused_frames++;
+    }
+
+    if (log_detections(app, frame->index, kind, error, error_size) != 0)
+        return -1;
+    started = platform_monotonic_seconds();
+    draw_detections(frame->data, frame->width, frame->height, frame->stride,
+                    &app->detections);
+    app->drawing_seconds += platform_monotonic_seconds() - started;
+    preview_frame(app, frame);
+    app->frames++;
+    return 0;
+}
+
+static int write_metrics(const char *path, const Arguments *args,
+                         const AppContext *app, const MediaStats *media,
+                         double wall_seconds, double cpu_seconds,
+                         char *error, size_t error_size) {
+    FILE *file;
+    unsigned int online_cpus = platform_cpu_count();
+    double video_seconds = media->frame_rate > 0.0
+                               ? (double)app->frames / media->frame_rate
+                               : 0.0;
+    if (!path) return 0;
+    file = fopen(path, "w");
+    if (!file) {
+        snprintf(error, error_size, "failed to open metrics file: %s", path);
+        return -1;
+    }
+    fprintf(file,
+            "{\n"
+            "  \"frames\": %lld,\n"
+            "  \"inference_runs\": %lld,\n"
+            "  \"tracked_frames\": %lld,\n"
+            "  \"reused_frames\": %lld,\n"
+            "  \"adaptive_runs\": %lld,\n"
+            "  \"frame_rate\": %.6f,\n"
+            "  \"video_seconds\": %.6f,\n"
+            "  \"wall_seconds\": %.6f,\n"
+            "  \"cpu_seconds\": %.6f,\n"
+            "  \"cpu_ms_per_frame\": %.6f,\n"
+            "  \"one_core_cpu_percent\": %.3f,\n"
+            "  \"machine_capacity_percent\": %.3f,\n"
+            "  \"estimated_realtime_one_core_percent\": %.3f,\n"
+            "  \"input_convert_seconds\": %.6f,\n"
+            "  \"preprocess_seconds\": %.6f,\n"
+            "  \"inference_seconds\": %.6f,\n"
+            "  \"postprocess_seconds\": %.6f,\n"
+            "  \"tracking_seconds\": %.6f,\n"
+            "  \"drawing_seconds\": %.6f,\n"
+            "  \"output_seconds\": %.6f,\n"
+            "  \"settings\": {\n"
+            "    \"detect_every\": %d,\n"
+            "    \"tracking\": %s,\n"
+            "    \"fast_preprocess\": %s,\n"
+            "    \"graph_optimization_all\": %s,\n"
+            "    \"allow_spinning\": %s,\n"
+            "    \"threads\": %d,\n"
+            "    \"provider\": \"%s\",\n"
+            "    \"device_id\": %d,\n"
+            "    \"codec\": \"%s\"\n"
+            "  }\n"
+            "}\n",
+            (long long)app->frames, (long long)app->inference_runs,
+            (long long)app->tracked_frames, (long long)app->reused_frames,
+            (long long)app->adaptive_runs, media->frame_rate, video_seconds,
+            wall_seconds, cpu_seconds,
+            app->frames > 0 ? cpu_seconds * 1000.0 / (double)app->frames : 0.0,
+            wall_seconds > 0.0 ? cpu_seconds * 100.0 / wall_seconds : 0.0,
+            wall_seconds > 0.0
+                ? cpu_seconds * 100.0 / wall_seconds / (double)online_cpus
+                : 0.0,
+            video_seconds > 0.0 ? cpu_seconds * 100.0 / video_seconds : 0.0,
+            media->input_convert_seconds,
+            app->detector_stats.preprocess_seconds,
+            app->detector_stats.inference_seconds,
+            app->detector_stats.postprocess_seconds,
+            app->tracking_seconds, app->drawing_seconds, media->output_seconds,
+            args->detect_every, args->tracking ? "true" : "false",
+            args->detector.fast_preprocess ? "true" : "false",
+            args->detector.graph_optimization_all ? "true" : "false",
+            args->detector.allow_spinning ? "true" : "false",
+            args->detector.threads, provider_name(args->detector.provider),
+            args->detector.device_id, args->media.codec);
+    if (fclose(file) != 0) {
+        snprintf(error, error_size, "failed to finish metrics file: %s", path);
+        return -1;
+    }
+    return 0;
+}
+
+int main(int argc, char **argv) {
+    Arguments args;
+    AppContext app;
+    char error[512] = {0};
+    double start;
+    double end;
+    double cpu_start;
+    double cpu_end;
+    MediaStats media_stats;
+    int parse_result;
+    int result = EXIT_FAILURE;
+
+    /* 도움말은 정상 종료, 잘못된 옵션은 실패 종료로 구분합니다. */
+    parse_result = parse_arguments(argc, argv, &args);
+    if (parse_result > 0) return EXIT_SUCCESS;
+    if (parse_result < 0) {
+        usage(argv[0]);
+        return EXIT_FAILURE;
+    }
+    memset(&app, 0, sizeof(app));
+    app.detect_every = args.detect_every;
+    app.tracking = args.tracking;
+    app.preview = args.preview;
+    app.preview_fps = args.preview_fps;
+    memset(&media_stats, 0, sizeof(media_stats));
+    args.media.stats = &media_stats;
+
+    /*
+     * 후보 배열은 여기서 딱 한 번 만들고 모든 프레임에서 재사용합니다.
+     * 이후 실패하면 goto done으로 이동하여 이미 만든 자원을 한곳에서 정리합니다.
+     */
+    if (detection_list_init(&app.detections,
+                            args.detector.max_candidates) != 0) {
+        fprintf(stderr, "failed to allocate bounded detection buffer\n");
+        goto done;
+    }
+    app.detector = detector_create(args.model, &args.detector,
+                                   error, sizeof(error));
+    if (!app.detector) {
+        fprintf(stderr, "detector initialization failed: %s\n", error);
+        goto done;
+    }
+    if (app.tracking) {
+        const TrackerOptions tracker_options = {4, 3, 2, 24};
+        app.tracker = tracker_create(&tracker_options);
+        if (!app.tracker) {
+            fprintf(stderr, "failed to allocate lightweight tracker\n");
+            goto done;
+        }
+    }
+    if (args.detections_path) {
+        app.detection_log = fopen(args.detections_path, "w");
+        if (!app.detection_log) {
+            fprintf(stderr, "failed to open detection log: %s\n",
+                    args.detections_path);
+            goto done;
+        }
+        fputs("frame,kind,x1,y1,x2,y2,score\n", app.detection_log);
+    }
+    fprintf(stderr,
+            "model input: %dx%d, provider: %s, threads: %d, detect every: %d, tracker: %s, "
+            "candidate cap: %zu%s\n",
+            detector_input_width(app.detector),
+            detector_input_height(app.detector),
+            provider_name(args.detector.provider), args.detector.threads,
+            args.detect_every, args.tracking ? "on" : "off",
+            args.detector.max_candidates,
+            args.detector.low_memory ? ", low-memory mode" : "");
+    if (args.camera) {
+        fprintf(stderr,
+                "camera: %s via %s, %s at %s fps (press Ctrl+C to stop)\n",
+                args.input, args.media.input_format, args.media.video_size,
+                args.media.framerate);
+    }
+
+    signal(SIGINT, request_stop);
+    signal(SIGTERM, request_stop);
+#if defined(SIGPIPE)
+    signal(SIGPIPE, SIG_IGN);
+#endif
+    start = platform_monotonic_seconds();
+    cpu_start = platform_process_cpu_seconds();
+    /*
+     * 실제 반복문은 media_process() 안에 있습니다. 프레임이 준비될 때마다 위의
+     * process_frame 함수가 호출되고, 수정된 RGB 프레임이 곧바로 저장됩니다.
+     */
+    if (media_process(args.input, args.output, &args.media, process_frame, &app,
+                      error, sizeof(error)) != 0) {
+        fprintf(stderr, "processing failed: %s\n", error);
+        goto done;
+    }
+    end = platform_monotonic_seconds();
+    cpu_end = platform_process_cpu_seconds();
+    {
+        double seconds = end - start;
+        double cpu_seconds = cpu_end - cpu_start;
+        fprintf(stderr,
+                "%s: %lld frames, %lld inference runs, %.2f s (%.2f fps), "
+                "CPU %.2f s (%.2f ms/frame)\n",
+                stop_requested ? "stopped" : "done",
+                (long long)app.frames, (long long)app.inference_runs, seconds,
+                seconds > 0.0 ? (double)app.frames / seconds : 0.0,
+                cpu_seconds,
+                app.frames > 0 ? cpu_seconds * 1000.0 / (double)app.frames
+                               : 0.0);
+        if (write_metrics(args.metrics_path, &args, &app, &media_stats,
+                          seconds, cpu_seconds, error, sizeof(error)) != 0) {
+            fprintf(stderr, "metrics failed: %s\n", error);
+            goto done;
+        }
+    }
+    result = EXIT_SUCCESS;
+
+done:
+    /*
+     * C에는 자동 자원 정리가 없으므로 성공/실패 모두 이 지점을 거치게 합니다.
+     * destroy 함수들은 NULL도 안전하게 받으므로 생성 도중 실패해도 호출 가능합니다.
+     */
+    if (app.detection_log) fclose(app.detection_log);
+    if (app.preview_pipe) pclose(app.preview_pipe);
+    tracker_destroy(app.tracker);
+    detector_destroy(app.detector);
+    detection_list_destroy(&app.detections);
+    return result;
+}

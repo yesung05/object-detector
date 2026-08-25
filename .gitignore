@@ -1,0 +1,9 @@
+build/
+src/*.o
+yolo11-person
+*.dSYM/
+.DS_Store
+result/
+__pycache__/
+*.pyc
+yolo11n.pt
