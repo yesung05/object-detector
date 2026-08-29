@@ -29,3 +29,5 @@ yolo11n-pose.pt
 # 성능 측정 결과
 *.json
 *.csv
+
+logs/
