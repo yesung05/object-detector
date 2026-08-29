@@ -149,7 +149,8 @@ static void usage(const char *program) {
         "  --detect-every N        full inference interval (default: 1)\n"
         "  --track / --no-track    track boxes between skipped frames (default: off)\n"
         "  --confidence F          confidence threshold (default: 0.25)\n"
-        "  --threads N             ONNX intra-op threads, 1 or 2 (default: 1)\n"
+        "  --threads N             ONNX intra-op threads, 1-3 (default: 1)\n"
+        "  --warmup N              dummy inference runs at startup (default: 0)\n"
         "  --provider NAME         cpu or directml (Windows default: directml)\n"
         "  --device-id N           DirectML adapter index (default: 0)\n"
         "  --preprocess MODE       fast or reference (default: fast)\n"
@@ -300,9 +301,15 @@ static int parse_arguments(int argc, char **argv, Arguments *args) {
                 parse_float(value, 0.0f, 1.0f,
                             &args->detector.confidence) != 0) return -1;
         } else if (strcmp(argv[i], "--threads") == 0) {
+            /* 상한 3: CLAUDE.md 방침 "2코어 4스레드 중 3스레드를 파이프라인에 활용"
+             * (나머지 1스레드는 OS/시스템 예비). 4 전부를 YOLO에 주면 UI가 멈춥니다. */
             if (require_value(argc, argv, &i, &value) != 0 ||
-                parse_long(value, 1, 2, &parsed) != 0) return -1;
+                parse_long(value, 1, 3, &parsed) != 0) return -1;
             args->detector.threads = (int)parsed;
+        } else if (strcmp(argv[i], "--warmup") == 0) {
+            if (require_value(argc, argv, &i, &value) != 0 ||
+                parse_long(value, 0, 100, &parsed) != 0) return -1;
+            args->detector.warmup_runs = (int)parsed;
         } else if (strcmp(argv[i], "--provider") == 0) {
             if (require_value(argc, argv, &i, &value) != 0) return -1;
             if (strcmp(value, "cpu") == 0)
@@ -570,6 +577,10 @@ static int process_frame(RgbFrame *frame, void *opaque,
         app->detector_stats.preprocess_seconds += run_stats.preprocess_seconds;
         app->detector_stats.inference_seconds += run_stats.inference_seconds;
         app->detector_stats.postprocess_seconds += run_stats.postprocess_seconds;
+        /* 링 버퍼 백분위는 누적이 아니라 최신값을 그대로 씁니다. */
+        app->detector_stats.inference_p50_ms = run_stats.inference_p50_ms;
+        app->detector_stats.inference_p95_ms = run_stats.inference_p95_ms;
+        app->detector_stats.inference_max_ms = run_stats.inference_max_ms;
         app->inference_runs++;
         kind = requested ? "adaptive" : "inference";
         if (app->tracking) {
@@ -645,6 +656,9 @@ static int write_metrics(const char *path, const Arguments *args,
             "  \"tracking_seconds\": %.6f,\n"
             "  \"drawing_seconds\": %.6f,\n"
             "  \"output_seconds\": %.6f,\n"
+            "  \"inference_p50_ms\": %.3f,\n"
+            "  \"inference_p95_ms\": %.3f,\n"
+            "  \"inference_max_ms\": %.3f,\n"
             "  \"settings\": {\n"
             "    \"detect_every\": %d,\n"
             "    \"tracking\": %s,\n"
@@ -675,6 +689,9 @@ static int write_metrics(const char *path, const Arguments *args,
             app->detector_stats.inference_seconds,
             app->detector_stats.postprocess_seconds,
             app->tracking_seconds, app->drawing_seconds, media->output_seconds,
+            app->detector_stats.inference_p50_ms,
+            app->detector_stats.inference_p95_ms,
+            app->detector_stats.inference_max_ms,
             args->detect_every, args->tracking ? "true" : "false",
             args->detector.fast_preprocess ? "true" : "false",
             args->detector.graph_optimization_all ? "true" : "false",

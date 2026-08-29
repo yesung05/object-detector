@@ -100,6 +100,8 @@ typedef struct {
     int fast_preprocess;
     int graph_optimization_all;
     int allow_spinning;
+    /* 시작 시 더미 추론 횟수입니다. 첫 프레임 지연 스파이크를 서비스 전에 소진합니다. */
+    int warmup_runs;
     DetectorProvider provider;
     int device_id;
 } DetectorOptions;
@@ -108,6 +110,10 @@ typedef struct {
     double preprocess_seconds;
     double inference_seconds;
     double postprocess_seconds;
+    /* 지연 분포: 최근 N회 추론의 p50/p95/최댓값 (ms). detector_run() 내에서 갱신됩니다. */
+    double inference_p50_ms;
+    double inference_p95_ms;
+    double inference_max_ms;
 } DetectorRunStats;
 
 /*
