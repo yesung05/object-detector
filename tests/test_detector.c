@@ -78,7 +78,7 @@ static void test_detector_blank_image(void) {
     }
     d = detector_create(g_model_path, &opts, error, sizeof(error));
     ASSERT_TRUE(d != NULL);
-    ASSERT_INT_EQ(detection_list_init(&list, 32), 0);
+    ASSERT_INT_EQ(detection_list_init(&list, opts.max_candidates), 0);
     image = (uint8_t *)malloc(416 * 416 * 3);
     ASSERT_TRUE(image != NULL);
     /* 114: YOLO letterbox 여백 기본색 — 실질적으로 빈 프레임입니다. */
@@ -109,8 +109,8 @@ static void test_detector_fast_preprocess(void) {
     d_ref  = detector_create(g_model_path, &opts_ref,  error, sizeof(error));
     d_fast = detector_create(g_model_path, &opts_fast, error, sizeof(error));
     if (!d_ref || !d_fast) { ok = 0; goto done; }
-    if (detection_list_init(&list_ref,  32) != 0) { ok = 0; goto done; }
-    if (detection_list_init(&list_fast, 32) != 0) {
+    if (detection_list_init(&list_ref,  opts_ref.max_candidates) != 0) { ok = 0; goto done; }
+    if (detection_list_init(&list_fast, opts_fast.max_candidates) != 0) {
         detection_list_destroy(&list_ref);
         ok = 0; goto done;
     }

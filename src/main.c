@@ -59,6 +59,9 @@ typedef struct {
     double       motion_ratio_threshold;  /* 기본 0.004 */
     double       idle_refresh_seconds;    /* 기본 10.0 */
     double       last_detection_time;
+    /* YOLO 추론 FPS 상한. 0이면 제한 없음. detect_every와 OR 조건으로 동작.
+     * 카메라 입력에서 추론이 느려도 디코딩 루프를 막지 않기 위해 사용. */
+    double       detect_fps_limit;
 } AppContext;
 
 /* 명령줄에서 읽은 경로와 프로그램 내부 기본 설정을 한곳에 모읍니다. */
@@ -76,6 +79,7 @@ typedef struct {
     DetectorOptions detector;
     MediaOptions media;
     int detect_every;
+    double detect_fps_limit;  /* --detect-fps: YOLO 최대 FPS, 0=무제한 */
     int tracking;
     int preview;
     int preview_fps;
@@ -146,7 +150,8 @@ static void usage(const char *program) {
         "  --camera-size WxH       capture resolution (device default if unset)\n"
         "  --camera-fps N          capture frame rate (device default if unset)\n"
         "  --max-frames N          stop after N frames (default: unlimited)\n"
-        "  --detect-every N        full inference interval (default: 1)\n"
+        "  --detect-every N        full inference interval in frames (default: 1)\n"
+        "  --detect-fps F          max YOLO inference FPS; 0=unlimited (default: 10)\n"
         "  --track / --no-track    track boxes between skipped frames (default: off)\n"
         "  --confidence F          confidence threshold (default: 0.25)\n"
         "  --threads N             ONNX intra-op threads, 1-3 (default: 1)\n"
@@ -244,6 +249,7 @@ static int parse_arguments(int argc, char **argv, Arguments *args) {
      * 원하는 해상도가 있으면 --camera-size/--camera-fps 로 명시합니다. */
     args->media.interrupt_callback = should_stop;
     args->detect_every = 1;
+    args->detect_fps_limit = 10.0; /* 카메라 추론 기본 상한: 10 FPS */
     args->tracking = 0;
     args->preview_fps = 30;
     args->motion_gate = 1;
@@ -296,6 +302,11 @@ static int parse_arguments(int argc, char **argv, Arguments *args) {
             if (require_value(argc, argv, &i, &value) != 0 ||
                 parse_long(value, 1, 1000, &parsed) != 0) return -1;
             args->detect_every = (int)parsed;
+        } else if (strcmp(argv[i], "--detect-fps") == 0) {
+            float fv;
+            if (require_value(argc, argv, &i, &value) != 0 ||
+                parse_float(value, 0.0f, 120.0f, &fv) != 0) return -1;
+            args->detect_fps_limit = (double)fv;
         } else if (strcmp(argv[i], "--confidence") == 0) {
             if (require_value(argc, argv, &i, &value) != 0 ||
                 parse_float(value, 0.0f, 1.0f,
@@ -496,6 +507,15 @@ static int process_frame(RgbFrame *frame, void *opaque,
     const char *kind = "reused";
     double started;
     double now = platform_monotonic_seconds();
+
+    /* detect_fps_limit: 시간 기반 추론 상한.
+     * 카메라 모드에서 추론이 느려도 디코딩 루프를 블로킹하지 않기 위해,
+     * 마지막 추론 이후 경과 시간이 1/fps 미만이면 이번 프레임은 건너뜁니다.
+     * detect_every 와 AND 조건: 둘 다 허용할 때만 추론합니다. */
+    if (run_detector && app->detect_fps_limit > 0.0 &&
+        (now - app->last_detection_time) < (1.0 / app->detect_fps_limit)) {
+        run_detector = 0;
+    }
 
     /* 첫 프레임에서 GrayBuf와 CameraHealth를 지연 초기화합니다.
      * frame->width/height는 콜백이 와야 알 수 있습니다. */
@@ -727,6 +747,7 @@ int main(int argc, char **argv) {
     }
     memset(&app, 0, sizeof(app));
     app.detect_every = args.detect_every;
+    app.detect_fps_limit = args.detect_fps_limit;
     app.tracking = args.tracking;
     app.preview = args.preview;
     app.preview_fps = args.preview_fps;
