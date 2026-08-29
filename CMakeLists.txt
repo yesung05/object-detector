@@ -63,10 +63,11 @@ if(ORT_INCLUDE_DIR AND ORT_LIBRARY AND FFMPEG_INCLUDE_DIR AND FFMPEG_FOUND)
         src/config.c
         src/camera_health.c
         src/tracks.c
-        src/rules.c)
+        src/rules.c
+        src/stream.c)
     target_include_directories(yolo11-person PRIVATE
         include "${ORT_INCLUDE_DIR}" "${FFMPEG_INCLUDE_DIR}")
-    target_link_libraries(yolo11-person PRIVATE "${ORT_LIBRARY}" ${FFMPEG_LIBRARIES})
+    target_link_libraries(yolo11-person PRIVATE "${ORT_LIBRARY}" ${FFMPEG_LIBRARIES} ws2_32)
 
     if(MSVC)
         target_compile_definitions(yolo11-person PRIVATE

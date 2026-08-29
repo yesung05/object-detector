@@ -1,4 +1,5 @@
 #include "camera_health.h"
+#include "stream.h"
 #include "config.h"
 #include "gray.h"
 #include "log.h"
@@ -63,6 +64,7 @@ typedef struct {
      * 카메라 입력에서 추론이 느려도 디코딩 루프를 막지 않기 위해 사용. */
     double       detect_fps_limit;
     double       hud_start_time;  /* 첫 프레임 시각 (HUD FPS 분모) */
+    int          stream_port;     /* MJPEG 스트림 포트, 0이면 비활성 */
 } AppContext;
 
 /* 명령줄에서 읽은 경로와 프로그램 내부 기본 설정을 한곳에 모읍니다. */
@@ -81,6 +83,7 @@ typedef struct {
     MediaOptions media;
     int detect_every;
     double detect_fps_limit;  /* --detect-fps: YOLO 최대 FPS, 0=무제한 */
+    int stream_port;          /* --stream-port: MJPEG 포트, 0=비활성 */
     int tracking;
     int preview;
     int preview_fps;
@@ -153,6 +156,8 @@ static void usage(const char *program) {
         "  --max-frames N          stop after N frames (default: unlimited)\n"
         "  --detect-every N        full inference interval in frames (default: 1)\n"
         "  --detect-fps F          max YOLO inference FPS; 0=unlimited (default: 10)\n"
+        "  --stream-port N         MJPEG stream port on 127.0.0.1 (default: off)\n"
+        "                          browse http://localhost:N/stream in dashboard\n"
         "  --track / --no-track    track boxes between skipped frames (default: off)\n"
         "  --confidence F          confidence threshold (default: 0.25)\n"
         "  --threads N             ONNX intra-op threads, 1-3 (default: 1)\n"
@@ -308,6 +313,10 @@ static int parse_arguments(int argc, char **argv, Arguments *args) {
             if (require_value(argc, argv, &i, &value) != 0 ||
                 parse_float(value, 0.0f, 120.0f, &fv) != 0) return -1;
             args->detect_fps_limit = (double)fv;
+        } else if (strcmp(argv[i], "--stream-port") == 0) {
+            if (require_value(argc, argv, &i, &value) != 0 ||
+                parse_long(value, 1024, 65535, &parsed) != 0) return -1;
+            args->stream_port = (int)parsed;
         } else if (strcmp(argv[i], "--confidence") == 0) {
             if (require_value(argc, argv, &i, &value) != 0 ||
                 parse_float(value, 0.0f, 1.0f,
@@ -639,6 +648,8 @@ static int process_frame(RgbFrame *frame, void *opaque,
         draw_hud(frame->data, frame->width, frame->height, frame->stride,
                  det_fps, cam_fps);
     }
+    if (app->stream_port > 0)
+        stream_push(frame->data, frame->width, frame->height, frame->stride);
     app->drawing_seconds += platform_monotonic_seconds() - started;
     preview_frame(app, frame);
     /* 다음 프레임의 모션 게이트 비교를 위해 현재 gray를 복사합니다. */
@@ -762,6 +773,7 @@ int main(int argc, char **argv) {
     memset(&app, 0, sizeof(app));
     app.detect_every = args.detect_every;
     app.detect_fps_limit = args.detect_fps_limit;
+    app.stream_port = args.stream_port;
     app.tracking = args.tracking;
     app.preview = args.preview;
     app.preview_fps = args.preview_fps;
@@ -873,6 +885,10 @@ int main(int argc, char **argv) {
 #if defined(SIGPIPE)
     signal(SIGPIPE, SIG_IGN);
 #endif
+    if (app.stream_port > 0) {
+        if (stream_start(app.stream_port) != 0)
+            fprintf(stderr, "stream: failed to start on port %d\n", app.stream_port);
+    }
     start = platform_monotonic_seconds();
     cpu_start = platform_process_cpu_seconds();
     /*
@@ -907,6 +923,7 @@ int main(int argc, char **argv) {
     result = EXIT_SUCCESS;
 
 done:
+    if (app.stream_port > 0) stream_stop();
     /*
      * C에는 자동 자원 정리가 없으므로 성공/실패 모두 이 지점을 거치게 합니다.
      * destroy 함수들은 NULL도 안전하게 받으므로 생성 도중 실패해도 호출 가능합니다.

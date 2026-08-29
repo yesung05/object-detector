@@ -71,12 +71,66 @@
   main {
     display: grid;
     grid-template-columns: 220px 1fr;
+    grid-template-rows: auto 1fr;
     flex: 1;
     overflow: hidden;
   }
 
+  /* ── 카메라 프레임 영역 ── */
+  .camera-panel {
+    grid-column: 2;
+    background: #000;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 260px;
+    position: relative;
+    overflow: hidden;
+  }
+  .camera-panel img {
+    max-height: 100%;
+    max-width: 100%;
+    object-fit: contain;
+    display: block;
+  }
+  .camera-offline {
+    color: var(--muted);
+    font-size: 12px;
+    text-align: center;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    align-items: center;
+  }
+  .stream-port-form {
+    display: flex; gap: 6px; align-items: center;
+    position: absolute; top: 8px; right: 8px;
+  }
+  .stream-port-form input {
+    background: rgba(0,0,0,.6);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 3px 6px;
+    border-radius: 4px;
+    font-size: 11px;
+    width: 70px;
+    text-align: center;
+  }
+  .btn {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 3px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+    cursor: pointer;
+  }
+  .btn:hover { background: var(--border); }
+
   /* ── 사이드바 (통계) ── */
   aside {
+    grid-row: 1 / 3;  /* 카메라 + 피드 영역 모두 차지 */
     background: var(--surface);
     border-right: 1px solid var(--border);
     padding: 16px;
@@ -293,6 +347,21 @@
       <div class="stat-value blue" id="cnt-total">0</div>
     </div>
   </aside>
+
+  <!-- 카메라 프레임 (detector --stream-port가 활성화된 경우에만 표시) -->
+  <section class="camera-panel" id="camera-panel">
+    <div class="camera-offline" id="cam-offline">
+      <span>📷</span>
+      <span>detector 미실행 또는 --stream-port 미설정</span>
+    </div>
+    <img id="stream-img" src="" alt="카메라" style="display:none"
+         onerror="onStreamError()" onload="onStreamLoad()">
+    <div class="stream-port-form">
+      <input id="port-input" type="number" value="8081" min="1024" max="65535" placeholder="포트">
+      <button class="btn" onclick="connectStream()">연결</button>
+      <button class="btn" onclick="disconnectStream()">끊기</button>
+    </div>
+  </section>
 
   <!-- 이벤트 피드 -->
   <section class="feed-area">
@@ -541,6 +610,39 @@ function selectFile(file) {
 }
 
 logSelect.addEventListener("change", () => selectFile(logSelect.value));
+
+// ── 카메라 스트림 ────────────────────────────────────────────────────────────
+const streamImg    = document.getElementById("stream-img");
+const camOffline   = document.getElementById("cam-offline");
+const portInput    = document.getElementById("port-input");
+let   streamActive = false;
+
+function connectStream() {
+  const port = parseInt(portInput.value, 10) || 8081;
+  streamImg.src = `http://localhost:${port}/stream`;
+  streamImg.style.display = "";
+  camOffline.style.display = "none";
+  streamActive = true;
+}
+
+function disconnectStream() {
+  streamImg.src = "";
+  streamImg.style.display = "none";
+  camOffline.style.display = "";
+  streamActive = false;
+}
+
+function onStreamError() {
+  if (!streamActive) return;
+  camOffline.innerHTML = "<span>📷</span><span>스트림 연결 실패 — detector가 실행 중인지 확인하세요</span>";
+  camOffline.style.display = "";
+  streamImg.style.display = "none";
+}
+
+function onStreamLoad() {
+  camOffline.style.display = "none";
+  streamImg.style.display = "";
+}
 
 // ── 초기화 ──────────────────────────────────────────────────────────────────
 loadLogList();
