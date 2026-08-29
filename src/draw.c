@@ -128,6 +128,77 @@ static void draw_rectangle(uint8_t *rgb, int width, int height, int stride,
     }
 }
 
+/* Bresenham 직선 알고리즘입니다. set_pixel 이 범위를 처리하므로 클리핑 불필요. */
+static void draw_line(uint8_t *rgb, int width, int height, int stride,
+                      int x0, int y0, int x1, int y1,
+                      uint8_t r, uint8_t g, uint8_t b) {
+    int dx = x1 - x0;
+    int dy = y1 - y0;
+    int ax = dx < 0 ? -dx : dx;
+    int ay = dy < 0 ? -dy : dy;
+    int sx = dx < 0 ? -1 : 1;
+    int sy = dy < 0 ? -1 : 1;
+    int err = ax - ay;
+    for (;;) {
+        set_pixel(rgb, width, height, stride, x0, y0, r, g, b);
+        if (x0 == x1 && y0 == y1) break;
+        int e2 = err * 2;
+        if (e2 > -ay) { err -= ay; x0 += sx; }
+        if (e2 <  ax) { err += ax; y0 += sy; }
+    }
+}
+
+/* keypoint 위치에 3×3 점을 채웁니다. */
+static void draw_joint(uint8_t *rgb, int width, int height, int stride,
+                       int x, int y, uint8_t r, uint8_t g, uint8_t b) {
+    for (int dy = -2; dy <= 2; ++dy)
+        for (int dx = -2; dx <= 2; ++dx)
+            set_pixel(rgb, width, height, stride, x + dx, y + dy, r, g, b);
+}
+
+/*
+ * COCO 17관절 스켈레톤 연결 테이블입니다.
+ * 인덱스: 0=코 1=왼눈 2=오른눈 3=왼귀 4=오른귀
+ *        5=왼어깨 6=오른어깨 7=왼팔꿈치 8=오른팔꿈치 9=왼손목 10=오른손목
+ *        11=왼엉덩이 12=오른엉덩이 13=왼무릎 14=오른무릎 15=왼발 16=오른발
+ */
+static const int SKELETON[][2] = {
+    {0, 1}, {0, 2}, {1, 3}, {2, 4},           /* 얼굴 */
+    {5, 6},                                     /* 어깨 가로 */
+    {5, 7}, {7, 9},                             /* 왼팔 */
+    {6, 8}, {8, 10},                            /* 오른팔 */
+    {5, 11}, {6, 12},                           /* 몸통 옆 */
+    {11, 12},                                   /* 골반 가로 */
+    {11, 13}, {13, 15},                         /* 왼다리 */
+    {12, 14}, {14, 16},                         /* 오른다리 */
+    {0, 5}, {0, 6}                              /* 목 */
+};
+
+/* keypoint score 가 이 값 미만이면 화면 밖이거나 가려진 관절로 처리합니다. */
+#define KP_VIS_THRESHOLD 0.4f
+
+static void draw_skeleton(uint8_t *rgb, int width, int height, int stride,
+                          const Detection *d) {
+    int n = (int)(sizeof(SKELETON) / sizeof(SKELETON[0]));
+    for (int e = 0; e < n; ++e) {
+        int a = SKELETON[e][0];
+        int b = SKELETON[e][1];
+        if (a >= d->keypoint_count || b >= d->keypoint_count) continue;
+        if (d->kp[a].score < KP_VIS_THRESHOLD ||
+            d->kp[b].score < KP_VIS_THRESHOLD) continue;
+        draw_line(rgb, width, height, stride,
+                  (int)(d->kp[a].x + 0.5f), (int)(d->kp[a].y + 0.5f),
+                  (int)(d->kp[b].x + 0.5f), (int)(d->kp[b].y + 0.5f),
+                  0, 180, 255);
+    }
+    for (int k = 0; k < d->keypoint_count; ++k) {
+        if (d->kp[k].score < KP_VIS_THRESHOLD) continue;
+        draw_joint(rgb, width, height, stride,
+                   (int)(d->kp[k].x + 0.5f), (int)(d->kp[k].y + 0.5f),
+                   255, 220, 0);
+    }
+}
+
 void draw_detections(uint8_t *rgb, int width, int height, int stride,
                      const DetectionList *detections) {
     int min_dimension;
@@ -178,5 +249,7 @@ void draw_detections(uint8_t *rgb, int width, int height, int stride,
         }
         draw_text(rgb, width, height, stride, x1 + 3, label_y + 4,
                   label, font_scale);
+        if (d->keypoint_count > 0)
+            draw_skeleton(rgb, width, height, stride, d);
     }
 }

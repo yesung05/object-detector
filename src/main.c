@@ -24,6 +24,7 @@ typedef struct {
     DetectionList detections;
     LightTracker *tracker;
     FILE *detection_log;
+    FILE *keypoint_log;   /* --keypoints CSV (박스당 관절 좌표), NULL 이면 비활성 */
     FILE *preview_pipe;
     int detect_every;
     int tracking;
@@ -47,6 +48,7 @@ typedef struct {
     const char *camera_device;
     const char *camera_format;
     const char *detections_path;
+    const char *keypoints_path;
     const char *metrics_path;
     DetectorOptions detector;
     MediaOptions media;
@@ -321,6 +323,9 @@ static int parse_arguments(int argc, char **argv, Arguments *args) {
         } else if (strcmp(argv[i], "--detections") == 0) {
             if (require_value(argc, argv, &i, &args->detections_path) != 0)
                 return -1;
+        } else if (strcmp(argv[i], "--keypoints") == 0) {
+            if (require_value(argc, argv, &i, &args->keypoints_path) != 0)
+                return -1;
         } else if (strcmp(argv[i], "--metrics") == 0) {
             if (require_value(argc, argv, &i, &args->metrics_path) != 0)
                 return -1;
@@ -372,6 +377,25 @@ static int log_detections(AppContext *app, int64_t frame_index,
                     d->x2, d->y2, d->score) < 0) {
             snprintf(error, error_size, "failed to write detection log");
             return -1;
+        }
+    }
+    return 0;
+}
+
+/* keypoint 별도 CSV: 박스 인덱스를 키로 detections CSV 와 조인할 수 있습니다. */
+static int log_keypoints(AppContext *app, int64_t frame_index,
+                         char *error, size_t error_size) {
+    if (!app->keypoint_log) return 0;
+    for (size_t i = 0; i < app->detections.count; ++i) {
+        const Detection *d = &app->detections.items[i];
+        for (int k = 0; k < d->keypoint_count; ++k) {
+            if (fprintf(app->keypoint_log,
+                        "%lld,%zu,%d,%.4f,%.4f,%.6f\n",
+                        (long long)frame_index, i, k,
+                        d->kp[k].x, d->kp[k].y, d->kp[k].score) < 0) {
+                snprintf(error, error_size, "failed to write keypoint log");
+                return -1;
+            }
         }
     }
     return 0;
@@ -468,6 +492,8 @@ static int process_frame(RgbFrame *frame, void *opaque,
     }
 
     if (log_detections(app, frame->index, kind, error, error_size) != 0)
+        return -1;
+    if (log_keypoints(app, frame->index, error, error_size) != 0)
         return -1;
     started = platform_monotonic_seconds();
     draw_detections(frame->data, frame->width, frame->height, frame->stride,
@@ -614,6 +640,15 @@ int main(int argc, char **argv) {
         }
         fputs("frame,kind,x1,y1,x2,y2,score\n", app.detection_log);
     }
+    if (args.keypoints_path) {
+        app.keypoint_log = fopen(args.keypoints_path, "w");
+        if (!app.keypoint_log) {
+            fprintf(stderr, "failed to open keypoint log: %s\n",
+                    args.keypoints_path);
+            goto done;
+        }
+        fputs("frame,det_index,kp_index,x,y,score\n", app.keypoint_log);
+    }
     fprintf(stderr,
             "model input: %dx%d, provider: %s, threads: %d, detect every: %d, tracker: %s, "
             "candidate cap: %zu%s\n",
@@ -674,6 +709,7 @@ done:
      * destroy 함수들은 NULL도 안전하게 받으므로 생성 도중 실패해도 호출 가능합니다.
      */
     if (app.detection_log) fclose(app.detection_log);
+    if (app.keypoint_log)  fclose(app.keypoint_log);
     if (app.preview_pipe) pclose(app.preview_pipe);
     tracker_destroy(app.tracker);
     detector_destroy(app.detector);
