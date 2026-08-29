@@ -33,6 +33,9 @@ typedef struct {
  * 입력/출력 버퍼를 구조체 안에 보관하는 이유는 매 프레임마다 큰 배열을 새로
  * 할당하지 않고 같은 메모리를 계속 재사용하기 위해서입니다.
  */
+/* 최근 추론 시간을 저장하는 링 버퍼 크기입니다. p95 계산에 최소 20회가 필요합니다. */
+enum { LATENCY_BUF_SIZE = 256 };
+
 struct Detector {
     const OrtApi *ort;
     OrtEnv *env;
@@ -52,6 +55,10 @@ struct Detector {
     DetectorOptions options;
     DetectorRunStats last_stats;
     OrtAllocator *allocator;
+    /* 최근 추론 시간 링 버퍼 (ms). 시작 시 1회 할당, 프레임 수와 무관한 고정 크기. */
+    double *latency_buf;   /* Pipeline 소유, detector_destroy 에서 해제 */
+    int latency_head;
+    int latency_count;
 };
 
 /* printf와 같은 형식으로 호출자의 오류 문자열 버퍼를 채우는 보조 함수입니다. */
@@ -125,6 +132,7 @@ static void detector_release_members(Detector *d) {
     }
     free(d->output_data);
     free(d->input_data);
+    free(d->latency_buf);
 }
 
 Detector *detector_create(const char *model_path, const DetectorOptions *options,
@@ -225,6 +233,14 @@ Detector *detector_create(const char *model_path, const DetectorOptions *options
                     error, error_size, "DisableMemPattern"))
             goto fail;
     }
+
+    /* Haswell 등 FP32 경로에서 denormal 수는 수백 사이클 페널티가 있습니다.
+     * DAZ/FTZ 모드를 켜서 0으로 처리하게 하면 실질적인 속도 이득이 있습니다. */
+    if (!ort_ok(d, d->ort->AddSessionConfigEntry(
+                       d->session_options,
+                       "session.set_denormals_as_zero", "1"),
+                error, error_size, "set_denormals_as_zero"))
+        goto fail;
 
     if (options->provider == DETECTOR_PROVIDER_DIRECTML) {
 #if defined(_WIN32)
@@ -431,6 +447,55 @@ Detector *detector_create(const char *model_path, const DetectorOptions *options
     }
     d->ort->ReleaseTypeInfo(type_info);
     type_info = NULL;
+
+    /* 웜업 추론: 첫 프레임 지연 스파이크를 서비스 시작 전으로 옮깁니다.
+     * 7/6 미팅의 "순간 피크가 매우 위험" 요구에 대응합니다.
+     * 입력을 회색(114/255.0)으로 채워 더미 추론을 실행합니다. */
+    if (options->warmup_runs > 0) {
+        size_t input_elements = (size_t)d->input_width * (size_t)d->input_height * 3;
+        const char *warmup_input_names[1];
+        const char *warmup_output_names[1];
+        const OrtValue *warmup_inputs[1];
+        float fill_value = 114.0f / 255.0f;
+        int w;
+
+        warmup_input_names[0] = d->input_name;
+        warmup_output_names[0] = d->output_name;
+        warmup_inputs[0] = d->input_value;
+
+        for (size_t j = 0; j < input_elements; ++j)
+            d->input_data[j] = fill_value;
+
+        for (w = 0; w < options->warmup_runs; ++w) {
+            OrtValue *out = d->output_value;
+            d->ort->Run(d->session, NULL, warmup_input_names, warmup_inputs, 1,
+                        warmup_output_names, 1, &out);
+            if (out != d->output_value) {
+                d->ort->ReleaseValue(out);
+                out = NULL;
+            }
+        }
+        fprintf(stderr, "detector: %d warmup runs done\n", options->warmup_runs);
+    }
+
+    /* INT8 모델 + DirectML 조합 경고: Intel HD 4400의 DirectML은 QDQ INT8을 올바르게
+     * 가속하지 못해 CPU보다 느려질 수 있습니다. 파일명에 "int8"이 포함된 경우 안내합니다. */
+    if (options->provider == DETECTOR_PROVIDER_DIRECTML) {
+        if (strstr(model_path, "int8") || strstr(model_path, "INT8")) {
+            fprintf(stderr,
+                    "detector: WARNING: DirectML + INT8 model — Intel HD 4400 DirectML "
+                    "does not accelerate QDQ INT8 correctly. "
+                    "Try --provider cpu for better throughput.\n");
+        }
+    }
+
+    /* 링 버퍼는 시작 시 1회 할당합니다. 프레임 수에 무관한 고정 상한. */
+    d->latency_buf = (double *)calloc(LATENCY_BUF_SIZE, sizeof(double));
+    if (!d->latency_buf) {
+        set_error(error, error_size, "out of memory allocating latency buffer");
+        goto fail;
+    }
+
     return d;
 
 fail:
@@ -503,6 +568,33 @@ int detector_run(Detector *d, const uint8_t *rgb, int width, int height,
         goto done;
     d->last_stats.inference_seconds =
         platform_monotonic_seconds() - phase_start;
+
+    /* 링 버퍼에 최근 추론 시간(ms)을 기록하고 백분위 통계를 갱신합니다.
+     * insertion sort는 n<=256에서 충분히 빠릅니다. */
+    {
+        double inference_ms = d->last_stats.inference_seconds * 1000.0;
+        double sorted[LATENCY_BUF_SIZE];
+        int n, i, j;
+        double tmp;
+        d->latency_buf[d->latency_head] = inference_ms;
+        d->latency_head = (d->latency_head + 1) % LATENCY_BUF_SIZE;
+        if (d->latency_count < LATENCY_BUF_SIZE) d->latency_count++;
+        n = d->latency_count;
+        memcpy(sorted, d->latency_buf, (size_t)n * sizeof(double));
+        for (i = 1; i < n; ++i) {
+            tmp = sorted[i];
+            j = i;
+            while (j > 0 && sorted[j - 1] > tmp) {
+                sorted[j] = sorted[j - 1];
+                --j;
+            }
+            sorted[j] = tmp;
+        }
+        d->last_stats.inference_p50_ms = sorted[n / 2];
+        d->last_stats.inference_p95_ms = sorted[(int)((size_t)n * 95 / 100)];
+        d->last_stats.inference_max_ms = sorted[n - 1];
+    }
+
     phase_start = platform_monotonic_seconds();
     if (d->output_value) {
         /* 고정 출력 경로: 이미 알고 있는 shape와 재사용 버퍼를 곧바로 해석합니다. */
