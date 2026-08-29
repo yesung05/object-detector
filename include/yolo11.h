@@ -144,6 +144,10 @@ int yolo11_decode(const float *output, const int64_t *shape, size_t rank,
 void draw_detections(uint8_t *rgb, int width, int height, int stride,
                      const DetectionList *detections);
 
+/* 왼쪽 상단에 추론 FPS / 카메라 입력 FPS를 두 줄로 표시합니다. */
+void draw_hud(uint8_t *rgb, int width, int height, int stride,
+              float detect_fps, float camera_fps);
+
 /*
  * detector_create()로 만든 포인터는 반드시 detector_destroy()로 해제해야 합니다.
  * detector_run()은 생성 시 확보한 입출력 버퍼를 프레임마다 재사용합니다.

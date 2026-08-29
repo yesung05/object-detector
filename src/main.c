@@ -62,6 +62,7 @@ typedef struct {
     /* YOLO 추론 FPS 상한. 0이면 제한 없음. detect_every와 OR 조건으로 동작.
      * 카메라 입력에서 추론이 느려도 디코딩 루프를 막지 않기 위해 사용. */
     double       detect_fps_limit;
+    double       hud_start_time;  /* 첫 프레임 시각 (HUD FPS 분모) */
 } AppContext;
 
 /* 명령줄에서 읽은 경로와 프로그램 내부 기본 설정을 한곳에 모읍니다. */
@@ -508,6 +509,10 @@ static int process_frame(RgbFrame *frame, void *opaque,
     double started;
     double now = platform_monotonic_seconds();
 
+    /* 첫 프레임에서 HUD FPS 계산 기준 시각을 기록합니다. */
+    if (app->hud_start_time == 0.0)
+        app->hud_start_time = now;
+
     /* detect_fps_limit: 시간 기반 추론 상한.
      * 카메라 모드에서 추론이 느려도 디코딩 루프를 블로킹하지 않기 위해,
      * 마지막 추론 이후 경과 시간이 1/fps 미만이면 이번 프레임은 건너뜁니다.
@@ -625,6 +630,15 @@ static int process_frame(RgbFrame *frame, void *opaque,
     started = platform_monotonic_seconds();
     draw_detections(frame->data, frame->width, frame->height, frame->stride,
                     &app->detections);
+    {
+        double elapsed = now - app->hud_start_time;
+        float det_fps = (elapsed > 0.5)
+            ? (float)app->inference_runs / (float)elapsed : 0.0f;
+        float cam_fps = (elapsed > 0.5 && app->frames > 0)
+            ? (float)app->frames / (float)elapsed : 0.0f;
+        draw_hud(frame->data, frame->width, frame->height, frame->stride,
+                 det_fps, cam_fps);
+    }
     app->drawing_seconds += platform_monotonic_seconds() - started;
     preview_frame(app, frame);
     /* 다음 프레임의 모션 게이트 비교를 위해 현재 gray를 복사합니다. */

@@ -47,13 +47,12 @@ static void fill_blended(uint8_t *rgb, int width, int height, int stride,
 
 /*
  * 외부 폰트 라이브러리를 쓰지 않기 위한 5x7 비트맵 글꼴입니다.
- * 각 숫자의 하위 5비트가 한 줄의 켜진 점을 나타냅니다. 예를 들어 30은
- * 이진수 11110이므로 해당 줄의 네 점을 켭니다.
- *
- * "PERSON 87%"에 필요한 문자만 넣어 실행 파일과 메모리 사용량을 줄였습니다.
+ * 각 행의 하위 5비트가 해당 줄에 켜진 점을 나타냅니다. 예를 들어 30은
+ * 이진수 11110이므로 해당 줄의 왼쪽 네 점을 켭니다.
  */
 static const uint8_t *glyph(char c) {
     static const uint8_t blank[7] = {0, 0, 0, 0, 0, 0, 0};
+    /* PERSON % 표기용 */
     static const uint8_t p[7] = {30, 17, 17, 30, 16, 16, 16};
     static const uint8_t e[7] = {31, 16, 16, 30, 16, 16, 31};
     static const uint8_t r[7] = {30, 17, 17, 30, 20, 18, 17};
@@ -61,6 +60,13 @@ static const uint8_t *glyph(char c) {
     static const uint8_t o[7] = {14, 17, 17, 17, 17, 17, 14};
     static const uint8_t n[7] = {17, 25, 21, 19, 17, 17, 17};
     static const uint8_t percent[7] = {25, 26, 4, 4, 11, 19, 0};
+    /* HUD FPS 표기용 (INF / CAM / :) */
+    static const uint8_t i_g[7] = {14, 4, 4, 4, 4, 4, 14};
+    static const uint8_t f_g[7] = {31, 16, 16, 30, 16, 16, 16};
+    static const uint8_t c_g[7] = {14, 17, 16, 16, 16, 17, 14};
+    static const uint8_t a_g[7] = {14, 17, 17, 31, 17, 17, 17};
+    static const uint8_t m_g[7] = {17, 27, 21, 17, 17, 17, 17};
+    static const uint8_t colon[7] = {0, 4, 4, 0, 4, 4, 0};
     static const uint8_t digits[10][7] = {
         {14, 17, 19, 21, 25, 17, 14},
         {4, 12, 4, 4, 4, 4, 14},
@@ -82,6 +88,12 @@ static const uint8_t *glyph(char c) {
         case 'O': return o;
         case 'N': return n;
         case '%': return percent;
+        case 'I': return i_g;
+        case 'F': return f_g;
+        case 'C': return c_g;
+        case 'A': return a_g;
+        case 'M': return m_g;
+        case ':': return colon;
         default: return blank;
     }
 }
@@ -252,4 +264,35 @@ void draw_detections(uint8_t *rgb, int width, int height, int stride,
         if (d->keypoint_count > 0)
             draw_skeleton(rgb, width, height, stride, d);
     }
+}
+
+/*
+ * 화면 왼쪽 상단에 추론 FPS와 카메라 입력 FPS를 두 줄로 표시합니다.
+ * 외부 라이브러리 없이 기존 glyph/draw_text/fill_blended 프리미티브만 씁니다.
+ */
+void draw_hud(uint8_t *rgb, int width, int height, int stride,
+              float detect_fps, float camera_fps) {
+    int min_dim = width < height ? width : height;
+    int scale   = min_dim >= 600 ? 2 : 1;
+    int char_w  = 6 * scale;   /* 글자 폭(5) + 간격(1) */
+    int row_h   = 7 * scale + 4;
+    int pad     = 6;
+    char buf[12];
+    int text_w;
+    int x = pad;
+    int y = pad;
+
+    if (!rgb || width <= 0 || height <= 0) return;
+
+    /* 추론 FPS */
+    snprintf(buf, sizeof(buf), "INF:%d", (int)(detect_fps + 0.5f));
+    text_w = (int)(sizeof("INF:000") - 1) * char_w + pad * 2;
+    fill_blended(rgb, width, height, stride, x, y, x + text_w, y + row_h);
+    draw_text(rgb, width, height, stride, x + pad / 2, y + 2, buf, scale);
+
+    /* 카메라 입력 FPS */
+    snprintf(buf, sizeof(buf), "CAM:%d", (int)(camera_fps + 0.5f));
+    y += row_h + 2;
+    fill_blended(rgb, width, height, stride, x, y, x + text_w, y + row_h);
+    draw_text(rgb, width, height, stride, x + pad / 2, y + 2, buf, scale);
 }
