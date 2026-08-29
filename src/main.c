@@ -1,6 +1,12 @@
+#include "camera_health.h"
+#include "config.h"
+#include "gray.h"
+#include "log.h"
 #include "media.h"
 #include "platform.h"
+#include "rules.h"
 #include "tracker.h"
+#include "tracks.h"
 #include "yolo11.h"
 
 #include <errno.h>
@@ -35,9 +41,24 @@ typedef struct {
     int64_t tracked_frames;
     int64_t reused_frames;
     int64_t adaptive_runs;
+    int64_t gated_frames;
+    int64_t event_count;
     double tracking_seconds;
     double drawing_seconds;
     DetectorRunStats detector_stats;
+    /* 이상 탐지 모듈 */
+    GrayBuf      gray;           /* 현재 프레임 그레이스케일 (지연 초기화) */
+    uint8_t     *gray_prev;      /* AppContext 소유, 이전 프레임 gray (모션 게이트용) */
+    int          gray_ready;     /* gray_prev 가 유효한지 여부 */
+    CameraHealth cam_health;     /* 카메라 장애 감지 */
+    int          cam_health_init_done;
+    TrackList    tracks;
+    RulesEngine  rules;
+    EventLog     event_log;
+    int          motion_gate_enabled;
+    double       motion_ratio_threshold;  /* 기본 0.004 */
+    double       idle_refresh_seconds;    /* 기본 10.0 */
+    double       last_detection_time;
 } AppContext;
 
 /* 명령줄에서 읽은 경로와 프로그램 내부 기본 설정을 한곳에 모읍니다. */
@@ -50,6 +71,8 @@ typedef struct {
     const char *detections_path;
     const char *keypoints_path;
     const char *metrics_path;
+    const char *config_path;
+    const char *event_log_path;
     DetectorOptions detector;
     MediaOptions media;
     int detect_every;
@@ -57,6 +80,7 @@ typedef struct {
     int preview;
     int preview_fps;
     int camera;
+    int motion_gate;   /* 1 = 활성 (기본), 0 = 비활성 */
 } Arguments;
 
 /* SIGINT/SIGTERM 처리기는 비동기 신호에 안전한 sig_atomic_t 값만 변경합니다. */
@@ -135,6 +159,9 @@ static void usage(const char *program) {
         "  --preview               show annotated frames in an ffplay window\n"
         "  --detections PATH       write per-frame detection CSV\n"
         "  --metrics PATH          write performance metrics JSON\n"
+        "  --config PATH           store-specific config file (key=value)\n"
+        "  --event-log PATH        structured anomaly event log (default: stderr)\n"
+        "  --motion-gate 0|1       skip inference on static scenes (default: 1)\n"
         "\n",
         program, program);
 }
@@ -218,6 +245,7 @@ static int parse_arguments(int argc, char **argv, Arguments *args) {
     args->detect_every = 1;
     args->tracking = 0;
     args->preview_fps = 30;
+    args->motion_gate = 1;
 
     /* argv[0]은 실행 파일 이름이므로 실제 옵션은 argv[1]부터 읽습니다. */
     for (int i = 1; i < argc; ++i) {
@@ -329,6 +357,16 @@ static int parse_arguments(int argc, char **argv, Arguments *args) {
         } else if (strcmp(argv[i], "--metrics") == 0) {
             if (require_value(argc, argv, &i, &args->metrics_path) != 0)
                 return -1;
+        } else if (strcmp(argv[i], "--config") == 0) {
+            if (require_value(argc, argv, &i, &args->config_path) != 0)
+                return -1;
+        } else if (strcmp(argv[i], "--event-log") == 0) {
+            if (require_value(argc, argv, &i, &args->event_log_path) != 0)
+                return -1;
+        } else if (strcmp(argv[i], "--motion-gate") == 0) {
+            if (require_value(argc, argv, &i, &value) != 0 ||
+                parse_long(value, 0, 1, &parsed) != 0) return -1;
+            args->motion_gate = (int)parsed;
         } else {
             fprintf(stderr, "unknown option: %s\n", argv[i]);
             return -1;
@@ -450,6 +488,61 @@ static int process_frame(RgbFrame *frame, void *opaque,
     int requested = 0;
     const char *kind = "reused";
     double started;
+    double now = platform_monotonic_seconds();
+
+    /* 첫 프레임에서 GrayBuf와 CameraHealth를 지연 초기화합니다.
+     * frame->width/height는 콜백이 와야 알 수 있습니다. */
+    if (app->gray.data == NULL) {
+        if (gray_buf_init(&app->gray, frame->width, frame->height, 4) != 0) {
+            snprintf(error, error_size, "gray_buf_init: out of memory");
+            return -1;
+        }
+        app->gray_prev = (uint8_t *)calloc(
+            (size_t)app->gray.width * app->gray.height, 1);
+        if (!app->gray_prev) {
+            snprintf(error, error_size, "gray_prev: out of memory");
+            return -1;
+        }
+        if (camera_health_init(&app->cam_health, app->gray.width,
+                               app->gray.height, NULL,
+                               error, error_size) != 0)
+            return -1;
+        app->cam_health_init_done = 1;
+    }
+    gray_buf_update(&app->gray, frame->data, frame->width, frame->height,
+                    frame->stride);
+
+    /* 카메라 장애 상태가 바뀔 때마다 이벤트를 남깁니다. */
+    {
+        CamState cam_state;
+        if (camera_health_update(&app->cam_health, &app->gray, &cam_state) > 0) {
+            char cam_msg[64];
+            snprintf(cam_msg, sizeof(cam_msg), "state=%s",
+                     cam_state_name(cam_state));
+            event_log_write(&app->event_log,
+                            cam_state != CAM_OK ? LOG_WARN : LOG_INFO,
+                            "camera", cam_msg);
+        }
+    }
+
+    /* 모션 게이트: 픽셀 변화 비율이 임계값 미만이고 마지막 추론 이후
+     * idle_refresh_seconds 안이면 YOLO 주기 추론을 건너뜁니다.
+     * SAD 추적기가 실패하면 adaptive run이 이를 우선 적용합니다. */
+    if (app->motion_gate_enabled && run_detector && app->gray_ready) {
+        size_t k, changed = 0;
+        size_t total = (size_t)app->gray.width * app->gray.height;
+        double ratio;
+        for (k = 0; k < total; ++k) {
+            int diff = (int)app->gray.data[k] - (int)app->gray_prev[k];
+            if (diff < -8 || diff > 8) changed++;
+        }
+        ratio = total > 0 ? (double)changed / (double)total : 1.0;
+        if (ratio < app->motion_ratio_threshold &&
+            (now - app->last_detection_time) < app->idle_refresh_seconds) {
+            run_detector = 0;
+            app->gated_frames++;
+        }
+    }
 
     if (!run_detector && app->tracking) {
         started = platform_monotonic_seconds();
@@ -487,6 +580,9 @@ static int process_frame(RgbFrame *frame, void *opaque,
                 return -1;
             app->tracking_seconds += platform_monotonic_seconds() - started;
         }
+        app->last_detection_time = now;
+        tracks_update(&app->tracks, &app->detections, now);
+        rules_evaluate(&app->rules, &app->tracks, now, &app->event_log);
     } else if (!tracked) {
         app->reused_frames++;
     }
@@ -500,6 +596,12 @@ static int process_frame(RgbFrame *frame, void *opaque,
                     &app->detections);
     app->drawing_seconds += platform_monotonic_seconds() - started;
     preview_frame(app, frame);
+    /* 다음 프레임의 모션 게이트 비교를 위해 현재 gray를 복사합니다. */
+    if (app->gray.data && app->gray_prev) {
+        memcpy(app->gray_prev, app->gray.data,
+               (size_t)app->gray.width * app->gray.height);
+        app->gray_ready = 1;
+    }
     app->frames++;
     return 0;
 }
@@ -526,6 +628,8 @@ static int write_metrics(const char *path, const Arguments *args,
             "  \"tracked_frames\": %lld,\n"
             "  \"reused_frames\": %lld,\n"
             "  \"adaptive_runs\": %lld,\n"
+            "  \"gated_frames\": %lld,\n"
+            "  \"motion_gate\": %s,\n"
             "  \"frame_rate\": %.6f,\n"
             "  \"video_seconds\": %.6f,\n"
             "  \"wall_seconds\": %.6f,\n"
@@ -555,7 +659,10 @@ static int write_metrics(const char *path, const Arguments *args,
             "}\n",
             (long long)app->frames, (long long)app->inference_runs,
             (long long)app->tracked_frames, (long long)app->reused_frames,
-            (long long)app->adaptive_runs, media->frame_rate, video_seconds,
+            (long long)app->adaptive_runs,
+            (long long)app->gated_frames,
+            app->motion_gate_enabled ? "true" : "false",
+            media->frame_rate, video_seconds,
             wall_seconds, cpu_seconds,
             app->frames > 0 ? cpu_seconds * 1000.0 / (double)app->frames : 0.0,
             wall_seconds > 0.0 ? cpu_seconds * 100.0 / wall_seconds : 0.0,
@@ -592,6 +699,7 @@ int main(int argc, char **argv) {
     MediaStats media_stats;
     int parse_result;
     int result = EXIT_FAILURE;
+    FILE *event_log_file = NULL;  /* NULL=미열림, stderr=기본값, 파일=직접 열었음 */
 
     /* 도움말은 정상 종료, 잘못된 옵션은 실패 종료로 구분합니다. */
     parse_result = parse_arguments(argc, argv, &args);
@@ -649,6 +757,49 @@ int main(int argc, char **argv) {
         }
         fputs("frame,det_index,kp_index,x,y,score\n", app.keypoint_log);
     }
+    /* 매장별 설정 파일 읽기 (path==NULL이면 빈 Config, 오류는 무시하고 기본값 사용) */
+    {
+        Config cfg;
+        RulesConfig rules_cfg;
+        memset(&rules_cfg, 0, sizeof(rules_cfg));
+        if (config_load(&cfg, args.config_path, error, sizeof(error)) != 0 &&
+            args.config_path) {
+            fprintf(stderr, "warning: config load failed (%s), using defaults\n",
+                    error);
+        }
+        rules_cfg.dwell_limit_seconds =
+            (double)config_float(&cfg, "dwell_limit_seconds",  3600.0f, 60.0f, 86400.0f);
+        rules_cfg.unordered_grace_seconds =
+            (double)config_float(&cfg, "unordered_grace_seconds", 300.0f, 0.0f, 3600.0f);
+        rules_cfg.fall_hold_seconds =
+            (double)config_float(&cfg, "fall_hold_seconds", 5.0f, 1.0f, 60.0f);
+        app.motion_gate_enabled   = args.motion_gate;
+        app.motion_ratio_threshold =
+            (double)config_float(&cfg, "motion_ratio_threshold", 0.004f, 0.0001f, 1.0f);
+        app.idle_refresh_seconds  =
+            (double)config_float(&cfg, "idle_refresh_seconds", 10.0f, 1.0f, 3600.0f);
+        config_destroy(&cfg);
+        if (tracks_init(&app.tracks, 64, 0.4f, 5,
+                        error, sizeof(error)) != 0) {
+            fprintf(stderr, "failed to init track list: %s\n", error);
+            goto done;
+        }
+        if (rules_init(&app.rules, 64, &rules_cfg, error, sizeof(error)) != 0) {
+            fprintf(stderr, "failed to init rules engine: %s\n", error);
+            goto done;
+        }
+    }
+    /* 이벤트 로그 파일 오픈 (미지정이면 stderr로 출력) */
+    event_log_file = args.event_log_path
+                         ? fopen(args.event_log_path, "a")
+                         : stderr;
+    if (args.event_log_path && !event_log_file) {
+        fprintf(stderr, "failed to open event log: %s\n",
+                args.event_log_path);
+        goto done;
+    }
+    event_log_init(&app.event_log, event_log_file, LOG_INFO);
+
     fprintf(stderr,
             "model input: %dx%d, provider: %s, threads: %d, detect every: %d, tracker: %s, "
             "candidate cap: %zu%s\n",
@@ -711,6 +862,12 @@ done:
     if (app.detection_log) fclose(app.detection_log);
     if (app.keypoint_log)  fclose(app.keypoint_log);
     if (app.preview_pipe) pclose(app.preview_pipe);
+    if (event_log_file && event_log_file != stderr) fclose(event_log_file);
+    rules_destroy(&app.rules);
+    tracks_destroy(&app.tracks);
+    camera_health_destroy(&app.cam_health);
+    free(app.gray_prev);
+    gray_buf_destroy(&app.gray);
     tracker_destroy(app.tracker);
     detector_destroy(app.detector);
     detection_list_destroy(&app.detections);
