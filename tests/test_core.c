@@ -2,6 +2,12 @@
 #include "yolo11.h"
 #include "tracker.h"
 #include "platform.h"
+#include "camera_health.h"
+#include "config.h"
+#include "gray.h"
+#include "log.h"
+#include "rules.h"
+#include "tracks.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -549,6 +555,350 @@ static void test_tracker_translates_keypoints(void) {
     tracker_destroy(tracker);
 }
 
+/* ── Config 파싱 테스트 ──────────────────────────────────────────────────── */
+
+static void test_config_parse_basic(void) {
+    Config cfg;
+    const char *v = NULL;
+    char error[128] = {0};
+    const char *tmp = "test_cfg_basic.ini";
+    FILE *f = fopen(tmp, "w");
+    ASSERT_TRUE(f != NULL);
+    fputs("dwell_limit_seconds = 7200\n"
+          "# comment line is ignored\n"
+          "motion_ratio_threshold = 0.01\n", f);
+    fclose(f);
+    ASSERT_INT_EQ(config_load(&cfg, tmp, error, sizeof(error)), 0);
+    EXPECT_INT_EQ((int)config_long(&cfg, "dwell_limit_seconds", 0, 0, 86400), 7200);
+    EXPECT_FLOAT_NEAR(config_float(&cfg, "motion_ratio_threshold", 0.0f, 0.0f, 1.0f), 0.01f, 0.0001f);
+    /* 없는 키는 기본값 반환 */
+    EXPECT_INT_EQ((int)config_long(&cfg, "missing", 999, 0, 86400), 999);
+    EXPECT_INT_EQ(config_get(&cfg, "dwell_limit_seconds", &v), 0);
+    EXPECT_TRUE(v != NULL);
+    EXPECT_INT_EQ(config_get(&cfg, "missing", &v), -1);
+    config_destroy(&cfg);
+    remove(tmp);
+}
+
+static void test_config_defaults(void) {
+    Config cfg;
+    char error[128] = {0};
+    /* path==NULL → 빈 Config, 모든 키가 기본값을 반환해야 합니다. */
+    ASSERT_INT_EQ(config_load(&cfg, NULL, error, sizeof(error)), 0);
+    EXPECT_INT_EQ((int)config_long(&cfg, "any_key", 42, 0, 9999), 42);
+    EXPECT_FLOAT_NEAR(config_float(&cfg, "any_key", 3.14f, 0.0f, 100.0f), 3.14f, 0.001f);
+    config_destroy(&cfg);
+}
+
+static void test_config_invalid_value(void) {
+    Config cfg;
+    char error[128] = {0};
+    const char *tmp = "test_cfg_invalid.ini";
+    FILE *f = fopen(tmp, "w");
+    ASSERT_TRUE(f != NULL);
+    fputs("bad_int = not_a_number\n"
+          "out_of_range = 99999\n", f);
+    fclose(f);
+    ASSERT_INT_EQ(config_load(&cfg, tmp, error, sizeof(error)), 0);
+    /* 숫자가 아닌 값 → 기본값 반환 */
+    EXPECT_INT_EQ((int)config_long(&cfg, "bad_int", 5, 0, 100), 5);
+    /* 범위 초과 → 기본값 반환 */
+    EXPECT_INT_EQ((int)config_long(&cfg, "out_of_range", 7, 0, 100), 7);
+    config_destroy(&cfg);
+    remove(tmp);
+}
+
+/* ── TrackList 테스트 ────────────────────────────────────────────────────── */
+
+static void test_tracks_id_stability(void) {
+    TrackList tl;
+    DetectionList det;
+    char error[128] = {0};
+    int first_id;
+    ASSERT_INT_EQ(tracks_init(&tl, 16, 0.3f, 5, error, sizeof(error)), 0);
+    ASSERT_INT_EQ(detection_list_init(&det, 4), 0);
+
+    det.count = 1;
+    det.items[0] = (Detection){10, 10, 50, 50, 0.9f};
+    tracks_update(&tl, &det, 100.0);
+    ASSERT_INT_EQ((int)tl.count, 1);
+    EXPECT_TRUE(tl.items[0].active);
+    first_id = tl.items[0].id;
+
+    /* 거의 같은 위치 → 동일 트랙 ID */
+    det.items[0] = (Detection){11, 11, 51, 51, 0.88f};
+    tracks_update(&tl, &det, 101.0);
+    EXPECT_INT_EQ((int)tl.count, 1);
+    EXPECT_INT_EQ(tl.items[0].id, first_id);
+    EXPECT_TRUE(tl.items[0].dwell_seconds > 0.0);
+
+    detection_list_destroy(&det);
+    tracks_destroy(&tl);
+}
+
+static void test_tracks_eviction(void) {
+    /* max_misses=2이면 빈 detection 3회 후 inactive가 되어야 합니다. */
+    TrackList tl;
+    DetectionList det;
+    char error[128] = {0};
+    ASSERT_INT_EQ(tracks_init(&tl, 16, 0.3f, 2, error, sizeof(error)), 0);
+    ASSERT_INT_EQ(detection_list_init(&det, 4), 0);
+
+    det.count = 1;
+    det.items[0] = (Detection){10, 10, 50, 50, 0.9f};
+    tracks_update(&tl, &det, 100.0);
+    EXPECT_TRUE(tl.items[0].active);
+
+    det.count = 0;
+    tracks_update(&tl, &det, 101.0);  /* miss=1 */
+    EXPECT_TRUE(tl.items[0].active);
+    tracks_update(&tl, &det, 102.0);  /* miss=2, 아직 살아있음 */
+    EXPECT_TRUE(tl.items[0].active);
+    tracks_update(&tl, &det, 103.0);  /* miss=3 > max_misses=2 → inactive */
+    EXPECT_TRUE(!tl.items[0].active);
+
+    detection_list_destroy(&det);
+    tracks_destroy(&tl);
+}
+
+/* ── RulesEngine 테스트 ──────────────────────────────────────────────────── */
+
+static void test_rules_overstay_latches_once(void) {
+    TrackList tl;
+    RulesEngine re;
+    EventLog elog;
+    RulesConfig rcfg = {60.0, 300.0, 5.0, 0, 0, 0, 0, 0};
+    char error[128] = {0};
+    FILE *f = tmpfile();
+    ASSERT_TRUE(f != NULL);
+    event_log_init(&elog, f, LOG_INFO);
+    ASSERT_INT_EQ(tracks_init(&tl, 16, 0.3f, 5, error, sizeof(error)), 0);
+    ASSERT_INT_EQ(rules_init(&re, 16, &rcfg, error, sizeof(error)), 0);
+
+    tl.count = 1;
+    tl.items[0].id = 1;
+    tl.items[0].active = 1;
+    tl.items[0].dwell_seconds = 120.0;  /* limit=60 초과 */
+    tl.items[0].order = TRACK_UNORDERED;
+
+    rules_evaluate(&re, &tl, 100.0, &elog);   /* latch 설정 */
+    rules_evaluate(&re, &tl, 101.0, &elog);   /* latch 유지, 재발화 없음 */
+
+    /* dwell이 한계 아래로 내려가면 latch 해제 */
+    tl.items[0].dwell_seconds = 30.0;
+    rules_evaluate(&re, &tl, 102.0, &elog);
+
+    /* 다시 초과하면 재발화 가능 */
+    tl.items[0].dwell_seconds = 120.0;
+    rules_evaluate(&re, &tl, 103.0, &elog);
+
+    rules_destroy(&re);
+    tracks_destroy(&tl);
+    fclose(f);
+}
+
+static void test_rules_fall_geometry(void) {
+    /* 수평 bbox(keypoint 없음) + fall_hold 충족 → person_fallen 이벤트 */
+    TrackList tl;
+    RulesEngine re;
+    EventLog elog;
+    RulesConfig rcfg = {3600.0, 300.0, 0.1, 0, 0, 0, 0, 0}; /* fall_hold=0.1초 */
+    char error[128] = {0};
+    FILE *f = tmpfile();
+    ASSERT_TRUE(f != NULL);
+    event_log_init(&elog, f, LOG_INFO);
+    ASSERT_INT_EQ(tracks_init(&tl, 16, 0.3f, 5, error, sizeof(error)), 0);
+    ASSERT_INT_EQ(rules_init(&re, 16, &rcfg, error, sizeof(error)), 0);
+
+    tl.count = 1;
+    tl.items[0].id = 1;
+    tl.items[0].active = 1;
+    tl.items[0].order = TRACK_ORDERED;
+    /* 수평 bbox: w=200, h=60, 200 > 60*1.2=72 ✓ */
+    tl.items[0].box = (Detection){0, 70, 200, 130, 0.9f};
+    tl.items[0].box.keypoint_count = 0;  /* bbox 비율만으로 판정 */
+
+    /* 첫 평가: fall_start 기록 */
+    rules_evaluate(&re, &tl, 100.0, &elog);
+    /* 0.2초 뒤: fall_hold(0.1s) 충족 → person_fallen */
+    rules_evaluate(&re, &tl, 100.2, &elog);
+
+    rules_destroy(&re);
+    tracks_destroy(&tl);
+    fclose(f);
+}
+
+static void test_rules_fall_requires_hold(void) {
+    /* fall_hold=5초이므로 3초 후 자세가 풀리면 발화하면 안 됩니다. */
+    TrackList tl;
+    RulesEngine re;
+    EventLog elog;
+    RulesConfig rcfg = {3600.0, 300.0, 5.0, 0, 0, 0, 0, 0};
+    char error[128] = {0};
+    FILE *f = tmpfile();
+    ASSERT_TRUE(f != NULL);
+    event_log_init(&elog, f, LOG_INFO);
+    ASSERT_INT_EQ(tracks_init(&tl, 16, 0.3f, 5, error, sizeof(error)), 0);
+    ASSERT_INT_EQ(rules_init(&re, 16, &rcfg, error, sizeof(error)), 0);
+
+    tl.count = 1;
+    tl.items[0].id = 1;
+    tl.items[0].active = 1;
+    tl.items[0].box = (Detection){0, 70, 200, 130, 0.9f};  /* 수평 */
+    tl.items[0].box.keypoint_count = 0;
+
+    rules_evaluate(&re, &tl, 100.0, &elog);  /* fall_start = 100 */
+    rules_evaluate(&re, &tl, 103.0, &elog);  /* 3s < 5s, 미발화 */
+
+    /* 자세가 수직으로 바뀌면 fall_start 리셋 */
+    tl.items[0].box = (Detection){0, 50, 80, 200, 0.9f};  /* 수직 */
+    rules_evaluate(&re, &tl, 103.5, &elog);
+
+    /* 다시 수평: 새 타이머 시작 */
+    tl.items[0].box = (Detection){0, 70, 200, 130, 0.9f};
+    rules_evaluate(&re, &tl, 104.0, &elog);  /* fall_start = 104 */
+    rules_evaluate(&re, &tl, 107.0, &elog);  /* 3s < 5s, 여전히 미발화 */
+
+    rules_destroy(&re);
+    tracks_destroy(&tl);
+    fclose(f);
+}
+
+static void test_rules_unordered_seated(void) {
+    TrackList tl;
+    RulesEngine re;
+    EventLog elog;
+    RulesConfig rcfg = {3600.0, 30.0, 5.0, 0, 0, 0, 0, 0}; /* grace=30초 */
+    char error[128] = {0};
+    FILE *f = tmpfile();
+    ASSERT_TRUE(f != NULL);
+    event_log_init(&elog, f, LOG_INFO);
+    ASSERT_INT_EQ(tracks_init(&tl, 16, 0.3f, 5, error, sizeof(error)), 0);
+    ASSERT_INT_EQ(rules_init(&re, 16, &rcfg, error, sizeof(error)), 0);
+
+    tl.count = 1;
+    tl.items[0].id = 1;
+    tl.items[0].active = 1;
+    tl.items[0].dwell_seconds = 31.0;  /* grace 초과 */
+    tl.items[0].order = TRACK_UNORDERED;
+    tl.items[0].box = (Detection){0, 0, 30, 100, 0.9f};  /* 수직 */
+
+    rules_evaluate(&re, &tl, 100.0, &elog);  /* unordered_seated 발화 */
+
+    /* ORDERED 전환 후 latch 해제 */
+    tl.items[0].order = TRACK_ORDERED;
+    rules_evaluate(&re, &tl, 101.0, &elog);  /* latch 해제 */
+
+    rules_destroy(&re);
+    tracks_destroy(&tl);
+    fclose(f);
+}
+
+/* ── CameraHealth 테스트 ─────────────────────────────────────────────────── */
+
+static void test_camera_health_whiteout(void) {
+    /* 흰 화면 8프레임 연속 → CAM_WHITEOUT (기본 anomaly_hold=5) */
+    enum { SRC_W = 8, SRC_H = 8, DS = 4 };
+    CameraHealth health;
+    GrayBuf g;
+    uint8_t rgb[SRC_W * SRC_H * 3];
+    CamState state = CAM_OK;
+    char error[128] = {0};
+    int i;
+    ASSERT_INT_EQ(gray_buf_init(&g, SRC_W, SRC_H, DS), 0);
+    ASSERT_INT_EQ(camera_health_init(&health, g.width, g.height, NULL,
+                                     error, sizeof(error)), 0);
+    memset(rgb, 255, sizeof(rgb));  /* 완전 흰색 */
+    for (i = 0; i < 8; ++i) {
+        gray_buf_update(&g, rgb, SRC_W, SRC_H, SRC_W * 3);
+        camera_health_update(&health, &g, &state);
+    }
+    EXPECT_INT_EQ((int)state, (int)CAM_WHITEOUT);
+    gray_buf_destroy(&g);
+    camera_health_destroy(&health);
+}
+
+static void test_camera_health_frozen(void) {
+    /* 정적 장면(frozen_threshold=3, anomaly_hold=2) → CAM_FROZEN */
+    enum { SRC_W = 8, SRC_H = 8, DS = 4 };
+    CameraHealth health;
+    GrayBuf g;
+    uint8_t rgb[SRC_W * SRC_H * 3];
+    CamState state = CAM_OK;
+    /* 낮은 임계값으로 빠르게 frozen 감지 */
+    CameraHealthConfig cfg = {240, 12, 3, 2, 8};
+    char error[128] = {0};
+    int i;
+    ASSERT_INT_EQ(gray_buf_init(&g, SRC_W, SRC_H, DS), 0);
+    ASSERT_INT_EQ(camera_health_init(&health, g.width, g.height, &cfg,
+                                     error, sizeof(error)), 0);
+    memset(rgb, 128, sizeof(rgb));  /* 중간 밝기 정적 프레임 */
+    for (i = 0; i < 10; ++i) {
+        gray_buf_update(&g, rgb, SRC_W, SRC_H, SRC_W * 3);
+        camera_health_update(&health, &g, &state);
+    }
+    EXPECT_INT_EQ((int)state, (int)CAM_FROZEN);
+    gray_buf_destroy(&g);
+    camera_health_destroy(&health);
+}
+
+/* ── 모션 게이트 / GrayBuf 테스트 ───────────────────────────────────────── */
+
+static void test_motion_gate_static_scene(void) {
+    /* 동일 장면 연속 입력 시 픽셀 변화 비율이 0이어야 합니다. */
+    enum { SRC_W = 16, SRC_H = 16, DS = 4 };
+    GrayBuf g;
+    uint8_t prev[4 * 4];  /* (16/4)*(16/4) */
+    uint8_t rgb[SRC_W * SRC_H * 3];
+    size_t k, changed = 0;
+    size_t total;
+    double ratio;
+    ASSERT_INT_EQ(gray_buf_init(&g, SRC_W, SRC_H, DS), 0);
+    memset(rgb, 100, sizeof(rgb));
+    gray_buf_update(&g, rgb, SRC_W, SRC_H, SRC_W * 3);
+    memcpy(prev, g.data, (size_t)g.width * g.height);
+    /* 동일 프레임 재입력 */
+    gray_buf_update(&g, rgb, SRC_W, SRC_H, SRC_W * 3);
+    total = (size_t)g.width * g.height;
+    for (k = 0; k < total; ++k) {
+        int d = (int)g.data[k] - (int)prev[k];
+        if (d < -8 || d > 8) changed++;
+    }
+    ratio = (double)changed / (double)total;
+    EXPECT_TRUE(ratio < 0.004);  /* 완전 정적 → ratio=0.0 */
+    gray_buf_destroy(&g);
+}
+
+static void test_gray_matches_reference(void) {
+    /* BT.601 근사: (77R + 150G + 29B + 128) >> 8 결과를 검증합니다. */
+    enum { SRC_W = 4, SRC_H = 4, DS = 1 };
+    GrayBuf g;
+    uint8_t rgb[SRC_W * SRC_H * 3];
+    int i;
+    ASSERT_INT_EQ(gray_buf_init(&g, SRC_W, SRC_H, DS), 0);
+
+    /* 순수 빨강(255,0,0): (77*255+128)>>8 = 19763>>8 = 77 */
+    for (i = 0; i < SRC_W * SRC_H; ++i) {
+        rgb[i * 3 + 0] = 255; rgb[i * 3 + 1] = 0; rgb[i * 3 + 2] = 0;
+    }
+    gray_buf_update(&g, rgb, SRC_W, SRC_H, SRC_W * 3);
+    EXPECT_INT_EQ((int)g.data[0], 77);
+
+    /* 순수 초록(0,255,0): (150*255+128)>>8 = 38378>>8 = 149 */
+    for (i = 0; i < SRC_W * SRC_H; ++i) {
+        rgb[i * 3 + 0] = 0; rgb[i * 3 + 1] = 255; rgb[i * 3 + 2] = 0;
+    }
+    gray_buf_update(&g, rgb, SRC_W, SRC_H, SRC_W * 3);
+    EXPECT_INT_EQ((int)g.data[0], 149);
+
+    /* 순수 흰색(255,255,255): (256*255+128)>>8 = 65408>>8 = 255 */
+    memset(rgb, 255, sizeof(rgb));
+    gray_buf_update(&g, rgb, SRC_W, SRC_H, SRC_W * 3);
+    EXPECT_INT_EQ((int)g.data[0], 255);
+
+    gray_buf_destroy(&g);
+}
+
 int main(void) {
     TEST_SUITE_BEGIN(core_unit_tests);
     RUN_TEST(test_letterbox);
@@ -578,5 +928,18 @@ int main(void) {
     RUN_TEST(test_decode_detection_no_keypoints);
     RUN_TEST(test_map_point_no_clamp);
     RUN_TEST(test_tracker_translates_keypoints);
+    RUN_TEST(test_config_parse_basic);
+    RUN_TEST(test_config_defaults);
+    RUN_TEST(test_config_invalid_value);
+    RUN_TEST(test_tracks_id_stability);
+    RUN_TEST(test_tracks_eviction);
+    RUN_TEST(test_rules_overstay_latches_once);
+    RUN_TEST(test_rules_fall_geometry);
+    RUN_TEST(test_rules_fall_requires_hold);
+    RUN_TEST(test_rules_unordered_seated);
+    RUN_TEST(test_camera_health_whiteout);
+    RUN_TEST(test_camera_health_frozen);
+    RUN_TEST(test_motion_gate_static_scene);
+    RUN_TEST(test_gray_matches_reference);
     TEST_SUITE_END();
 }
