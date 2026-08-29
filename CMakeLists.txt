@@ -70,8 +70,8 @@ if(ORT_INCLUDE_DIR AND ORT_LIBRARY AND FFMPEG_INCLUDE_DIR AND FFMPEG_FOUND)
 
     if(MSVC)
         target_compile_definitions(yolo11-person PRIVATE
-            ORT_DLL_IMPORT WIN32_LEAN_AND_MEAN _WIN32_WINNT=0x0601)
-        target_compile_options(yolo11-person PRIVATE /O2 /W4 /arch:AVX2)
+            ORT_DLL_IMPORT WIN32_LEAN_AND_MEAN _WIN32_WINNT=0x0601 _CRT_SECURE_NO_WARNINGS)
+        target_compile_options(yolo11-person PRIVATE /O2 /W4 /arch:AVX2 /utf-8)
         foreach(runtime_dll IN LISTS runtime_dlls)
             add_custom_command(TARGET yolo11-person POST_BUILD
                 COMMAND "${CMAKE_COMMAND}" -E copy_if_different
@@ -106,9 +106,9 @@ add_executable(test_core
     src/rules.c)
 target_include_directories(test_core PRIVATE include tests)
 if(MSVC)
-    target_compile_options(test_core PRIVATE /O1 /W4)
+    target_compile_options(test_core PRIVATE /O1 /W4 /utf-8)
     target_compile_definitions(test_core PRIVATE
-        WIN32_LEAN_AND_MEAN _WIN32_WINNT=0x0601)
+        WIN32_LEAN_AND_MEAN _WIN32_WINNT=0x0601 _CRT_SECURE_NO_WARNINGS)
 else()
     target_compile_options(test_core PRIVATE
         -O1 -g -Wall -Wextra -Wpedantic -Wconversion -Wshadow)
@@ -130,9 +130,9 @@ if(ORT_INCLUDE_DIR AND ORT_LIBRARY)
         include "${ORT_INCLUDE_DIR}" tests)
     target_link_libraries(test_detector PRIVATE "${ORT_LIBRARY}")
     if(MSVC)
-        target_compile_options(test_detector PRIVATE /O1 /W4)
+        target_compile_options(test_detector PRIVATE /O1 /W4 /utf-8)
         target_compile_definitions(test_detector PRIVATE
-            ORT_DLL_IMPORT WIN32_LEAN_AND_MEAN _WIN32_WINNT=0x0601)
+            ORT_DLL_IMPORT WIN32_LEAN_AND_MEAN _WIN32_WINNT=0x0601 _CRT_SECURE_NO_WARNINGS)
         foreach(runtime_dll IN LISTS runtime_dlls)
             add_custom_command(TARGET test_detector POST_BUILD
                 COMMAND "${CMAKE_COMMAND}" -E copy_if_different
