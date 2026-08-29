@@ -385,6 +385,170 @@ static void test_platform_cpu_count(void) {
     EXPECT_TRUE(platform_cpu_count() >= 1u);
 }
 
+/* ── pose 모델 지원 테스트 ─────────────────────────────────────────────── */
+
+/* [1,56,N] 채널 우선 형식(YOLO11n-pose 기본 출력).
+ * N > C=56 이어야 shape dispatch 가 channel_first 로 분기됩니다. */
+static void test_decode_pose_channel_first(void) {
+    enum { N = 100, C = 56 };
+    float output[C * N];
+    int64_t shape[3] = {1, C, N};
+    Letterbox t = {416, 416, 416, 416, 1.0f, 0, 0};
+    DetectionList list;
+    memset(output, 0, sizeof(output));
+    ASSERT_INT_EQ(detection_list_init(&list, 32), 0);
+
+    /* 후보 0번: cx=200, cy=300, w=100, h=150, score=0.9 */
+    output[0 * N + 0] = 200.0f;
+    output[1 * N + 0] = 300.0f;
+    output[2 * N + 0] = 100.0f;
+    output[3 * N + 0] = 150.0f;
+    output[4 * N + 0] = 0.9f;
+    /* keypoint 0 (코): x=200, y=260, score=0.8 */
+    output[(5 + 0) * N + 0] = 200.0f;
+    output[(5 + 1) * N + 0] = 260.0f;
+    output[(5 + 2) * N + 0] = 0.8f;
+
+    ASSERT_INT_EQ(yolo11_decode(output, shape, 3, &t, 0.5f, 0.45f, &list, 32), 0);
+    ASSERT_INT_EQ((int)list.count, 1);
+    EXPECT_INT_EQ(list.items[0].keypoint_count, YOLO11_NUM_KEYPOINTS);
+    EXPECT_FLOAT_NEAR(list.items[0].kp[0].x, 200.0f, 1.0f);
+    EXPECT_FLOAT_NEAR(list.items[0].kp[0].y, 260.0f, 1.0f);
+    EXPECT_FLOAT_NEAR(list.items[0].kp[0].score, 0.8f, 0.01f);
+    detection_list_destroy(&list);
+}
+
+/* [1,N,56] 후보 우선 형식. N > C=56 이어야 channel_last 로 분기됩니다. */
+static void test_decode_pose_channel_last(void) {
+    enum { N = 100, C = 56 };
+    float output[N * C];
+    int64_t shape[3] = {1, N, C};
+    Letterbox t = {416, 416, 416, 416, 1.0f, 0, 0};
+    DetectionList list;
+    memset(output, 0, sizeof(output));
+    ASSERT_INT_EQ(detection_list_init(&list, 32), 0);
+
+    /* 후보 0번 */
+    output[0 * C + 0] = 200.0f; /* cx */
+    output[0 * C + 1] = 300.0f; /* cy */
+    output[0 * C + 2] = 100.0f; /* w  */
+    output[0 * C + 3] = 150.0f; /* h  */
+    output[0 * C + 4] = 0.9f;   /* score */
+    output[0 * C + 5] = 195.0f; /* kp0.x */
+    output[0 * C + 6] = 258.0f; /* kp0.y */
+    output[0 * C + 7] = 0.75f;  /* kp0.score */
+
+    ASSERT_INT_EQ(yolo11_decode(output, shape, 3, &t, 0.5f, 0.45f, &list, 32), 0);
+    ASSERT_INT_EQ((int)list.count, 1);
+    EXPECT_INT_EQ(list.items[0].keypoint_count, YOLO11_NUM_KEYPOINTS);
+    EXPECT_FLOAT_NEAR(list.items[0].kp[0].x, 195.0f, 1.0f);
+    detection_list_destroy(&list);
+}
+
+/* detection 전용 모델([1,84,N])은 keypoint_count == 0 이어야 합니다.
+ * N > C=84 이어야 channel_first 로 분기됩니다. */
+static void test_decode_detection_no_keypoints(void) {
+    enum { N = 200, C = 84 };
+    float output[C * N];
+    int64_t shape[3] = {1, C, N};
+    Letterbox t = {416, 416, 416, 416, 1.0f, 0, 0};
+    DetectionList list;
+    memset(output, 0, sizeof(output));
+    ASSERT_INT_EQ(detection_list_init(&list, 32), 0);
+
+    output[0 * N + 0] = 200.0f;
+    output[1 * N + 0] = 300.0f;
+    output[2 * N + 0] = 100.0f;
+    output[3 * N + 0] = 150.0f;
+    output[4 * N + 0] = 0.9f;
+
+    ASSERT_INT_EQ(yolo11_decode(output, shape, 3, &t, 0.5f, 0.45f, &list, 32), 0);
+    ASSERT_INT_EQ((int)list.count, 1);
+    EXPECT_INT_EQ(list.items[0].keypoint_count, 0);
+    detection_list_destroy(&list);
+}
+
+/* 화면 밖 관절은 경계로 clamp 되지 않아야 합니다.
+ * N > C=56 이어야 channel_first 로 분기됩니다. */
+static void test_map_point_no_clamp(void) {
+    enum { N = 100, C = 56 };
+    float output[C * N];
+    int64_t shape[3] = {1, C, N};
+    /* 원본 이미지가 416x416, 패딩 없음, scale=1 */
+    Letterbox t = {416, 416, 416, 416, 1.0f, 0, 0};
+    DetectionList list;
+    memset(output, 0, sizeof(output));
+    ASSERT_INT_EQ(detection_list_init(&list, 32), 0);
+
+    output[0 * N + 0] = 200.0f;
+    output[1 * N + 0] = 300.0f;
+    output[2 * N + 0] = 100.0f;
+    output[3 * N + 0] = 150.0f;
+    output[4 * N + 0] = 0.9f;
+    /* kp0: x=-20 (화면 왼쪽 밖), score 0.6 */
+    output[5 * N + 0] = -20.0f;
+    output[6 * N + 0] = 200.0f;
+    output[7 * N + 0] = 0.6f;
+
+    ASSERT_INT_EQ(yolo11_decode(output, shape, 3, &t, 0.5f, 0.45f, &list, 32), 0);
+    ASSERT_INT_EQ((int)list.count, 1);
+    /* clamp 됐다면 0.0, clamp 안 됐다면 -20.0 */
+    EXPECT_FLOAT_NEAR(list.items[0].kp[0].x, -20.0f, 0.5f);
+    detection_list_destroy(&list);
+}
+
+/* 추적 프레임에서 keypoint 가 박스와 같은 델타로 이동해야 합니다 */
+static void test_tracker_translates_keypoints(void) {
+    enum { WIDTH = 128, HEIGHT = 96 };
+    uint8_t previous[WIDTH * HEIGHT * 3];
+    uint8_t current[WIDTH * HEIGHT * 3];
+    DetectionList detections;
+    TrackerOptions options = {4, 3, 2, 24};
+    LightTracker *tracker = tracker_create(&options);
+    char error[128] = {0};
+    int request_detection = 0;
+    float kp_x_before;
+    float box_x_before;
+    float kp_x_after;
+    float box_x_after;
+
+    ASSERT_TRUE(tracker != NULL);
+    ASSERT_INT_EQ(detection_list_init(&detections, 4), 0);
+    detections.count = 1;
+    detections.items[0].x1 = 32.0f;
+    detections.items[0].y1 = 24.0f;
+    detections.items[0].x2 = 79.0f;
+    detections.items[0].y2 = 71.0f;
+    detections.items[0].score = 0.9f;
+    detections.items[0].keypoint_count = YOLO11_NUM_KEYPOINTS;
+    /* 코 관절을 박스 중앙에 놓습니다 */
+    detections.items[0].kp[0].x = 55.0f;
+    detections.items[0].kp[0].y = 40.0f;
+    detections.items[0].kp[0].score = 0.9f;
+
+    make_tracking_frame(previous, WIDTH, HEIGHT, 0);
+    make_tracking_frame(current, WIDTH, HEIGHT, 4);  /* 4픽셀 오른쪽으로 이동 */
+
+    ASSERT_INT_EQ(tracker_reset(tracker, previous, WIDTH, HEIGHT, WIDTH * 3,
+                                error, sizeof(error)), 0);
+    kp_x_before = detections.items[0].kp[0].x;
+    box_x_before = detections.items[0].x1;
+
+    ASSERT_INT_EQ(tracker_update(tracker, current, WIDTH, HEIGHT, WIDTH * 3,
+                                 &detections, &request_detection,
+                                 error, sizeof(error)), 0);
+
+    kp_x_after = detections.items[0].kp[0].x;
+    box_x_after = detections.items[0].x1;
+
+    /* 관절이 박스와 같은 방향·크기로 이동했는지 확인 */
+    EXPECT_FLOAT_NEAR(kp_x_after - kp_x_before,
+                      box_x_after - box_x_before, 0.5f);
+
+    detection_list_destroy(&detections);
+    tracker_destroy(tracker);
+}
+
 int main(void) {
     TEST_SUITE_BEGIN(core_unit_tests);
     RUN_TEST(test_letterbox);
@@ -409,5 +573,10 @@ int main(void) {
     RUN_TEST(test_tracker_stationary);
     RUN_TEST(test_platform_timer_advances);
     RUN_TEST(test_platform_cpu_count);
+    RUN_TEST(test_decode_pose_channel_first);
+    RUN_TEST(test_decode_pose_channel_last);
+    RUN_TEST(test_decode_detection_no_keypoints);
+    RUN_TEST(test_map_point_no_clamp);
+    RUN_TEST(test_tracker_translates_keypoints);
     TEST_SUITE_END();
 }

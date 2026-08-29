@@ -302,6 +302,7 @@ static void append_candidate(DetectionList *list, const Detection *candidate) {
 static Detection map_box(float x1, float y1, float x2, float y2, float score,
                          const Letterbox *t) {
     Detection d;
+    memset(&d, 0, sizeof(d));
     d.x1 = clampf((x1 - (float)t->pad_x) / t->scale, 0.0f,
                   (float)(t->image_width - 1));
     d.y1 = clampf((y1 - (float)t->pad_y) / t->scale, 0.0f,
@@ -312,6 +313,20 @@ static Detection map_box(float x1, float y1, float x2, float y2, float score,
                   (float)(t->image_height - 1));
     d.score = score;
     return d;
+}
+
+/*
+ * 관절 하나의 좌표를 원본 이미지 좌표로 변환합니다.
+ * map_box() 와 같은 역변환이지만 clamp 를 하지 않습니다.
+ * 화면 밖 관절을 경계로 스냅하면 유효한 좌표처럼 오해되므로
+ * 호출자가 score 로 유효성을 판단해야 합니다.
+ */
+static Keypoint map_point(float x, float y, float score, const Letterbox *t) {
+    Keypoint kp;
+    kp.x = (x - (float)t->pad_x) / t->scale;
+    kp.y = (y - (float)t->pad_y) / t->scale;
+    kp.score = score;
+    return kp;
 }
 
 int yolo11_decode(const float *output, const int64_t *shape, size_t rank,
@@ -333,14 +348,22 @@ int yolo11_decode(const float *output, const int64_t *shape, size_t rank,
     /*
      * YOLO 내보내기 방식에 따라 출력 배열의 모양이 다를 수 있습니다.
      *
-     * [1,N,6]  : 박스 좌표 4개 + 점수 + 클래스, 모델 내부에서 NMS까지 완료
+     * [1,N,6]  : box4+score+class,          모델 내부 NMS 완료 (detection)
+     * [1,N,57] : box4+score+class+51,       모델 내부 NMS 완료 (pose)
      * [1,84,N] : 채널이 먼저 오는 일반 COCO detection 출력
      * [1,N,84] : 후보가 먼저 오는 같은 정보의 다른 배치
+     * [1,56,N] : 채널이 먼저 오는 YOLO11n-pose 출력 (4+1+51)
+     *
+     * [1,N,6]·[1,N,57] 은 좌표가 이미 xyxy 이므로 cxcywh 로 해석하면 박스가
+     * 완전히 망가집니다. nms=False 로 내보내야 이 코드 경로가 사용됩니다.
      */
-    embedded_nms = (shape[2] == 6 && shape[1] <= 4096);
+    embedded_nms = ((shape[2] == 6 ||
+                     shape[2] == 6 + YOLO11_NUM_KEYPOINTS * 3) &&
+                    shape[1] <= 4096);
     if (embedded_nms) {
         predictions = (size_t)shape[1];
-        channels = 6;
+        /* embedded NMS 형식은 채널 수를 실제 shape[2] 로 사용합니다. */
+        channels = (size_t)shape[2];
         channel_first = 0;
     } else if (shape[1] >= 5 && shape[1] <= 512 && shape[2] > shape[1]) {
         channels = (size_t)shape[1];
@@ -354,43 +377,82 @@ int yolo11_decode(const float *output, const int64_t *shape, size_t rank,
         return -1;
     }
 
-    /* 모든 후보 중 class 0(person)의 점수가 confidence 이상인 박스만 모읍니다. */
-    for (size_t i = 0; i < predictions; ++i) {
-        Detection d;
-        if (embedded_nms) {
-            const float *row = output + i * channels;
-            if (row[4] < confidence || (int)row[5] != 0) continue;
-            d = map_box(row[0], row[1], row[2], row[3], row[4], transform);
-        } else {
-            float cx;
-            float cy;
-            float width;
-            float height;
-            float score;
-            if (channel_first) {
-                /*
-                 * 배열이 채널별 평면으로 저장되어 있으므로 같은 후보 i의 값도
-                 * predictions만큼 떨어져 있습니다.
-                 */
-                cx = output[0 * predictions + i];
-                cy = output[1 * predictions + i];
-                width = output[2 * predictions + i];
-                height = output[3 * predictions + i];
-                score = output[4 * predictions + i]; /* COCO의 class 0은 person입니다. */
-            } else {
+    /*
+     * keypoint 채널 수: 5개(box+conf) 초과분이 YOLO11_NUM_KEYPOINTS*3 이면
+     * pose 모델이고, 그 외(84채널 detection 등)는 keypoint 없음으로 처리합니다.
+     */
+    {
+        size_t kp_channels = channels > 5 ? channels - 5 : 0;
+        int has_keypoints = (kp_channels == (size_t)(YOLO11_NUM_KEYPOINTS * 3));
+
+        /* 모든 후보 중 class 0(person)의 점수가 confidence 이상인 박스만 모읍니다. */
+        for (size_t i = 0; i < predictions; ++i) {
+            Detection d;
+            if (embedded_nms) {
                 const float *row = output + i * channels;
-                cx = row[0];
-                cy = row[1];
-                width = row[2];
-                height = row[3];
-                score = row[4];
+                /* embedded NMS pose: box4+score+class[+51 keypoints] */
+                if (row[4] < confidence || (int)row[5] != 0) continue;
+                d = map_box(row[0], row[1], row[2], row[3], row[4], transform);
+                if (has_keypoints) {
+                    int k;
+                    d.keypoint_count = YOLO11_NUM_KEYPOINTS;
+                    for (k = 0; k < YOLO11_NUM_KEYPOINTS; ++k) {
+                        d.kp[k] = map_point(row[6 + k * 3],
+                                            row[6 + k * 3 + 1],
+                                            row[6 + k * 3 + 2],
+                                            transform);
+                    }
+                }
+            } else {
+                float cx;
+                float cy;
+                float width;
+                float height;
+                float score;
+                if (channel_first) {
+                    /*
+                     * 배열이 채널별 평면으로 저장되어 있으므로 같은 후보 i의 값도
+                     * predictions만큼 떨어져 있습니다.
+                     */
+                    cx = output[0 * predictions + i];
+                    cy = output[1 * predictions + i];
+                    width = output[2 * predictions + i];
+                    height = output[3 * predictions + i];
+                    score = output[4 * predictions + i]; /* COCO의 class 0은 person입니다. */
+                } else {
+                    const float *row = output + i * channels;
+                    cx = row[0];
+                    cy = row[1];
+                    width = row[2];
+                    height = row[3];
+                    score = row[4];
+                }
+                if (score < confidence) continue;
+                d = map_box(cx - width * 0.5f, cy - height * 0.5f,
+                            cx + width * 0.5f, cy + height * 0.5f,
+                            score, transform);
+                if (has_keypoints) {
+                    int k;
+                    d.keypoint_count = YOLO11_NUM_KEYPOINTS;
+                    for (k = 0; k < YOLO11_NUM_KEYPOINTS; ++k) {
+                        if (channel_first) {
+                            d.kp[k] = map_point(
+                                output[(5 + k * 3) * predictions + i],
+                                output[(5 + k * 3 + 1) * predictions + i],
+                                output[(5 + k * 3 + 2) * predictions + i],
+                                transform);
+                        } else {
+                            const float *row = output + i * channels;
+                            d.kp[k] = map_point(row[5 + k * 3],
+                                                row[5 + k * 3 + 1],
+                                                row[5 + k * 3 + 2],
+                                                transform);
+                        }
+                    }
+                }
             }
-            if (score < confidence) continue;
-            d = map_box(cx - width * 0.5f, cy - height * 0.5f,
-                        cx + width * 0.5f, cy + height * 0.5f,
-                        score, transform);
+            if (d.x2 > d.x1 && d.y2 > d.y1) append_candidate(detections, &d);
         }
-        if (d.x2 > d.x1 && d.y2 > d.y1) append_candidate(detections, &d);
     }
 
     /*

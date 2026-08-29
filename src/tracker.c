@@ -261,10 +261,12 @@ static int track_box(const LightTracker *tracker, Detection *box) {
                 abs(movements_y[i] - median_y) <= 1) agreement++;
         }
         if (agreement * 2 < valid) return 0;
-        box->x1 += (float)(median_x * step);
-        box->x2 += (float)(median_x * step);
-        box->y1 += (float)(median_y * step);
-        box->y2 += (float)(median_y * step);
+        float dx_pixels = (float)(median_x * step);
+        float dy_pixels = (float)(median_y * step);
+        box->x1 += dx_pixels;
+        box->x2 += dx_pixels;
+        box->y1 += dy_pixels;
+        box->y2 += dy_pixels;
         if (box->x1 < 0.0f) {
             box->x2 -= box->x1;
             box->x1 = 0.0f;
@@ -282,6 +284,15 @@ static int track_box(const LightTracker *tracker, Detection *box) {
             float excess = box->y2 - (float)(tracker->source_height - 1);
             box->y1 -= excess;
             box->y2 -= excess;
+        }
+        /* keypoint 도 박스와 같은 델타로 평행이동합니다.
+         * 박스와 달리 경계로 clamp 하지 않습니다. */
+        if (box->keypoint_count > 0) {
+            int k;
+            for (k = 0; k < box->keypoint_count; ++k) {
+                box->kp[k].x += dx_pixels;
+                box->kp[k].y += dy_pixels;
+            }
         }
     }
     return 1;

@@ -4,15 +4,36 @@
 #include <stddef.h>
 #include <stdint.h>
 
+/* COCO pose 규격의 관절 수. 모델 출력 채널 56 = 4(box) + 1(conf) + 17*3 의 근거. */
+#define YOLO11_NUM_KEYPOINTS 17
+
 /*
- * 한 사람을 둘러싸는 사각형입니다.
+ * 관절 하나의 위치와 신뢰도입니다.
+ *
+ * score 가 낮으면 화면 밖이거나 가려진 상태이므로 좌표를 신뢰하면 안 됩니다.
+ * 박스와 달리 이미지 경계로 clamp 하지 않습니다 — 화면 밖 관절을 경계로
+ * 스냅하면 유효한 좌표인 것처럼 오해됩니다.
+ */
+typedef struct {
+    float x;
+    float y;
+    float score;
+} Keypoint;
+
+/*
+ * 한 사람을 둘러싸는 사각형과 신체 관절 정보입니다.
  *
  * (x1, y1): 왼쪽 위 좌표
  * (x2, y2): 오른쪽 아래 좌표
  * score:     모델이 사람이라고 판단한 확률에 가까운 값(0.0~1.0)
  *
- * 좌표는 YOLO 모델의 640x640 같은 입력 좌표가 아니라, 최종적으로 다시 계산한
- * 원본 이미지 좌표입니다.
+ * 좌표는 YOLO 모델 입력 좌표가 아니라 원본 이미지 좌표입니다.
+ *
+ * keypoint_count == 0 이면 detection 전용 모델을 사용한 것이므로
+ * kp 배열 내용은 의미가 없습니다.
+ *
+ * 메모리: Detection 하나가 약 224 바이트입니다. max_candidates=1024 기준
+ * 후보 버퍼가 ~229 KB 이고, 시작 시 1회 할당되어 프레임 수와 무관합니다.
  */
 typedef struct {
     float x1;
@@ -20,6 +41,8 @@ typedef struct {
     float x2;
     float y2;
     float score;
+    int keypoint_count;
+    Keypoint kp[YOLO11_NUM_KEYPOINTS];
 } Detection;
 
 /*
