@@ -149,3 +149,15 @@ if(ORT_INCLUDE_DIR AND ORT_LIBRARY)
         TIMEOUT 60
         LABELS "integration")
 endif()
+
+# ── 대시보드 서버 (WinSocket2 전용, Python/Flask 불필요) ─────────────────────
+if(WIN32)
+    add_executable(hunik-dashboard dashboard/server.c)
+    target_link_libraries(hunik-dashboard ws2_32)
+    if(MSVC)
+        target_compile_options(hunik-dashboard PRIVATE /utf-8 /W3)
+        target_compile_definitions(hunik-dashboard PRIVATE _CRT_SECURE_NO_WARNINGS)
+    endif()
+    # Release 폴더에 index.html 복사 (실행 파일과 같은 위치에 없어도 --root로 지정)
+    message(STATUS "hunik-dashboard: http://localhost:8080 (run from project root)")
+endif()

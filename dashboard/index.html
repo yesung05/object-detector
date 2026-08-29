@@ -1,0 +1,570 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>HUNIK 관리 대시보드</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg:      #0f1117;
+    --surface: #1a1d27;
+    --border:  #2a2d3a;
+    --text:    #e2e4ec;
+    --muted:   #6b7280;
+    --green:   #22c55e;
+    --yellow:  #eab308;
+    --orange:  #f97316;
+    --red:     #ef4444;
+    --blue:    #3b82f6;
+  }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    font-size: 14px;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* ── 헤더 ── */
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 20px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    gap: 12px;
+  }
+  header h1 { font-size: 16px; font-weight: 600; letter-spacing: .02em; }
+  .header-right { display: flex; align-items: center; gap: 16px; }
+
+  /* 카메라 상태 표시기 */
+  .cam-badge {
+    display: flex; align-items: center; gap: 6px;
+    font-size: 12px; font-weight: 500;
+  }
+  .cam-dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--green);
+    box-shadow: 0 0 6px var(--green);
+  }
+  .cam-dot.warn  { background: var(--orange); box-shadow: 0 0 6px var(--orange); }
+  .cam-dot.error { background: var(--red);    box-shadow: 0 0 6px var(--red);    }
+
+  /* 로그 파일 선택 */
+  select {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 4px 8px;
+    border-radius: 6px;
+    font-size: 12px;
+    cursor: pointer;
+  }
+
+  /* ── 메인 레이아웃 ── */
+  main {
+    display: grid;
+    grid-template-columns: 220px 1fr;
+    flex: 1;
+    overflow: hidden;
+  }
+
+  /* ── 사이드바 (통계) ── */
+  aside {
+    background: var(--surface);
+    border-right: 1px solid var(--border);
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    overflow-y: auto;
+  }
+  aside h2 {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: .08em;
+    color: var(--muted);
+    margin-bottom: 4px;
+  }
+  .stat-card {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px 14px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  .stat-label { font-size: 12px; color: var(--muted); }
+  .stat-value {
+    font-size: 22px; font-weight: 700;
+    font-variant-numeric: tabular-nums;
+  }
+  .stat-value.green  { color: var(--green); }
+  .stat-value.yellow { color: var(--yellow); }
+  .stat-value.orange { color: var(--orange); }
+  .stat-value.red    { color: var(--red); }
+  .stat-value.blue   { color: var(--blue); }
+
+  .divider {
+    border: none;
+    border-top: 1px solid var(--border);
+    margin: 4px 0;
+  }
+
+  /* ── 이벤트 피드 ── */
+  .feed-area {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .feed-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface);
+    gap: 8px;
+  }
+  .feed-toolbar h2 {
+    font-size: 13px; font-weight: 600;
+  }
+  .feed-controls { display: flex; gap: 8px; align-items: center; }
+  .badge-count {
+    background: var(--blue);
+    color: #fff;
+    font-size: 10px;
+    font-weight: 700;
+    padding: 1px 6px;
+    border-radius: 10px;
+    min-width: 20px;
+    text-align: center;
+  }
+
+  #event-list {
+    flex: 1;
+    overflow-y: auto;
+    padding: 8px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .event-row {
+    display: grid;
+    grid-template-columns: 140px 50px 80px 1fr;
+    align-items: center;
+    gap: 8px;
+    padding: 7px 10px;
+    border-radius: 6px;
+    border: 1px solid transparent;
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+    animation: slide-in .2s ease;
+  }
+  @keyframes slide-in {
+    from { opacity: 0; transform: translateY(-4px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+
+  .event-row:hover { background: var(--surface); border-color: var(--border); }
+
+  .event-ts   { color: var(--muted); }
+  .event-level {
+    font-size: 10px; font-weight: 700;
+    padding: 2px 6px; border-radius: 4px;
+    text-align: center; width: fit-content;
+  }
+  .level-INFO  { background: #1e3a5f; color: var(--blue); }
+  .level-WARN  { background: #3d2a00; color: var(--orange); }
+  .level-ERROR { background: #3d0000; color: var(--red); }
+
+  .event-module { color: var(--muted); font-size: 11px; }
+  .event-msg    { color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+  /* 이벤트 종류별 왼쪽 테두리 */
+  .ev-overstay       { border-left: 3px solid var(--red) !important; }
+  .ev-unordered      { border-left: 3px solid var(--yellow) !important; }
+  .ev-fallen         { border-left: 3px solid var(--red) !important; }
+  .ev-camera-warn    { border-left: 3px solid var(--orange) !important; }
+  .ev-camera-ok      { border-left: 3px solid var(--green) !important; }
+
+  /* 스크롤바 */
+  ::-webkit-scrollbar { width: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+  /* ── 상태 표시줄 ── */
+  footer {
+    padding: 6px 16px;
+    background: var(--surface);
+    border-top: 1px solid var(--border);
+    font-size: 11px;
+    color: var(--muted);
+    display: flex;
+    gap: 16px;
+    align-items: center;
+  }
+  .conn-dot {
+    width: 6px; height: 6px; border-radius: 50%;
+    display: inline-block; margin-right: 4px;
+    background: var(--muted);
+  }
+  .conn-dot.connected { background: var(--green); }
+
+  /* 빈 상태 */
+  .empty-state {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--muted);
+    font-size: 13px;
+    flex-direction: column;
+    gap: 8px;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>HUNIK 관리 대시보드</h1>
+  <div class="header-right">
+    <div class="cam-badge">
+      <div class="cam-dot" id="cam-dot"></div>
+      <span id="cam-label">카메라 확인 중</span>
+    </div>
+    <select id="log-select" title="로그 파일 선택"></select>
+  </div>
+</header>
+
+<main>
+  <!-- 통계 사이드바 -->
+  <aside>
+    <h2>오늘 이벤트</h2>
+
+    <div class="stat-card">
+      <div>
+        <div class="stat-label">체류 초과</div>
+        <div class="stat-label" style="font-size:10px">overstay</div>
+      </div>
+      <div class="stat-value red" id="cnt-overstay">0</div>
+    </div>
+
+    <div class="stat-card">
+      <div>
+        <div class="stat-label">미주문 착석</div>
+        <div class="stat-label" style="font-size:10px">unordered_seated</div>
+      </div>
+      <div class="stat-value yellow" id="cnt-unordered">0</div>
+    </div>
+
+    <div class="stat-card">
+      <div>
+        <div class="stat-label">쓰러짐</div>
+        <div class="stat-label" style="font-size:10px">person_fallen</div>
+      </div>
+      <div class="stat-value red" id="cnt-fallen">0</div>
+    </div>
+
+    <hr class="divider">
+
+    <div class="stat-card">
+      <div>
+        <div class="stat-label">카메라 장애</div>
+        <div class="stat-label" style="font-size:10px">whiteout·blackout·frozen</div>
+      </div>
+      <div class="stat-value orange" id="cnt-camera">0</div>
+    </div>
+
+    <hr class="divider">
+
+    <div class="stat-card">
+      <div><div class="stat-label">전체 이벤트</div></div>
+      <div class="stat-value blue" id="cnt-total">0</div>
+    </div>
+  </aside>
+
+  <!-- 이벤트 피드 -->
+  <section class="feed-area">
+    <div class="feed-toolbar">
+      <h2>실시간 이벤트 피드</h2>
+      <div class="feed-controls">
+        <span id="new-badge" class="badge-count" style="display:none">0</span>
+        <label style="font-size:12px; color:var(--muted); display:flex; align-items:center; gap:4px; cursor:pointer;">
+          <input type="checkbox" id="auto-scroll" checked> 자동 스크롤
+        </label>
+      </div>
+    </div>
+    <div id="event-list">
+      <div class="empty-state" id="empty-msg">
+        <span>⏳</span>
+        <span>이벤트를 기다리는 중...</span>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <span><span class="conn-dot" id="conn-dot"></span><span id="conn-label">연결 중</span></span>
+  <span id="footer-file"></span>
+  <span id="footer-count"></span>
+</footer>
+
+<script>
+const MAX_ROWS = 500;   // 최대 표시 이벤트 수 (메모리 제한)
+const WARN_EVENTS   = new Set(["camera_whiteout","camera_blackout","camera_frozen","camera_stalled"]);
+const CAMERA_OK     = new Set(["camera_ok"]);
+
+let currentFile = "";
+let eventSource = null;
+let counts = { overstay:0, unordered:0, fallen:0, camera:0, total:0 };
+let newCount = 0;
+let userScrolled = false;
+
+const list        = document.getElementById("event-list");
+const emptyMsg    = document.getElementById("empty-msg");
+const autoScroll  = document.getElementById("auto-scroll");
+const logSelect   = document.getElementById("log-select");
+const connDot     = document.getElementById("conn-dot");
+const connLabel   = document.getElementById("conn-label");
+const camDot      = document.getElementById("cam-dot");
+const camLabel    = document.getElementById("cam-label");
+const newBadge    = document.getElementById("new-badge");
+const footerFile  = document.getElementById("footer-file");
+const footerCount = document.getElementById("footer-count");
+
+// ── 카운트 갱신 ─────────────────────────────────────────────────────────────
+function updateCounts() {
+  document.getElementById("cnt-overstay").textContent = counts.overstay;
+  document.getElementById("cnt-unordered").textContent = counts.unordered;
+  document.getElementById("cnt-fallen").textContent = counts.fallen;
+  document.getElementById("cnt-camera").textContent = counts.camera;
+  document.getElementById("cnt-total").textContent = counts.total;
+  footerCount.textContent = `총 ${counts.total}건`;
+}
+
+function countEvent(e) {
+  counts.total++;
+  const ev = e.event || "";
+  if (ev === "overstay") counts.overstay++;
+  else if (ev === "unordered_seated") counts.unordered++;
+  else if (ev === "person_fallen") counts.fallen++;
+  else if (WARN_EVENTS.has(ev)) counts.camera++;
+  updateCounts();
+}
+
+// ── 이벤트 행 생성 ──────────────────────────────────────────────────────────
+function rowClass(e) {
+  const ev = e.event || "";
+  if (ev === "overstay" || ev === "person_fallen") return "ev-overstay";
+  if (ev === "unordered_seated") return "ev-unordered";
+  if (WARN_EVENTS.has(ev)) return "ev-camera-warn";
+  if (CAMERA_OK.has(ev)) return "ev-camera-ok";
+  return "";
+}
+
+function appendEvent(e, prepend=false) {
+  if (emptyMsg.parentNode === list) list.removeChild(emptyMsg);
+
+  // 최대 행 초과 시 오래된 행 제거
+  while (list.children.length >= MAX_ROWS) {
+    list.removeChild(list.firstChild);
+  }
+
+  const row = document.createElement("div");
+  row.className = "event-row " + rowClass(e);
+
+  const level = document.createElement("span");
+  level.className = "event-level level-" + e.level;
+  level.textContent = e.level;
+
+  const ts  = el("span", "event-ts",     e.ts.replace("T"," "));
+  const mod = el("span", "event-module", e.module);
+  const msg = el("span", "event-msg",    e.message);
+  msg.title = e.message;
+
+  row.append(ts, level, mod, msg);
+
+  if (prepend) {
+    list.insertBefore(row, list.firstChild);
+  } else {
+    list.appendChild(row);
+  }
+  return row;
+}
+
+function el(tag, cls, text) {
+  const e = document.createElement(tag);
+  e.className = cls;
+  e.textContent = text;
+  return e;
+}
+
+// ── 카메라 상태 갱신 ────────────────────────────────────────────────────────
+function updateCamState(e) {
+  const ev = (e.event || "").toLowerCase();
+  if (e.module !== "camera") return;
+  if (ev.includes("whiteout") || ev.includes("blackout") ||
+      ev.includes("frozen")   || ev.includes("stalled")) {
+    camDot.className = "cam-dot warn";
+    camLabel.textContent = `카메라 장애: ${e.event}`;
+  } else if (ev === "ok" || ev === "camera_ok" || e.message.includes("ok")) {
+    camDot.className = "cam-dot";
+    camLabel.textContent = "카메라 정상";
+  }
+}
+
+// ── 자동 스크롤 ─────────────────────────────────────────────────────────────
+list.addEventListener("scroll", () => {
+  const atBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 40;
+  userScrolled = !atBottom;
+  if (atBottom) {
+    newCount = 0;
+    newBadge.style.display = "none";
+  }
+});
+
+function scrollToBottom() {
+  if (!userScrolled || autoScroll.checked) {
+    list.scrollTop = list.scrollHeight;
+  } else {
+    newCount++;
+    newBadge.textContent = newCount > 99 ? "99+" : newCount;
+    newBadge.style.display = "";
+  }
+}
+
+// ── SSE 연결 ────────────────────────────────────────────────────────────────
+function connect(file) {
+  if (eventSource) { eventSource.close(); eventSource = null; }
+  setConnState("connecting");
+
+  const url = `/api/events/stream${file ? "?file=" + encodeURIComponent(file) : ""}`;
+  eventSource = new EventSource(url);
+
+  eventSource.onopen = () => setConnState("connected");
+
+  eventSource.onmessage = (ev) => {
+    try {
+      const e = JSON.parse(ev.data);
+      if (!e.ts) return;
+      countEvent(e);
+      updateCamState(e);
+      appendEvent(e);
+      scrollToBottom();
+    } catch (_) {}
+  };
+
+  eventSource.addEventListener("heartbeat", () => {});
+
+  eventSource.addEventListener("reload", () => {
+    // 서버가 파일을 찾으면 재연결 유도
+    setTimeout(() => connect(currentFile), 1000);
+  });
+
+  eventSource.onerror = () => setConnState("disconnected");
+}
+
+function setConnState(state) {
+  connDot.className = "conn-dot" + (state === "connected" ? " connected" : "");
+  connLabel.textContent = { connecting:"연결 중", connected:"연결됨", disconnected:"연결 끊김" }[state] || state;
+}
+
+// ── 히스토리 로드 ────────────────────────────────────────────────────────────
+async function loadHistory(file) {
+  // 기존 이벤트 초기화
+  list.innerHTML = "";
+  list.appendChild(emptyMsg);
+  counts = { overstay:0, unordered:0, fallen:0, camera:0, total:0 };
+  newCount = 0;
+  newBadge.style.display = "none";
+  camDot.className = "cam-dot";
+  camLabel.textContent = "카메라 확인 중";
+  updateCounts();
+
+  const url = `/api/events/history${file ? "?file=" + encodeURIComponent(file) : ""}`;
+  try {
+    const res = await fetch(url);
+    const events = await res.json();
+    if (!Array.isArray(events)) return;
+    events.forEach(e => {
+      countEvent(e);
+      updateCamState(e);
+      appendEvent(e);
+    });
+    scrollToBottom();
+  } catch (_) {}
+}
+
+// ── 로그 파일 목록 로드 ──────────────────────────────────────────────────────
+async function loadLogList() {
+  try {
+    const res = await fetch("/api/logs");
+    const files = await res.json();
+    logSelect.innerHTML = "";
+    if (files.length === 0) {
+      const opt = document.createElement("option");
+      opt.textContent = "로그 파일 없음 (detector 실행 필요)";
+      logSelect.appendChild(opt);
+      return;
+    }
+    files.forEach((f, i) => {
+      const opt = document.createElement("option");
+      opt.value = f;
+      opt.textContent = i === 0 ? `${f} (최신)` : f;
+      logSelect.appendChild(opt);
+    });
+    // 최신 파일 자동 선택
+    selectFile(files[0]);
+  } catch (_) {
+    const opt = document.createElement("option");
+    opt.textContent = "서버 연결 실패";
+    logSelect.appendChild(opt);
+  }
+}
+
+function selectFile(file) {
+  currentFile = file;
+  footerFile.textContent = file || "";
+  loadHistory(file);
+  connect(file);
+}
+
+logSelect.addEventListener("change", () => selectFile(logSelect.value));
+
+// ── 초기화 ──────────────────────────────────────────────────────────────────
+loadLogList();
+
+// 30초마다 로그 파일 목록 갱신 (새 파일이 생기면 반영)
+setInterval(async () => {
+  try {
+    const res = await fetch("/api/logs");
+    const files = await res.json();
+    const current = Array.from(logSelect.options).map(o => o.value);
+    const hasNew  = files.some(f => !current.includes(f));
+    if (hasNew) {
+      const selected = logSelect.value;
+      logSelect.innerHTML = "";
+      files.forEach((f, i) => {
+        const opt = document.createElement("option");
+        opt.value = f;
+        opt.textContent = i === 0 ? `${f} (최신)` : f;
+        if (f === selected) opt.selected = true;
+        logSelect.appendChild(opt);
+      });
+    }
+  } catch (_) {}
+}, 30000);
+</script>
+</body>
+</html>
