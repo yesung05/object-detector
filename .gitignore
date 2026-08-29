@@ -9,6 +9,10 @@ __pycache__/
 yolo11n.pt
 yolo11n-pose.pt
 *.onnx
+!yolo11n-pose-416.onnx
+!yolo11n-pose-416-int8.onnx
+!yolo11n-416.onnx
+!yolo11n.onnx
 
 # 카메라 녹화·테스트 출력 영상 (로컬 전용)
 *.mp4
