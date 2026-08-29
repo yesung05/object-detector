@@ -43,28 +43,17 @@
   header h1 { font-size: 16px; font-weight: 600; letter-spacing: .02em; }
   .header-right { display: flex; align-items: center; gap: 16px; }
 
-  /* 카메라 상태 표시기 */
-  .cam-badge {
-    display: flex; align-items: center; gap: 6px;
-    font-size: 12px; font-weight: 500;
-  }
+  .cam-badge { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 500; }
   .cam-dot {
     width: 8px; height: 8px; border-radius: 50%;
-    background: var(--green);
-    box-shadow: 0 0 6px var(--green);
+    background: var(--green); box-shadow: 0 0 6px var(--green);
   }
   .cam-dot.warn  { background: var(--orange); box-shadow: 0 0 6px var(--orange); }
   .cam-dot.error { background: var(--red);    box-shadow: 0 0 6px var(--red);    }
 
-  /* 로그 파일 선택 */
   select {
-    background: var(--bg);
-    border: 1px solid var(--border);
-    color: var(--text);
-    padding: 4px 8px;
-    border-radius: 6px;
-    font-size: 12px;
-    cursor: pointer;
+    background: var(--bg); border: 1px solid var(--border);
+    color: var(--text); padding: 4px 8px; border-radius: 6px; font-size: 12px; cursor: pointer;
   }
 
   /* ── 메인 레이아웃 ── */
@@ -76,216 +65,195 @@
     overflow: hidden;
   }
 
-  /* ── 카메라 프레임 영역 ── */
+  /* ── 카메라 프레임 ── */
   .camera-panel {
     grid-column: 2;
     background: #000;
     border-bottom: 1px solid var(--border);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    height: 260px;
-    position: relative;
-    overflow: hidden;
+    display: flex; align-items: center; justify-content: center;
+    height: 260px; position: relative; overflow: hidden;
   }
-  .camera-panel img {
-    max-height: 100%;
-    max-width: 100%;
-    object-fit: contain;
-    display: block;
-  }
+  .camera-panel img { max-height: 100%; max-width: 100%; object-fit: contain; display: block; }
   .camera-offline {
-    color: var(--muted);
-    font-size: 12px;
-    text-align: center;
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    align-items: center;
+    color: var(--muted); font-size: 12px; text-align: center;
+    display: flex; flex-direction: column; gap: 6px; align-items: center;
   }
   .stream-port-form {
     display: flex; gap: 6px; align-items: center;
     position: absolute; top: 8px; right: 8px;
   }
   .stream-port-form input {
-    background: rgba(0,0,0,.6);
-    border: 1px solid var(--border);
-    color: var(--text);
-    padding: 3px 6px;
-    border-radius: 4px;
-    font-size: 11px;
-    width: 70px;
-    text-align: center;
+    background: rgba(0,0,0,.6); border: 1px solid var(--border);
+    color: var(--text); padding: 3px 6px; border-radius: 4px;
+    font-size: 11px; width: 70px; text-align: center;
   }
   .btn {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    color: var(--text);
-    padding: 3px 8px;
-    border-radius: 4px;
-    font-size: 11px;
-    cursor: pointer;
+    background: var(--surface); border: 1px solid var(--border);
+    color: var(--text); padding: 3px 8px; border-radius: 4px;
+    font-size: 11px; cursor: pointer;
   }
   .btn:hover { background: var(--border); }
+  .btn.primary { background: var(--blue); border-color: var(--blue); color: #fff; }
+  .btn.primary:hover { opacity: .85; }
+  .btn.success { background: var(--green); border-color: var(--green); color: #000; }
+  .btn.success:hover { opacity: .85; }
 
-  /* ── 사이드바 (통계) ── */
+  /* ── 사이드바 ── */
   aside {
-    grid-row: 1 / 3;  /* 카메라 + 피드 영역 모두 차지 */
-    background: var(--surface);
-    border-right: 1px solid var(--border);
-    padding: 16px;
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-    overflow-y: auto;
+    grid-row: 1 / 3;
+    background: var(--surface); border-right: 1px solid var(--border);
+    padding: 16px; display: flex; flex-direction: column; gap: 10px; overflow-y: auto;
   }
   aside h2 {
-    font-size: 11px;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: .08em;
-    color: var(--muted);
-    margin-bottom: 4px;
+    font-size: 11px; font-weight: 600; text-transform: uppercase;
+    letter-spacing: .08em; color: var(--muted); margin-bottom: 4px;
   }
   .stat-card {
-    background: var(--bg);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 12px 14px;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 8px;
+    background: var(--bg); border: 1px solid var(--border);
+    border-radius: 8px; padding: 12px 14px;
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
   }
   .stat-label { font-size: 12px; color: var(--muted); }
-  .stat-value {
-    font-size: 22px; font-weight: 700;
-    font-variant-numeric: tabular-nums;
-  }
+  .stat-value { font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; }
   .stat-value.green  { color: var(--green); }
   .stat-value.yellow { color: var(--yellow); }
   .stat-value.orange { color: var(--orange); }
   .stat-value.red    { color: var(--red); }
   .stat-value.blue   { color: var(--blue); }
+  .divider { border: none; border-top: 1px solid var(--border); margin: 4px 0; }
 
-  .divider {
-    border: none;
-    border-top: 1px solid var(--border);
-    margin: 4px 0;
+  /* ── 탭 영역 ── */
+  .feed-area { display: flex; flex-direction: column; overflow: hidden; }
+  .tab-bar {
+    display: flex; align-items: center; gap: 0;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface); padding: 0 12px;
   }
+  .tab-btn {
+    background: none; border: none; color: var(--muted);
+    padding: 10px 14px; font-size: 13px; font-weight: 600; cursor: pointer;
+    border-bottom: 2px solid transparent; margin-bottom: -1px;
+  }
+  .tab-btn.active { color: var(--text); border-bottom-color: var(--blue); }
+  .tab-btn:hover:not(.active) { color: var(--text); }
+  .tab-extra { margin-left: auto; display: flex; align-items: center; gap: 8px; padding: 6px 0; }
+
+  .tab-panel { display: none; flex: 1; overflow: hidden; flex-direction: column; }
+  .tab-panel.active { display: flex; }
 
   /* ── 이벤트 피드 ── */
-  .feed-area {
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
-  }
-  .feed-toolbar {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 10px 16px;
-    border-bottom: 1px solid var(--border);
-    background: var(--surface);
-    gap: 8px;
-  }
-  .feed-toolbar h2 {
-    font-size: 13px; font-weight: 600;
-  }
-  .feed-controls { display: flex; gap: 8px; align-items: center; }
-  .badge-count {
-    background: var(--blue);
-    color: #fff;
-    font-size: 10px;
-    font-weight: 700;
-    padding: 1px 6px;
-    border-radius: 10px;
-    min-width: 20px;
-    text-align: center;
-  }
-
   #event-list {
-    flex: 1;
-    overflow-y: auto;
-    padding: 8px 12px;
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
+    flex: 1; overflow-y: auto; padding: 8px 12px;
+    display: flex; flex-direction: column; gap: 4px;
   }
-
   .event-row {
     display: grid;
     grid-template-columns: 140px 50px 80px 1fr;
-    align-items: center;
-    gap: 8px;
-    padding: 7px 10px;
-    border-radius: 6px;
-    border: 1px solid transparent;
-    font-size: 12px;
-    font-variant-numeric: tabular-nums;
+    align-items: center; gap: 8px; padding: 7px 10px;
+    border-radius: 6px; border: 1px solid transparent;
+    font-size: 12px; font-variant-numeric: tabular-nums;
     animation: slide-in .2s ease;
   }
-  @keyframes slide-in {
-    from { opacity: 0; transform: translateY(-4px); }
-    to   { opacity: 1; transform: translateY(0); }
-  }
-
+  @keyframes slide-in { from { opacity:0; transform:translateY(-4px); } to { opacity:1; transform:translateY(0); } }
   .event-row:hover { background: var(--surface); border-color: var(--border); }
-
   .event-ts   { color: var(--muted); }
   .event-level {
-    font-size: 10px; font-weight: 700;
-    padding: 2px 6px; border-radius: 4px;
-    text-align: center; width: fit-content;
+    font-size: 10px; font-weight: 700; padding: 2px 6px;
+    border-radius: 4px; text-align: center; width: fit-content;
   }
   .level-INFO  { background: #1e3a5f; color: var(--blue); }
   .level-WARN  { background: #3d2a00; color: var(--orange); }
   .level-ERROR { background: #3d0000; color: var(--red); }
-
   .event-module { color: var(--muted); font-size: 11px; }
   .event-msg    { color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ev-overstay    { border-left: 3px solid var(--red) !important; }
+  .ev-unordered   { border-left: 3px solid var(--yellow) !important; }
+  .ev-fallen      { border-left: 3px solid var(--red) !important; }
+  .ev-camera-warn { border-left: 3px solid var(--orange) !important; }
+  .ev-camera-ok   { border-left: 3px solid var(--green) !important; }
+  .ev-door-open   { border-left: 3px solid var(--blue) !important; }
 
-  /* 이벤트 종류별 왼쪽 테두리 */
-  .ev-overstay       { border-left: 3px solid var(--red) !important; }
-  .ev-unordered      { border-left: 3px solid var(--yellow) !important; }
-  .ev-fallen         { border-left: 3px solid var(--red) !important; }
-  .ev-camera-warn    { border-left: 3px solid var(--orange) !important; }
-  .ev-camera-ok      { border-left: 3px solid var(--green) !important; }
+  /* ── 설정 탭 ── */
+  #settings-panel {
+    flex: 1; overflow-y: auto; padding: 16px 20px;
+    display: flex; flex-direction: column; gap: 20px;
+  }
+  .settings-section { display: flex; flex-direction: column; gap: 10px; }
+  .settings-section h3 {
+    font-size: 11px; font-weight: 600; text-transform: uppercase;
+    letter-spacing: .08em; color: var(--muted); padding-bottom: 6px;
+    border-bottom: 1px solid var(--border);
+  }
+  .setting-row {
+    display: grid; grid-template-columns: 200px 1fr auto;
+    align-items: center; gap: 12px;
+  }
+  .setting-label { font-size: 13px; }
+  .setting-desc  { font-size: 11px; color: var(--muted); margin-top: 2px; }
+  .setting-input {
+    background: var(--bg); border: 1px solid var(--border);
+    color: var(--text); padding: 5px 8px; border-radius: 6px;
+    font-size: 13px; width: 100%;
+  }
+  .setting-input:focus { outline: 1px solid var(--blue); border-color: var(--blue); }
+  .setting-value-display { font-size: 12px; color: var(--muted); min-width: 50px; text-align: right; }
 
-  /* 스크롤바 */
+  /* 토글 스위치 */
+  .toggle { position: relative; display: inline-block; width: 40px; height: 22px; }
+  .toggle input { opacity: 0; width: 0; height: 0; }
+  .toggle-slider {
+    position: absolute; cursor: pointer; inset: 0;
+    background: var(--border); border-radius: 22px; transition: .2s;
+  }
+  .toggle-slider::before {
+    content: ""; position: absolute;
+    width: 16px; height: 16px; left: 3px; top: 3px;
+    background: white; border-radius: 50%; transition: .2s;
+  }
+  .toggle input:checked + .toggle-slider { background: var(--blue); }
+  .toggle input:checked + .toggle-slider::before { transform: translateX(18px); }
+
+  /* 문 여닫이 섹션 */
+  .door-preview-area {
+    display: flex; gap: 12px; align-items: flex-start; flex-wrap: wrap;
+  }
+  .door-preview-img {
+    width: 200px; height: 120px; object-fit: contain;
+    background: #000; border: 1px solid var(--border); border-radius: 6px;
+    display: block;
+  }
+  .door-preview-placeholder {
+    width: 200px; height: 120px;
+    background: var(--bg); border: 1px dashed var(--border);
+    border-radius: 6px; display: flex; align-items: center; justify-content: center;
+    color: var(--muted); font-size: 12px;
+  }
+  .door-actions { display: flex; flex-direction: column; gap: 8px; }
+  .door-status { font-size: 12px; color: var(--muted); }
+
+  .save-bar {
+    padding: 12px 20px; border-top: 1px solid var(--border);
+    background: var(--surface); display: flex; align-items: center;
+    justify-content: flex-end; gap: 10px;
+  }
+  .save-status { font-size: 12px; color: var(--muted); }
+
+  /* ── 상태 표시줄 ── */
+  footer {
+    padding: 6px 16px; background: var(--surface);
+    border-top: 1px solid var(--border); font-size: 11px; color: var(--muted);
+    display: flex; gap: 16px; align-items: center;
+  }
+  .conn-dot { width: 6px; height: 6px; border-radius: 50%; display: inline-block; margin-right: 4px; background: var(--muted); }
+  .conn-dot.connected { background: var(--green); }
+
+  .empty-state { flex: 1; display: flex; align-items: center; justify-content: center; color: var(--muted); font-size: 13px; flex-direction: column; gap: 8px; }
+
   ::-webkit-scrollbar { width: 6px; }
   ::-webkit-scrollbar-track { background: transparent; }
   ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
 
-  /* ── 상태 표시줄 ── */
-  footer {
-    padding: 6px 16px;
-    background: var(--surface);
-    border-top: 1px solid var(--border);
-    font-size: 11px;
-    color: var(--muted);
-    display: flex;
-    gap: 16px;
-    align-items: center;
-  }
-  .conn-dot {
-    width: 6px; height: 6px; border-radius: 50%;
-    display: inline-block; margin-right: 4px;
-    background: var(--muted);
-  }
-  .conn-dot.connected { background: var(--green); }
-
-  /* 빈 상태 */
-  .empty-state {
-    flex: 1;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    color: var(--muted);
-    font-size: 13px;
-    flex-direction: column;
-    gap: 8px;
-  }
+  .badge-count { background: var(--blue); color: #fff; font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 10px; min-width: 20px; text-align: center; }
 </style>
 </head>
 <body>
@@ -305,50 +273,39 @@
   <!-- 통계 사이드바 -->
   <aside>
     <h2>오늘 이벤트</h2>
-
     <div class="stat-card">
-      <div>
-        <div class="stat-label">체류 초과</div>
-        <div class="stat-label" style="font-size:10px">overstay</div>
-      </div>
+      <div><div class="stat-label">체류 초과</div><div class="stat-label" style="font-size:10px">overstay</div></div>
       <div class="stat-value red" id="cnt-overstay">0</div>
     </div>
-
     <div class="stat-card">
-      <div>
-        <div class="stat-label">미주문 착석</div>
-        <div class="stat-label" style="font-size:10px">unordered_seated</div>
-      </div>
+      <div><div class="stat-label">미주문 착석</div><div class="stat-label" style="font-size:10px">unordered_seated</div></div>
       <div class="stat-value yellow" id="cnt-unordered">0</div>
     </div>
-
     <div class="stat-card">
-      <div>
-        <div class="stat-label">쓰러짐</div>
-        <div class="stat-label" style="font-size:10px">person_fallen</div>
-      </div>
+      <div><div class="stat-label">쓰러짐</div><div class="stat-label" style="font-size:10px">person_fallen</div></div>
       <div class="stat-value red" id="cnt-fallen">0</div>
     </div>
-
-    <hr class="divider">
-
     <div class="stat-card">
-      <div>
-        <div class="stat-label">카메라 장애</div>
-        <div class="stat-label" style="font-size:10px">whiteout·blackout·frozen</div>
-      </div>
+      <div><div class="stat-label">문 현재 상태</div><div class="stat-label" style="font-size:10px">door state</div></div>
+      <div class="stat-value" id="door-state-badge" style="font-size:13px;font-weight:700;color:var(--muted)">—</div>
+    </div>
+    <div class="stat-card">
+      <div><div class="stat-label">문 장기 개방</div><div class="stat-label" style="font-size:10px">방치 횟수</div></div>
+      <div class="stat-value blue" id="cnt-door">0</div>
+    </div>
+    <hr class="divider">
+    <div class="stat-card">
+      <div><div class="stat-label">카메라 장애</div><div class="stat-label" style="font-size:10px">whiteout·blackout·frozen</div></div>
       <div class="stat-value orange" id="cnt-camera">0</div>
     </div>
-
     <hr class="divider">
-
     <div class="stat-card">
       <div><div class="stat-label">전체 이벤트</div></div>
       <div class="stat-value blue" id="cnt-total">0</div>
     </div>
   </aside>
 
-  <!-- 카메라 프레임 (detector --stream-port가 활성화된 경우에만 표시) -->
+  <!-- 카메라 프레임 -->
   <section class="camera-panel" id="camera-panel">
     <div class="camera-offline" id="cam-offline">
       <span>📷</span>
@@ -363,21 +320,181 @@
     </div>
   </section>
 
-  <!-- 이벤트 피드 -->
+  <!-- 탭 영역 -->
   <section class="feed-area">
-    <div class="feed-toolbar">
-      <h2>실시간 이벤트 피드</h2>
-      <div class="feed-controls">
+    <div class="tab-bar">
+      <button class="tab-btn active" onclick="switchTab('feed',this)">실시간 이벤트</button>
+      <button class="tab-btn" onclick="switchTab('settings',this)">설정</button>
+      <div class="tab-extra" id="feed-extra">
         <span id="new-badge" class="badge-count" style="display:none">0</span>
         <label style="font-size:12px; color:var(--muted); display:flex; align-items:center; gap:4px; cursor:pointer;">
           <input type="checkbox" id="auto-scroll" checked> 자동 스크롤
         </label>
       </div>
     </div>
-    <div id="event-list">
-      <div class="empty-state" id="empty-msg">
-        <span>⏳</span>
-        <span>이벤트를 기다리는 중...</span>
+
+    <!-- 이벤트 피드 패널 -->
+    <div class="tab-panel active" id="tab-feed">
+      <div id="event-list">
+        <div class="empty-state" id="empty-msg">
+          <span>⏳</span>
+          <span>이벤트를 기다리는 중...</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- 설정 패널 -->
+    <div class="tab-panel" id="tab-settings">
+      <div id="settings-panel">
+
+        <!-- 모션 게이트 -->
+        <div class="settings-section">
+          <h3>모션 게이트</h3>
+          <div class="setting-row">
+            <div><div class="setting-label">모션 게이트 활성화</div><div class="setting-desc">변화 없으면 YOLO 추론 생략</div></div>
+            <label class="toggle"><input type="checkbox" id="cfg-motion_gate" checked><span class="toggle-slider"></span></label>
+            <span></span>
+          </div>
+          <div class="setting-row">
+            <div><div class="setting-label">픽셀 변화 임계값</div><div class="setting-desc">motion_ratio_threshold</div></div>
+            <input type="range" class="setting-input" id="cfg-motion_ratio_threshold" min="0.001" max="0.05" step="0.001" value="0.004" oninput="syncDisplay(this)">
+            <span class="setting-value-display" id="disp-motion_ratio_threshold">0.004</span>
+          </div>
+          <div class="setting-row">
+            <div><div class="setting-label">강제 갱신 주기(초)</div><div class="setting-desc">idle_refresh_seconds</div></div>
+            <input type="number" class="setting-input" id="cfg-idle_refresh_seconds" min="1" max="3600" value="10">
+            <span></span>
+          </div>
+        </div>
+
+        <!-- 체류 감지 -->
+        <div class="settings-section">
+          <h3>체류 감지</h3>
+          <div class="setting-row">
+            <div><div class="setting-label">체류 초과 한도(초)</div><div class="setting-desc">dwell_limit_seconds</div></div>
+            <input type="number" class="setting-input" id="cfg-dwell_limit_seconds" min="60" max="86400" value="3600">
+            <span></span>
+          </div>
+          <div class="setting-row">
+            <div><div class="setting-label">미주문 유예(초)</div><div class="setting-desc">unordered_grace_seconds</div></div>
+            <input type="number" class="setting-input" id="cfg-unordered_grace_seconds" min="10" max="3600" value="300">
+            <span></span>
+          </div>
+          <div class="setting-row">
+            <div><div class="setting-label">쓰러짐 유지(초)</div><div class="setting-desc">fall_hold_seconds</div></div>
+            <input type="number" class="setting-input" id="cfg-fall_hold_seconds" min="1" max="60" step="0.5" value="5">
+            <span></span>
+          </div>
+        </div>
+
+        <!-- 카메라 장애 -->
+        <div class="settings-section">
+          <h3>카메라 장애 감지</h3>
+          <div class="setting-row">
+            <div><div class="setting-label">암전 임계 밝기</div><div class="setting-desc">luma_black_threshold (0-255)</div></div>
+            <input type="range" class="setting-input" id="cfg-luma_black_threshold" min="0" max="80" step="1" value="40" oninput="syncDisplay(this)">
+            <span class="setting-value-display" id="disp-luma_black_threshold">40</span>
+          </div>
+          <div class="setting-row">
+            <div><div class="setting-label">백화 임계 밝기</div><div class="setting-desc">luma_white_threshold (0-255)</div></div>
+            <input type="range" class="setting-input" id="cfg-luma_white_threshold" min="180" max="255" step="1" value="240" oninput="syncDisplay(this)">
+            <span class="setting-value-display" id="disp-luma_white_threshold">240</span>
+          </div>
+          <div class="setting-row">
+            <div><div class="setting-label">정지 판정 프레임</div><div class="setting-desc">frozen_frames_threshold</div></div>
+            <input type="number" class="setting-input" id="cfg-frozen_frames_threshold" min="5" max="500" value="45">
+            <span></span>
+          </div>
+        </div>
+
+        <!-- 문 여닫이 -->
+        <div class="settings-section">
+          <h3>문 여닫이 감지</h3>
+          <div class="setting-row">
+            <div><div class="setting-label">문 감지 활성화</div><div class="setting-desc">door_enabled</div></div>
+            <label class="toggle"><input type="checkbox" id="cfg-door_enabled"><span class="toggle-slider"></span></label>
+            <span></span>
+          </div>
+          <div class="setting-row">
+            <div><div class="setting-label">차이 임계값</div><div class="setting-desc">door_diff_threshold (픽셀 비율, 단일 기준만 사용 시)</div></div>
+            <input type="range" class="setting-input" id="cfg-door_diff_threshold" min="0.01" max="0.3" step="0.01" value="0.05" oninput="syncDisplay(this)">
+            <span class="setting-value-display" id="disp-door_diff_threshold">0.05</span>
+          </div>
+          <div class="setting-row">
+            <div><div class="setting-label">개방 유지 시간</div><div class="setting-desc">door_open_seconds — 이 시간(초) 이상 열려 있어야 이벤트 발생</div></div>
+            <input type="range" class="setting-input" id="cfg-door_open_seconds" min="5" max="300" step="5" value="30" oninput="syncDisplay(this)">
+            <span class="setting-value-display" id="disp-door_open_seconds">30</span>
+          </div>
+          <div class="setting-row">
+            <div><div class="setting-label">ROI (x, y, 너비, 높이)</div><div class="setting-desc">0,0,0,0 이면 전체 프레임 — 아래 선택기로 지정 가능</div></div>
+            <div style="display:grid; grid-template-columns:1fr 1fr 1fr 1fr; gap:6px;">
+              <input type="number" class="setting-input" id="cfg-door_roi_x" min="0" value="0" placeholder="x">
+              <input type="number" class="setting-input" id="cfg-door_roi_y" min="0" value="0" placeholder="y">
+              <input type="number" class="setting-input" id="cfg-door_roi_w" min="0" value="0" placeholder="너비">
+              <input type="number" class="setting-input" id="cfg-door_roi_h" min="0" value="0" placeholder="높이">
+            </div>
+            <span></span>
+          </div>
+          <div style="margin-top:8px;">
+            <div class="setting-label" style="margin-bottom:6px;">ROI 드래그 선택기</div>
+            <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:6px;">
+              <button class="btn" onclick="openRoiPicker()">스냅샷 불러오기</button>
+              <button class="btn" onclick="clearRoi()" style="font-size:11px">ROI 초기화</button>
+              <span class="door-status" id="roi-hint">스냅샷을 불러온 뒤 이미지 위에서 드래그하세요.</span>
+            </div>
+            <div id="roi-picker-wrap" style="display:none; position:relative; max-width:480px; border:1px solid var(--border); border-radius:6px; overflow:hidden;">
+              <canvas id="roi-canvas" style="display:block; width:100%; cursor:crosshair;"></canvas>
+              <div style="padding:8px; background:var(--surface); border-top:1px solid var(--border); display:flex; gap:8px; align-items:center;">
+                <button class="btn success" id="roi-save-btn" disabled onclick="roiSave()" style="font-weight:700;">ROI 저장</button>
+                <span id="roi-save-hint" style="font-size:11px; color:var(--muted)">드래그로 영역 선택 후 저장하세요.</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- 기준 이미지 캡처 -->
+          <div style="margin-top:8px;">
+            <div class="setting-label" style="margin-bottom:8px;">닫힌 상태 기준 이미지</div>
+            <div class="door-preview-area">
+              <div>
+                <img id="door-preview-closed" class="door-preview-img" src="" alt="" style="display:none">
+                <div class="door-preview-placeholder" id="door-ph-closed">캡처 없음</div>
+              </div>
+              <div class="door-actions">
+                <button class="btn primary" onclick="captureDoorRef('closed')">닫힌 상태 캡처</button>
+                <button class="btn" onclick="refreshDoorPreview('closed')">미리보기 갱신</button>
+              </div>
+            </div>
+            <div class="setting-label" style="margin-bottom:8px;margin-top:12px;">열린 상태 기준 이미지</div>
+            <div class="door-preview-area">
+              <div>
+                <img id="door-preview-open" class="door-preview-img" src="" alt="" style="display:none">
+                <div class="door-preview-placeholder" id="door-ph-open">캡처 없음</div>
+              </div>
+              <div class="door-actions">
+                <button class="btn primary" onclick="captureDoorRef('open')">열린 상태 캡처</button>
+                <button class="btn" onclick="refreshDoorPreview('open')">미리보기 갱신</button>
+              </div>
+            </div>
+            <div class="door-status" id="door-status" style="margin-top:6px;">detector 스트림 포트로 캡처합니다.</div>
+          </div>
+        </div>
+
+        <!-- 스트림 -->
+        <div class="settings-section">
+          <h3>스트림</h3>
+          <div class="setting-row">
+            <div><div class="setting-label">스트림 포트</div><div class="setting-desc">stream_port (detector --stream-port와 동일)</div></div>
+            <input type="number" class="setting-input" id="cfg-stream_port" min="1024" max="65535" value="8081">
+            <span></span>
+          </div>
+        </div>
+
+      </div>
+
+      <div class="save-bar">
+        <span class="save-status" id="save-status"></span>
+        <button class="btn" onclick="loadSettings()">초기화</button>
+        <button class="btn success" onclick="saveSettings()">설정 저장</button>
       </div>
     </div>
   </section>
@@ -390,13 +507,14 @@
 </footer>
 
 <script>
-const MAX_ROWS = 500;   // 최대 표시 이벤트 수 (메모리 제한)
-const WARN_EVENTS   = new Set(["camera_whiteout","camera_blackout","camera_frozen","camera_stalled"]);
-const CAMERA_OK     = new Set(["camera_ok"]);
+const MAX_ROWS = 500;
+const WARN_EVENTS = new Set(["camera_whiteout","camera_blackout","camera_frozen","camera_stalled"]);
+const CAMERA_OK   = new Set(["camera_ok"]);
 
 let currentFile = "";
 let eventSource = null;
-let counts = { overstay:0, unordered:0, fallen:0, camera:0, total:0 };
+let counts = { overstay:0, unordered:0, fallen:0, camera:0, door:0, total:0 };
+let doorIsOpen = null; /* null=알 수 없음, true=열림, false=닫힘 */
 let newCount = 0;
 let userScrolled = false;
 
@@ -412,14 +530,39 @@ const newBadge    = document.getElementById("new-badge");
 const footerFile  = document.getElementById("footer-file");
 const footerCount = document.getElementById("footer-count");
 
+// ── 탭 전환 ─────────────────────────────────────────────────────────────────
+function switchTab(name, btn) {
+  document.querySelectorAll(".tab-btn").forEach(b => b.classList.remove("active"));
+  document.querySelectorAll(".tab-panel").forEach(p => p.classList.remove("active"));
+  btn.classList.add("active");
+  document.getElementById("tab-" + name).classList.add("active");
+  document.getElementById("feed-extra").style.display = name === "feed" ? "" : "none";
+  if (name === "settings") loadSettings();
+}
+
+// ── 슬라이더 표시값 동기화 ──────────────────────────────────────────────────
+function syncDisplay(el) {
+  const disp = document.getElementById("disp-" + el.id.replace("cfg-",""));
+  if (disp) disp.textContent = el.value;
+}
+
 // ── 카운트 갱신 ─────────────────────────────────────────────────────────────
 function updateCounts() {
   document.getElementById("cnt-overstay").textContent = counts.overstay;
   document.getElementById("cnt-unordered").textContent = counts.unordered;
   document.getElementById("cnt-fallen").textContent = counts.fallen;
   document.getElementById("cnt-camera").textContent = counts.camera;
+  document.getElementById("cnt-door").textContent = counts.door;
   document.getElementById("cnt-total").textContent = counts.total;
   footerCount.textContent = `총 ${counts.total}건`;
+  const badge = document.getElementById("door-state-badge");
+  if (doorIsOpen === true) {
+    badge.textContent = "True (열림)"; badge.style.color = "var(--orange)";
+  } else if (doorIsOpen === false) {
+    badge.textContent = "False (닫힘)"; badge.style.color = "var(--green)";
+  } else {
+    badge.textContent = "—"; badge.style.color = "var(--muted)";
+  }
 }
 
 function countEvent(e) {
@@ -429,14 +572,17 @@ function countEvent(e) {
   else if (ev === "unordered_seated") counts.unordered++;
   else if (ev === "person_fallen") counts.fallen++;
   else if (WARN_EVENTS.has(ev)) counts.camera++;
+  else if (ev === "door_open")   { counts.door++; doorIsOpen = true; }
+  else if (ev === "door_closed") { doorIsOpen = false; }
   updateCounts();
 }
 
-// ── 이벤트 행 생성 ──────────────────────────────────────────────────────────
+// ── 이벤트 행 ───────────────────────────────────────────────────────────────
 function rowClass(e) {
   const ev = e.event || "";
   if (ev === "overstay" || ev === "person_fallen") return "ev-overstay";
   if (ev === "unordered_seated") return "ev-unordered";
+  if (ev === "door_open") return "ev-door-open";
   if (WARN_EVENTS.has(ev)) return "ev-camera-warn";
   if (CAMERA_OK.has(ev)) return "ev-camera-ok";
   return "";
@@ -444,11 +590,7 @@ function rowClass(e) {
 
 function appendEvent(e, prepend=false) {
   if (emptyMsg.parentNode === list) list.removeChild(emptyMsg);
-
-  // 최대 행 초과 시 오래된 행 제거
-  while (list.children.length >= MAX_ROWS) {
-    list.removeChild(list.firstChild);
-  }
+  while (list.children.length >= MAX_ROWS) list.removeChild(list.firstChild);
 
   const row = document.createElement("div");
   row.className = "event-row " + rowClass(e);
@@ -463,12 +605,8 @@ function appendEvent(e, prepend=false) {
   msg.title = e.message;
 
   row.append(ts, level, mod, msg);
-
-  if (prepend) {
-    list.insertBefore(row, list.firstChild);
-  } else {
-    list.appendChild(row);
-  }
+  if (prepend) list.insertBefore(row, list.firstChild);
+  else         list.appendChild(row);
   return row;
 }
 
@@ -479,15 +617,14 @@ function el(tag, cls, text) {
   return e;
 }
 
-// ── 카메라 상태 갱신 ────────────────────────────────────────────────────────
+// ── 카메라 상태 ─────────────────────────────────────────────────────────────
 function updateCamState(e) {
   const ev = (e.event || "").toLowerCase();
   if (e.module !== "camera") return;
-  if (ev.includes("whiteout") || ev.includes("blackout") ||
-      ev.includes("frozen")   || ev.includes("stalled")) {
+  if (ev.includes("whiteout") || ev.includes("blackout") || ev.includes("frozen") || ev.includes("stalled")) {
     camDot.className = "cam-dot warn";
     camLabel.textContent = `카메라 장애: ${e.event}`;
-  } else if (ev === "ok" || ev === "camera_ok" || e.message.includes("ok")) {
+  } else if (ev === "ok" || ev === "camera_ok") {
     camDot.className = "cam-dot";
     camLabel.textContent = "카메라 정상";
   }
@@ -497,10 +634,7 @@ function updateCamState(e) {
 list.addEventListener("scroll", () => {
   const atBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 40;
   userScrolled = !atBottom;
-  if (atBottom) {
-    newCount = 0;
-    newBadge.style.display = "none";
-  }
+  if (atBottom) { newCount = 0; newBadge.style.display = "none"; }
 });
 
 function scrollToBottom() {
@@ -513,34 +647,22 @@ function scrollToBottom() {
   }
 }
 
-// ── SSE 연결 ────────────────────────────────────────────────────────────────
+// ── SSE ─────────────────────────────────────────────────────────────────────
 function connect(file) {
   if (eventSource) { eventSource.close(); eventSource = null; }
   setConnState("connecting");
-
   const url = `/api/events/stream${file ? "?file=" + encodeURIComponent(file) : ""}`;
   eventSource = new EventSource(url);
-
   eventSource.onopen = () => setConnState("connected");
-
   eventSource.onmessage = (ev) => {
     try {
       const e = JSON.parse(ev.data);
       if (!e.ts) return;
-      countEvent(e);
-      updateCamState(e);
-      appendEvent(e);
-      scrollToBottom();
+      countEvent(e); updateCamState(e); appendEvent(e); scrollToBottom();
     } catch (_) {}
   };
-
   eventSource.addEventListener("heartbeat", () => {});
-
-  eventSource.addEventListener("reload", () => {
-    // 서버가 파일을 찾으면 재연결 유도
-    setTimeout(() => connect(currentFile), 1000);
-  });
-
+  eventSource.addEventListener("reload", () => setTimeout(() => connect(currentFile), 1000));
   eventSource.onerror = () => setConnState("disconnected");
 }
 
@@ -549,33 +671,26 @@ function setConnState(state) {
   connLabel.textContent = { connecting:"연결 중", connected:"연결됨", disconnected:"연결 끊김" }[state] || state;
 }
 
-// ── 히스토리 로드 ────────────────────────────────────────────────────────────
+// ── 히스토리 ────────────────────────────────────────────────────────────────
 async function loadHistory(file) {
-  // 기존 이벤트 초기화
   list.innerHTML = "";
   list.appendChild(emptyMsg);
-  counts = { overstay:0, unordered:0, fallen:0, camera:0, total:0 };
-  newCount = 0;
-  newBadge.style.display = "none";
-  camDot.className = "cam-dot";
-  camLabel.textContent = "카메라 확인 중";
-  updateCounts();
+  counts = { overstay:0, unordered:0, fallen:0, camera:0, door:0, total:0 };
+  doorIsOpen = null;
+  newCount = 0; newBadge.style.display = "none";
+  camDot.className = "cam-dot"; camLabel.textContent = "카메라 확인 중"; updateCounts();
 
   const url = `/api/events/history${file ? "?file=" + encodeURIComponent(file) : ""}`;
   try {
     const res = await fetch(url);
     const events = await res.json();
     if (!Array.isArray(events)) return;
-    events.forEach(e => {
-      countEvent(e);
-      updateCamState(e);
-      appendEvent(e);
-    });
+    events.forEach(e => { countEvent(e); updateCamState(e); appendEvent(e); });
     scrollToBottom();
   } catch (_) {}
 }
 
-// ── 로그 파일 목록 로드 ──────────────────────────────────────────────────────
+// ── 로그 파일 목록 ───────────────────────────────────────────────────────────
 async function loadLogList() {
   try {
     const res = await fetch("/api/logs");
@@ -593,7 +708,6 @@ async function loadLogList() {
       opt.textContent = i === 0 ? `${f} (최신)` : f;
       logSelect.appendChild(opt);
     });
-    // 최신 파일 자동 선택
     selectFile(files[0]);
   } catch (_) {
     const opt = document.createElement("option");
@@ -612,10 +726,10 @@ function selectFile(file) {
 logSelect.addEventListener("change", () => selectFile(logSelect.value));
 
 // ── 카메라 스트림 ────────────────────────────────────────────────────────────
-const streamImg    = document.getElementById("stream-img");
-const camOffline   = document.getElementById("cam-offline");
-const portInput    = document.getElementById("port-input");
-let   streamActive = false;
+const streamImg  = document.getElementById("stream-img");
+const camOffline = document.getElementById("cam-offline");
+const portInput  = document.getElementById("port-input");
+let streamActive = false;
 
 function connectStream() {
   const port = parseInt(portInput.value, 10) || 8081;
@@ -624,36 +738,288 @@ function connectStream() {
   camOffline.style.display = "none";
   streamActive = true;
 }
-
 function disconnectStream() {
-  streamImg.src = "";
-  streamImg.style.display = "none";
-  camOffline.style.display = "";
-  streamActive = false;
+  streamImg.src = ""; streamImg.style.display = "none"; camOffline.style.display = ""; streamActive = false;
 }
-
 function onStreamError() {
   if (!streamActive) return;
   camOffline.innerHTML = "<span>📷</span><span>스트림 연결 실패 — detector가 실행 중인지 확인하세요</span>";
-  camOffline.style.display = "";
-  streamImg.style.display = "none";
+  camOffline.style.display = ""; streamImg.style.display = "none";
+}
+function onStreamLoad() { camOffline.style.display = "none"; streamImg.style.display = ""; }
+
+// ── 설정 로드/저장 ───────────────────────────────────────────────────────────
+function cfgVal(id) {
+  const el = document.getElementById("cfg-" + id);
+  if (!el) return undefined;
+  if (el.type === "checkbox") return el.checked ? 1 : 0;
+  const v = parseFloat(el.value);
+  return isNaN(v) ? 0 : v;
 }
 
-function onStreamLoad() {
-  camOffline.style.display = "none";
-  streamImg.style.display = "";
+function setCfgVal(id, val) {
+  const el = document.getElementById("cfg-" + id);
+  if (!el) return;
+  if (el.type === "checkbox") { el.checked = !!val; return; }
+  el.value = val;
+  const disp = document.getElementById("disp-" + id);
+  if (disp) disp.textContent = val;
+}
+
+async function loadSettings() {
+  try {
+    const res = await fetch("/api/config");
+    const cfg = await res.json();
+    const keys = [
+      "stream_port","motion_gate","motion_ratio_threshold","idle_refresh_seconds",
+      "dwell_limit_seconds","unordered_grace_seconds","fall_hold_seconds",
+      "luma_black_threshold","luma_white_threshold","frozen_frames_threshold",
+      "door_enabled","door_diff_threshold","door_open_seconds","door_roi_x","door_roi_y","door_roi_w","door_roi_h"
+    ];
+    keys.forEach(k => { if (cfg[k] !== undefined) setCfgVal(k, cfg[k]); });
+    // 스트림 포트를 연결 포트에도 동기화
+    if (cfg.stream_port) portInput.value = cfg.stream_port;
+    document.getElementById("save-status").textContent = "";
+    refreshDoorPreview("closed");
+    refreshDoorPreview("open");
+  } catch (_) {
+    document.getElementById("save-status").textContent = "설정 로드 실패";
+  }
+}
+
+async function saveSettings() {
+  const cfg = {
+    stream_port:              cfgVal("stream_port"),
+    motion_gate:              cfgVal("motion_gate"),
+    motion_ratio_threshold:   cfgVal("motion_ratio_threshold"),
+    idle_refresh_seconds:     cfgVal("idle_refresh_seconds"),
+    dwell_limit_seconds:      cfgVal("dwell_limit_seconds"),
+    unordered_grace_seconds:  cfgVal("unordered_grace_seconds"),
+    fall_hold_seconds:        cfgVal("fall_hold_seconds"),
+    luma_black_threshold:     cfgVal("luma_black_threshold"),
+    luma_white_threshold:     cfgVal("luma_white_threshold"),
+    frozen_frames_threshold:  cfgVal("frozen_frames_threshold"),
+    door_enabled:             cfgVal("door_enabled"),
+    door_diff_threshold:      cfgVal("door_diff_threshold"),
+    door_open_seconds:        cfgVal("door_open_seconds"),
+    door_roi_x:               cfgVal("door_roi_x"),
+    door_roi_y:               cfgVal("door_roi_y"),
+    door_roi_w:               cfgVal("door_roi_w"),
+    door_roi_h:               cfgVal("door_roi_h"),
+  };
+  try {
+    const res = await fetch("/api/config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(cfg, null, 2)
+    });
+    const json = await res.json();
+    const st = document.getElementById("save-status");
+    if (json.ok) {
+      st.textContent = "저장 완료 (2초 내 자동 적용)";
+      st.style.color = "var(--green)";
+    } else {
+      st.textContent = "저장 실패";
+      st.style.color = "var(--red)";
+    }
+    setTimeout(() => { st.textContent = ""; st.style.color = ""; }, 4000);
+  } catch (_) {
+    document.getElementById("save-status").textContent = "서버 오류";
+  }
+}
+
+// ── 문 여닫이 기준 이미지 ────────────────────────────────────────────────────
+function getStreamPort() {
+  return parseInt(portInput.value, 10) || 8081;
+}
+
+async function captureDoorRef(state) {
+  const port = getStreamPort();
+  const st = document.getElementById("door-status");
+  const label = state === "open" ? "열림" : "닫힘";
+  st.textContent = `${label} 캡처 중...`;
+  try {
+    const res = await fetch(`http://localhost:${port}/door/save?state=${state}`, { method: "POST" });
+    const json = await res.json();
+    if (json.ok) {
+      st.textContent = `${label} 캡처 완료`;
+      refreshDoorPreview(state);
+    } else {
+      st.textContent = json.error || "캡처 실패";
+    }
+  } catch (_) {
+    st.textContent = "detector 미실행 또는 포트 오류";
+  }
+}
+
+function refreshDoorPreview(state) {
+  const port  = getStreamPort();
+  const imgId = state === "open" ? "door-preview-open"   : "door-preview-closed";
+  const phId  = state === "open" ? "door-ph-open"        : "door-ph-closed";
+  const img   = document.getElementById(imgId);
+  const ph    = document.getElementById(phId);
+  const src   = `http://localhost:${port}/door/preview?state=${state}&t=${Date.now()}`;
+  const tmp   = new Image();
+  tmp.onload  = () => { img.src = src; img.style.display = ""; ph.style.display = "none"; };
+  tmp.onerror = () => { img.style.display = "none"; ph.style.display = ""; };
+  tmp.src = src;
+}
+
+// ── 문 현재 상태 실시간 폴링 ─────────────────────────────────────────────────
+async function pollDoorState() {
+  const port = getStreamPort();
+  const badge = document.getElementById("door-state-badge");
+  try {
+    const res = await fetch(`http://localhost:${port}/door/state`);
+    const json = await res.json();
+    if (json.state === 1) {
+      badge.textContent = "True (열림)"; badge.style.color = "var(--orange)";
+      doorIsOpen = true;
+    } else if (json.state === 0) {
+      badge.textContent = "False (닫힘)"; badge.style.color = "var(--green)";
+      doorIsOpen = false;
+    } else if (json.enabled) {
+      /* 감지는 활성이지만 기준 이미지가 없어 판단 불가 */
+      badge.textContent = "기준 없음"; badge.style.color = "var(--muted)";
+    } else {
+      badge.textContent = "비활성"; badge.style.color = "var(--muted)";
+    }
+  } catch (_) {
+    /* detector 미연결 */
+    badge.textContent = "—"; badge.style.color = "var(--muted)";
+  }
+}
+setInterval(pollDoorState, 3000);
+pollDoorState();
+
+// ── 문 ROI 드래그 선택기 ─────────────────────────────────────────────────────
+let _roiImg = null, _roiDrag = null;
+
+async function openRoiPicker() {
+  const port = getStreamPort();
+  document.getElementById("roi-hint").textContent = "스냅샷 로딩 중...";
+  const img = new Image();
+  img.crossOrigin = "anonymous";
+  img.onload = () => {
+    _roiImg = img;
+    const canvas = document.getElementById("roi-canvas");
+    canvas.width  = img.naturalWidth;
+    canvas.height = img.naturalHeight;
+    const ctx = canvas.getContext("2d");
+    ctx.drawImage(img, 0, 0);
+    // 기존 ROI가 있으면 표시
+    const rx = parseInt(document.getElementById("cfg-door_roi_x").value)||0;
+    const ry = parseInt(document.getElementById("cfg-door_roi_y").value)||0;
+    const rw = parseInt(document.getElementById("cfg-door_roi_w").value)||0;
+    const rh = parseInt(document.getElementById("cfg-door_roi_h").value)||0;
+    if (rw > 0 && rh > 0) drawRoiRect(ctx, rx, ry, rw, rh);
+    document.getElementById("roi-picker-wrap").style.display = "";
+    document.getElementById("roi-hint").textContent = "이미지 위에서 드래그하여 ROI를 선택하세요.";
+    setupRoiDrag(canvas);
+  };
+  img.onerror = () => {
+    document.getElementById("roi-hint").textContent = "스냅샷 실패 — detector가 실행 중인지 확인하세요.";
+  };
+  img.src = `http://localhost:${port}/snapshot?t=${Date.now()}`;
+}
+
+function drawRoiRect(ctx, x, y, w, h) {
+  /* 선택 영역 외부를 반투명 오버레이로 표시해 선택 범위를 직관적으로 보여줍니다. */
+  ctx.save();
+  ctx.fillStyle = "rgba(0,0,0,0.4)";
+  const iw = ctx.canvas.width, ih = ctx.canvas.height;
+  ctx.fillRect(0, 0, iw, y);
+  ctx.fillRect(0, y + h, iw, ih - y - h);
+  ctx.fillRect(0, y, x, h);
+  ctx.fillRect(x + w, y, iw - x - w, h);
+  ctx.strokeStyle = "#ff3333";
+  ctx.lineWidth = Math.max(2, iw / 240);
+  ctx.strokeRect(x, y, w, h);
+  ctx.restore();
+}
+
+function setupRoiDrag(canvas) {
+  const ctx = canvas.getContext("2d");
+  const getPos = e => {
+    const r = canvas.getBoundingClientRect();
+    const scaleX = canvas.width  / r.width;
+    const scaleY = canvas.height / r.height;
+    return {
+      x: Math.max(0, Math.min(canvas.width,  (e.clientX - r.left) * scaleX)),
+      y: Math.max(0, Math.min(canvas.height, (e.clientY - r.top)  * scaleY))
+    };
+  };
+  canvas.onmousedown = e => { _roiDrag = getPos(e); };
+  canvas.onmousemove = e => {
+    if (!_roiDrag) return;
+    const p = getPos(e);
+    const x = Math.min(_roiDrag.x, p.x), y = Math.min(_roiDrag.y, p.y);
+    const w = Math.abs(p.x - _roiDrag.x), h = Math.abs(p.y - _roiDrag.y);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(_roiImg, 0, 0);
+    if (w > 4 && h > 4) drawRoiRect(ctx, x, y, w, h);
+  };
+  canvas.onmouseup = e => {
+    if (!_roiDrag) return;
+    const p = getPos(e);
+    const x = Math.round(Math.min(_roiDrag.x, p.x));
+    const y = Math.round(Math.min(_roiDrag.y, p.y));
+    const w = Math.round(Math.abs(p.x - _roiDrag.x));
+    const h = Math.round(Math.abs(p.y - _roiDrag.y));
+    _roiDrag = null;
+    if (w < 4 || h < 4) return;
+    document.getElementById("cfg-door_roi_x").value = x;
+    document.getElementById("cfg-door_roi_y").value = y;
+    document.getElementById("cfg-door_roi_w").value = w;
+    document.getElementById("cfg-door_roi_h").value = h;
+    document.getElementById("roi-hint").textContent =
+      `x=${x} y=${y} w=${w} h=${h}`;
+    document.getElementById("roi-save-btn").disabled = false;
+    document.getElementById("roi-save-hint").textContent = "선택 완료 — [ROI 저장] 버튼으로 적용하세요.";
+    document.getElementById("roi-save-hint").style.color = "var(--green)";
+  };
+  canvas.onmouseleave = () => { _roiDrag = null; };
+}
+
+async function roiSave() {
+  await saveSettings();
+  document.getElementById("roi-save-hint").textContent = "저장 완료!";
+  document.getElementById("roi-save-hint").style.color = "var(--green)";
+  document.getElementById("roi-save-btn").disabled = true;
+  setTimeout(() => {
+    document.getElementById("roi-save-hint").textContent = "드래그로 영역 선택 후 저장하세요.";
+    document.getElementById("roi-save-hint").style.color = "var(--muted)";
+  }, 3000);
+}
+
+function clearRoi() {
+  ["door_roi_x","door_roi_y","door_roi_w","door_roi_h"]
+    .forEach(k => document.getElementById("cfg-"+k).value = 0);
+  if (_roiImg) {
+    const canvas = document.getElementById("roi-canvas");
+    const ctx = canvas.getContext("2d");
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(_roiImg, 0, 0);
+  }
+  document.getElementById("roi-hint").textContent = "ROI 초기화됨.";
+  const saveBtn = document.getElementById("roi-save-btn");
+  if (saveBtn) {
+    saveBtn.disabled = false;  /* 초기화(0,0,0,0)도 저장할 수 있게 */
+    document.getElementById("roi-save-hint").textContent = "[ROI 저장]으로 초기화를 적용하세요.";
+    document.getElementById("roi-save-hint").style.color = "var(--muted)";
+  }
 }
 
 // ── 초기화 ──────────────────────────────────────────────────────────────────
 loadLogList();
 
-// 30초마다 로그 파일 목록 갱신 (새 파일이 생기면 반영)
+// 30초마다 로그 목록 갱신
 setInterval(async () => {
   try {
     const res = await fetch("/api/logs");
     const files = await res.json();
     const current = Array.from(logSelect.options).map(o => o.value);
-    const hasNew  = files.some(f => !current.includes(f));
+    const hasNew = files.some(f => !current.includes(f));
     if (hasNew) {
       const selected = logSelect.value;
       logSelect.innerHTML = "";

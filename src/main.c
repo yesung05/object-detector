@@ -1,5 +1,6 @@
 #include "camera_health.h"
 #include "stream.h"
+#include "door.h"
 #include "config.h"
 #include "gray.h"
 #include "log.h"
@@ -16,6 +17,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>  /* _stat / stat: config.json mtime 감시용 */
 
 #if defined(_WIN32)
 #define popen _popen
@@ -60,11 +62,23 @@ typedef struct {
     double       motion_ratio_threshold;  /* 기본 0.004 */
     double       idle_refresh_seconds;    /* 기본 10.0 */
     double       last_detection_time;
+    /* 실시간 FPS — 지수 이동 평균(EMA).
+     * 누적 평균은 시작 초기값의 영향을 오래 받으므로
+     * EMA를 사용해 최근 몇 초간의 순간 FPS를 표시합니다. */
+    double       realtime_inf_fps;  /* 추론 간격 EMA, α=0.3 */
+    double       realtime_cam_fps;  /* 프레임 간격 EMA, α=0.15 */
+    double       last_frame_time;   /* 직전 프레임 시각 (cam FPS EMA용) */
     /* YOLO 추론 FPS 상한. 0이면 제한 없음. detect_every와 OR 조건으로 동작.
      * 카메라 입력에서 추론이 느려도 디코딩 루프를 막지 않기 위해 사용. */
     double       detect_fps_limit;
     double       hud_start_time;  /* 첫 프레임 시각 (HUD FPS 분모) */
     int          stream_port;     /* MJPEG 스트림 포트, 0이면 비활성 */
+    DoorMonitor  door;            /* 문 여닫이 감지 (door_reference.raw 필요) */
+
+    /* config.json hot-reload — 2초마다 mtime을 확인하고 변경 시 재로드합니다. */
+    char   config_reload_path[512]; /* 재로드할 config 파일 경로 */
+    time_t config_mtime;            /* 마지막으로 읽은 파일 수정 시각 */
+    double config_check_time;       /* 마지막으로 mtime을 체크한 시각 */
 } AppContext;
 
 /* 명령줄에서 읽은 경로와 프로그램 내부 기본 설정을 한곳에 모읍니다. */
@@ -503,6 +517,61 @@ static void preview_frame(AppContext *app, const RgbFrame *frame) {
 }
 
 /*
+ * config.json이 변경되면 AppContext 설정 필드를 새 값으로 교체합니다.
+ * detector, tracker, media 설정 등 재시작이 필요한 항목은 제외하고,
+ * 런타임에 안전하게 바꿀 수 있는 임계값들만 업데이트합니다.
+ */
+static void reload_config(AppContext *app) {
+    Config cfg;
+    char err[128] = {0};
+
+    if (config_load(&cfg, app->config_reload_path, err, sizeof(err)) != 0) {
+        fprintf(stderr, "config reload failed: %s\n", err);
+        return;
+    }
+
+    /* 모션 게이트 설정 */
+    app->motion_gate_enabled    = (int)config_long(&cfg, "motion_gate", 1, 0, 1);
+    app->motion_ratio_threshold =
+        (double)config_float(&cfg, "motion_ratio_threshold", 0.004f, 0.0001f, 1.0f);
+    app->idle_refresh_seconds   =
+        (double)config_float(&cfg, "idle_refresh_seconds", 10.0f, 1.0f, 3600.0f);
+
+    /* 문 여닫이 설정 */
+    app->door.enabled                = (int)config_long(&cfg, "door_enabled", 0, 0, 1);
+    app->door.diff_threshold         = config_float(&cfg, "door_diff_threshold", 0.05f, 0.001f, 1.0f);
+    app->door.open_threshold_seconds = (double)config_float(&cfg, "door_open_seconds", 30.0f, 1.0f, 3600.0f);
+    app->door.roi_x = (int)config_long(&cfg, "door_roi_x", 0, 0, 9999);
+    app->door.roi_y = (int)config_long(&cfg, "door_roi_y", 0, 0, 9999);
+    app->door.roi_w = (int)config_long(&cfg, "door_roi_w", 0, 0, 9999);
+    app->door.roi_h = (int)config_long(&cfg, "door_roi_h", 0, 0, 9999);
+    /* 설정 변경 즉시 대시보드에 반영 — process_frame을 기다리지 않고 바로 갱신 */
+    if (app->stream_port > 0)
+        stream_set_door_enabled(app->door.enabled);
+
+    /* 카메라 장애 임계값 — setter가 없으므로 config 구조체에 직접 대입합니다. */
+    app->cam_health.config.luma_black_threshold    =
+        (int)config_long(&cfg, "luma_black_threshold",    40,  0, 255);
+    app->cam_health.config.luma_white_threshold    =
+        (int)config_long(&cfg, "luma_white_threshold",   240,  0, 255);
+    app->cam_health.config.frozen_frames_threshold =
+        (int)config_long(&cfg, "frozen_frames_threshold",  45,  1, 10000);
+
+    /* 체류/쓰러짐 룰 임계값 */
+    RulesConfig rules_cfg = app->rules.config; /* 기존값으로 초기화 (roi_kiosk 등 유지) */
+    rules_cfg.dwell_limit_seconds =
+        (double)config_float(&cfg, "dwell_limit_seconds", 3600.0f, 60.0f, 86400.0f);
+    rules_cfg.unordered_grace_seconds =
+        (double)config_float(&cfg, "unordered_grace_seconds", 300.0f, 0.0f, 3600.0f);
+    rules_cfg.fall_hold_seconds =
+        (double)config_float(&cfg, "fall_hold_seconds", 5.0f, 1.0f, 60.0f);
+    rules_update_config(&app->rules, &rules_cfg);
+
+    config_destroy(&cfg);
+    fprintf(stderr, "config: reloaded from %s\n", app->config_reload_path);
+}
+
+/*
  * FFmpeg가 RGB 프레임 하나를 준비할 때마다 호출하는 콜백입니다.
  *
  * detect-every가 3이면 0, 3, 6...번 프레임에서만 YOLO를 실행하고, 그 사이
@@ -518,9 +587,42 @@ static int process_frame(RgbFrame *frame, void *opaque,
     double started;
     double now = platform_monotonic_seconds();
 
+    /* config.json hot-reload: 2초마다 파일 수정 시각을 체크합니다.
+     * 대시보드에서 설정 저장 후 2초 이내에 자동으로 반영됩니다. */
+    if (app->config_reload_path[0] &&
+        (now - app->config_check_time) >= 2.0) {
+        app->config_check_time = now;
+#if defined(_WIN32)
+        struct _stat st;
+        if (_stat(app->config_reload_path, &st) == 0 &&
+            st.st_mtime != app->config_mtime) {
+            app->config_mtime = st.st_mtime;
+            reload_config(app);
+        }
+#else
+        struct stat st;
+        if (stat(app->config_reload_path, &st) == 0 &&
+            st.st_mtime != app->config_mtime) {
+            app->config_mtime = (time_t)st.st_mtime;
+            reload_config(app);
+        }
+#endif
+    }
+
     /* 첫 프레임에서 HUD FPS 계산 기준 시각을 기록합니다. */
     if (app->hud_start_time == 0.0)
         app->hud_start_time = now;
+
+    /* 카메라 FPS EMA 업데이트 — 프레임 간격의 역수로 순간 FPS 계산.
+     * α=0.15로 약 7~8 프레임 반응폭을 가집니다. */
+    if (app->last_frame_time > 0.0) {
+        double interval = now - app->last_frame_time;
+        if (interval > 0.001) { /* 1ms 미만 이상치 무시 */
+            double inst = 1.0 / interval;
+            app->realtime_cam_fps = app->realtime_cam_fps * 0.85 + inst * 0.15;
+        }
+    }
+    app->last_frame_time = now;
 
     /* detect_fps_limit: 시간 기반 추론 상한.
      * 카메라 모드에서 추론이 느려도 디코딩 루프를 블로킹하지 않기 위해,
@@ -625,6 +727,15 @@ static int process_frame(RgbFrame *frame, void *opaque,
                 return -1;
             app->tracking_seconds += platform_monotonic_seconds() - started;
         }
+        /* INF FPS EMA 업데이트 — 이전 추론 이후 경과 시간의 역수.
+         * α=0.3으로 약 3회 추론 반응폭. 첫 추론은 건너뜁니다. */
+        if (app->last_detection_time > 0.0) {
+            double det_interval = now - app->last_detection_time;
+            if (det_interval > 0.001) {
+                double inst = 1.0 / det_interval;
+                app->realtime_inf_fps = app->realtime_inf_fps * 0.7 + inst * 0.3;
+            }
+        }
         app->last_detection_time = now;
         tracks_update(&app->tracks, &app->detections, now);
         rules_evaluate(&app->rules, &app->tracks, now, &app->event_log);
@@ -640,16 +751,63 @@ static int process_frame(RgbFrame *frame, void *opaque,
     draw_detections(frame->data, frame->width, frame->height, frame->stride,
                     &app->detections);
     {
-        double elapsed = now - app->hud_start_time;
-        float det_fps = (elapsed > 0.5)
-            ? (float)app->inference_runs / (float)elapsed : 0.0f;
-        float cam_fps = (elapsed > 0.5 && app->frames > 0)
-            ? (float)app->frames / (float)elapsed : 0.0f;
+        /* 실시간 EMA FPS를 HUD에 표시합니다.
+         * 시작 직후(EMA=0)에는 0이 표시되다가 몇 프레임 후 안정됩니다. */
         draw_hud(frame->data, frame->width, frame->height, frame->stride,
-                 det_fps, cam_fps);
+                 (float)app->realtime_inf_fps,
+                 (float)app->realtime_cam_fps);
     }
     if (app->stream_port > 0)
         stream_push(frame->data, frame->width, frame->height, frame->stride);
+
+    /* 문 여닫이 감지: 닫힘/열림 기준 이미지와 현재 프레임 ROI 비교
+     *
+     * 이벤트 정책: 열리는 즉시 로그를 남기지 않고, open_threshold_seconds 이상
+     * 열린 상태가 지속될 때만 door_open 이벤트를 발생시킵니다.
+     * 잠깐 열렸다 닫히는 정상 입퇴장을 무시하기 위한 설계입니다. */
+    if (app->door.enabled) {
+        /* 감지 활성 여부를 먼저 알림 — 기준 이미지 없어도 "활성"임을 대시보드에 표시 */
+        if (app->stream_port > 0)
+            stream_set_door_enabled(1);
+    }
+    if (app->door.enabled && (app->door.ref_closed_rgb || app->door.ref_open_rgb)) {
+        int changed = 0;
+        int state = door_check(&app->door,
+                               frame->data, frame->width, frame->height,
+                               frame->stride, &changed);
+        /* 현재 문 상태를 stream 서버에 전달 — /door/state API로 실시간 조회 가능 */
+        if (app->stream_port > 0)
+            stream_set_door_state(state);
+
+        if (state == 1) {
+            /* 열린 상태 — 지속 시간 누적 */
+            if (app->door.open_since < 0.0) {
+                app->door.open_since = now; /* 이번 개방 시작 시각 */
+            } else if (!app->door.open_event_fired &&
+                       (now - app->door.open_since) >= app->door.open_threshold_seconds) {
+                char door_msg[80];
+                snprintf(door_msg, sizeof(door_msg),
+                         "door_open: %.0f초 이상 개방 상태 지속",
+                         app->door.open_threshold_seconds);
+                event_log_write(&app->event_log, LOG_WARN, "door", door_msg);
+                app->event_count++;
+                app->door.open_event_fired = 1;
+            }
+        } else if (state == 0) {
+            /* 닫힌 상태 — 이전에 개방 중이었다면 닫힘 이벤트 발생 */
+            if (app->door.open_since >= 0.0) {
+                if (app->door.open_event_fired) {
+                    /* door_open 이벤트가 발생한 경우에만 닫힘도 기록 */
+                    event_log_write(&app->event_log, LOG_INFO, "door",
+                                    "door_closed: 문 닫힘 확인");
+                    app->event_count++;
+                }
+                app->door.open_since       = -1.0;
+                app->door.open_event_fired = 0;
+            }
+        }
+    }
+
     app->drawing_seconds += platform_monotonic_seconds() - started;
     preview_frame(app, frame);
     /* 다음 프레임의 모션 게이트 비교를 위해 현재 gray를 복사합니다. */
@@ -842,6 +1000,14 @@ int main(int argc, char **argv) {
             (double)config_float(&cfg, "motion_ratio_threshold", 0.004f, 0.0001f, 1.0f);
         app.idle_refresh_seconds  =
             (double)config_float(&cfg, "idle_refresh_seconds", 10.0f, 1.0f, 3600.0f);
+        /* 문 여닫이 설정 — door_load는 cfg 블록 밖에서 (data_dir 필요) */
+        app.door.enabled                 = (int)config_long (&cfg, "door_enabled",        0,    0,    1);
+        app.door.diff_threshold          = config_float      (&cfg, "door_diff_threshold",  0.05f, 0.001f, 1.0f);
+        app.door.open_threshold_seconds  = (double)config_float(&cfg, "door_open_seconds", 30.0f, 1.0f, 3600.0f);
+        app.door.roi_x                   = (int)config_long (&cfg, "door_roi_x",          0,    0, 9999);
+        app.door.roi_y          = (int)config_long (&cfg, "door_roi_y",         0,    0, 9999);
+        app.door.roi_w          = (int)config_long (&cfg, "door_roi_w",         0,    0, 9999);
+        app.door.roi_h          = (int)config_long (&cfg, "door_roi_h",         0,    0, 9999);
         config_destroy(&cfg);
         if (tracks_init(&app.tracks, 64, 0.4f, 5,
                         error, sizeof(error)) != 0) {
@@ -885,9 +1051,58 @@ int main(int argc, char **argv) {
 #if defined(SIGPIPE)
     signal(SIGPIPE, SIG_IGN);
 #endif
+    /* config hot-reload 경로 및 초기 mtime 설정 */
+    if (args.config_path) {
+        strncpy(app.config_reload_path, args.config_path,
+                sizeof(app.config_reload_path) - 1);
+#if defined(_WIN32)
+        struct _stat ini_st;
+        if (_stat(args.config_path, &ini_st) == 0)
+            app.config_mtime = ini_st.st_mtime;
+#else
+        struct stat ini_st;
+        if (stat(args.config_path, &ini_st) == 0)
+            app.config_mtime = (time_t)ini_st.st_mtime;
+#endif
+    }
+
+    /* data_dir: config 파일 위치를 프로젝트 루트로 사용합니다.
+     * door_reference.raw와 config.json이 같은 디렉터리에 놓입니다. */
+    char data_dir[512] = ".";
+    if (args.config_path) {
+        strncpy(data_dir, args.config_path, sizeof(data_dir) - 1);
+        char *bs = strrchr(data_dir, '\\');
+        char *fs = strrchr(data_dir, '/');
+        char *last = (bs > fs) ? bs : fs;
+        if (last) *last = '\0';
+        else { data_dir[0] = '.'; data_dir[1] = '\0'; }
+    }
+
     if (app.stream_port > 0) {
-        if (stream_start(app.stream_port) != 0)
+        if (stream_start(app.stream_port, data_dir) != 0)
             fprintf(stderr, "stream: failed to start on port %d\n", app.stream_port);
+        /* 시작 즉시 door 활성 상태를 대시보드에 노출 — process_frame 첫 호출을 기다리지 않음 */
+        stream_set_door_enabled(app.door.enabled);
+    }
+
+    /* 문 여닫이 기준 이미지 로드 — 닫힘/열림 기준 각각 로드합니다.
+     * 파일 없으면 0 반환(에러 아님)이므로 그냥 계속 진행합니다. */
+    {
+        char closed_path[600], open_path[600];
+        snprintf(closed_path, sizeof(closed_path),
+                 "%s\\door_closed_reference.raw", data_dir);
+        snprintf(open_path,   sizeof(open_path),
+                 "%s\\door_open_reference.raw",   data_dir);
+        if (door_load(&app.door, closed_path, open_path) != 0)
+            fprintf(stderr, "door: failed to load reference\n");
+        else {
+            if (app.door.ref_closed_rgb)
+                fprintf(stderr, "door: closed reference loaded %dx%d\n",
+                        app.door.ref_closed_w, app.door.ref_closed_h);
+            if (app.door.ref_open_rgb)
+                fprintf(stderr, "door: open reference loaded %dx%d\n",
+                        app.door.ref_open_w, app.door.ref_open_h);
+        }
     }
     start = platform_monotonic_seconds();
     cpu_start = platform_process_cpu_seconds();
@@ -932,6 +1147,7 @@ done:
     if (app.keypoint_log)  fclose(app.keypoint_log);
     if (app.preview_pipe) pclose(app.preview_pipe);
     if (event_log_file && event_log_file != stderr) fclose(event_log_file);
+    door_destroy(&app.door);
     rules_destroy(&app.rules);
     tracks_destroy(&app.tracks);
     camera_health_destroy(&app.cam_health);

@@ -33,6 +33,111 @@ static int grow(Config *c, char *error, size_t error_size) {
     return 0;
 }
 
+/* buf에 key\0value\0 쌍을 추가하는 내부 헬퍼 */
+static int append_kv(Config *c, char **all, size_t *all_len, size_t *all_cap,
+                     const char *k, size_t klen, const char *v, size_t vlen,
+                     char *error, size_t error_size) {
+    size_t need = *all_len + klen + 1 + vlen + 1;
+    if (need > *all_cap) {
+        size_t nc = *all_cap ? *all_cap * 2 : 1024;
+        if (nc < need) nc = need * 2;
+        char *nb = (char *)realloc(*all, nc);
+        if (!nb) { if (error) snprintf(error, error_size, "config: out of memory"); return -1; }
+        *all = nb; *all_cap = nc;
+    }
+    memcpy(*all + *all_len, k, klen); (*all)[*all_len + klen] = '\0';
+    memcpy(*all + *all_len + klen + 1, v, vlen); (*all)[*all_len + klen + 1 + vlen] = '\0';
+    *all_len += klen + 1 + vlen + 1;
+    return grow(c, error, error_size);
+}
+
+/* 포인터 배열을 buf 내 위치로 재설정합니다. */
+static void repoint(Config *c) {
+    size_t pos = 0, i;
+    for (i = 0; i < c->count; ++i) {
+        c->keys[i]   = c->buf + pos;
+        pos += strlen(c->keys[i]) + 1;
+        c->values[i] = c->buf + pos;
+        pos += strlen(c->values[i]) + 1;
+    }
+}
+
+/* ── flat JSON 파서 ──────────────────────────────────────────────────────────
+ * { "key": 1.23, "key2": true, "key3": "str" } 형식만 지원합니다.
+ * 중첩 객체·배열은 무시됩니다. true/false → "1"/"0" 으로 변환해 저장합니다. */
+static int config_load_json(Config *c, FILE *f, char *error, size_t error_size) {
+    /* 파일 전체 읽기 */
+    char *raw = NULL;
+    size_t raw_len = 0, raw_cap = 0;
+    char chunk[1024];
+    size_t got;
+    while ((got = fread(chunk, 1, sizeof(chunk), f)) > 0) {
+        if (raw_len + got + 1 > raw_cap) {
+            size_t nc = raw_cap ? raw_cap * 2 : 4096;
+            if (nc < raw_len + got + 1) nc = (raw_len + got + 1) * 2;
+            char *nb = (char *)realloc(raw, nc);
+            if (!nb) { free(raw); if (error) snprintf(error, error_size, "config: oom"); return -1; }
+            raw = nb; raw_cap = nc;
+        }
+        memcpy(raw + raw_len, chunk, got);
+        raw_len += got;
+    }
+    if (!raw) return 0;
+    raw[raw_len] = '\0';
+
+    char *all = NULL;
+    size_t all_len = 0, all_cap = 0;
+    const char *p = raw;
+
+    while (*p) {
+        /* key: " 찾기 */
+        while (*p && *p != '"' && *p != '}') p++;
+        if (!*p || *p == '}') break;
+        p++; /* 여는 " */
+        const char *ks = p;
+        while (*p && *p != '"') p++;
+        if (!*p) break;
+        size_t klen = (size_t)(p - ks);
+        p++; /* 닫는 " */
+        if (klen == 0) continue;
+
+        /* : 건너뜀 */
+        while (*p && *p != ':' && *p != '{' && *p != '}') p++;
+        if (!*p || *p != ':') { if (*p == '}') break; continue; }
+        p++;
+        while (*p == ' ' || *p == '\t') p++;
+
+        /* value 파싱 */
+        char vbuf[256];
+        int vlen = 0;
+        if (*p == '"') {
+            p++;
+            while (*p && *p != '"' && vlen < 255) vbuf[vlen++] = *p++;
+            if (*p == '"') p++;
+        } else {
+            while (*p && *p != ',' && *p != '}' && *p != '\n' && *p != '\r' && vlen < 255)
+                vbuf[vlen++] = *p++;
+            while (vlen > 0 && (vbuf[vlen-1] == ' ' || vbuf[vlen-1] == '\t')) vlen--;
+        }
+        vbuf[vlen] = '\0';
+        if (vlen == 0) continue;
+
+        /* true/false → 1/0 */
+        if (strcmp(vbuf, "true")  == 0) { vbuf[0]='1'; vbuf[1]='\0'; vlen=1; }
+        if (strcmp(vbuf, "false") == 0) { vbuf[0]='0'; vbuf[1]='\0'; vlen=1; }
+
+        if (append_kv(c, &all, &all_len, &all_cap,
+                      ks, klen, vbuf, (size_t)vlen, error, error_size) != 0) {
+            free(all); free(raw); config_destroy(c); return -1;
+        }
+        c->count++;
+    }
+    free(raw);
+    c->buf = all;
+    if (all) repoint(c);
+    return 0;
+}
+
 int config_load(Config *c, const char *path, char *error, size_t error_size) {
     FILE *f;
     char line[512];
@@ -50,10 +155,19 @@ int config_load(Config *c, const char *path, char *error, size_t error_size) {
         return -1;
     }
 
-    /* 모든 줄을 하나의 버퍼에 모아 두고, 그 안의 위치를 keys/values가 가리킵니다. */
+    /* .json 파일이면 JSON 파서로 처리합니다. */
+    {
+        const char *ext = strrchr(path, '.');
+        if (ext && strcmp(ext, ".json") == 0) {
+            int r = config_load_json(c, f, error, error_size);
+            fclose(f);
+            return r;
+        }
+    }
+
+    /* ── INI (key = value) 파서 ────────────────────────────────────────────── */
     while (fgets(line, (int)sizeof(line), f)) {
         char *eq, *k, *v, *comment;
-        /* 주석 이후 잘라냄 */
         comment = strchr(line, '#');
         if (comment) *comment = '\0';
         eq = strchr(line, '=');
@@ -63,7 +177,6 @@ int config_load(Config *c, const char *path, char *error, size_t error_size) {
         v = trim(eq + 1);
         if (*k == '\0') continue;
 
-        /* k\0v\0 형태로 buf 에 추가 */
         {
             size_t klen = strlen(k) + 1;
             size_t vlen = strlen(v) + 1;
@@ -91,7 +204,6 @@ int config_load(Config *c, const char *path, char *error, size_t error_size) {
     fclose(f);
     c->buf = all;
 
-    /* buf が確定した後にポインタを再設定する */
     {
         size_t pos = 0, i;
         for (i = 0; i < c->count; ++i) {

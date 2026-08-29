@@ -40,6 +40,9 @@ int  rules_init(RulesEngine *re, size_t capacity, const RulesConfig *config,
                 char *error, size_t error_size);
 void rules_destroy(RulesEngine *re);
 
+/* 실행 중 설정 교체 — 기존 latch 상태는 유지합니다. */
+void rules_update_config(RulesEngine *re, const RulesConfig *config);
+
 /*
  * TrackList 전체를 순회하며 룰을 평가합니다.
  * 이벤트 발생 시 event_log 에 근거 key=value 포함 메시지를 기록합니다.

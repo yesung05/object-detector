@@ -34,6 +34,13 @@ void rules_destroy(RulesEngine *re) {
     re->capacity = 0;
 }
 
+void rules_update_config(RulesEngine *re, const RulesConfig *config) {
+    if (!re || !config) return;
+    /* latch 상태(overstay_latched 등)는 건드리지 않고 임계값만 교체합니다.
+     * 트랙이 이미 발화 중이어도 다음 evaluate 주기부터 새 값이 적용됩니다. */
+    re->config = *config;
+}
+
 /* track_id 에 해당하는 슬롯을 반환합니다. 없으면 빈 슬롯에 할당합니다. */
 static TrackRuleState *get_state(RulesEngine *re, int track_id) {
     size_t idx = (size_t)(track_id < 0 ? 0 : track_id) % re->capacity;
@@ -70,13 +77,27 @@ static void release_state(RulesEngine *re, int track_id) {
 }
 
 /*
- * 쓰러짐 판정:
- * - 머리(0), 왼어깨(5), 오른어깨(6), 왼엉덩이(11), 오른엉덩이(12) 중
- *   score >= 0.4 인 keypoint의 y 좌표 표준편차를 bbox 높이로 나눕니다.
- *   이 비율이 0.25 이하이면서 bbox 가로 > 세로*1.2 이면 "수평 자세"입니다.
- * - keypoint가 없으면 bbox 가로/세로 비율만으로 판정합니다.
+ * 쓰러짐 판정 (개선 버전):
+ *
+ * keypoint 있는 경우 (pose 모델):
+ *   - bbox 가로 > 세로 × 1.8 (기존 1.2보다 엄격)
+ *   - 신뢰 관절(score≥0.4) 3개 이상 유효해야 std 계산
+ *   - 머리·어깨·엉덩이 y 표준편차 / bbox높이 ≤ 0.20 (기존 0.25보다 엄격)
+ *
+ * keypoint 없는 경우 (detection 전용 모델 또는 유효 관절 2개 미만):
+ *   - bbox 가로 > 세로 × 2.2 로 훨씬 엄격하게 적용
+ *   - 앉아서 팔 벌리거나 숙인 자세(1.2x 수준)는 오감지하지 않음
+ *
+ * 공통 가드:
+ *   - bbox 세로 < 30px → 너무 작아서 노이즈, 무시
+ *   - detection score < 0.30 → 저신뢰 검출, 무시
  */
-#define KP_SCORE_THRESH 0.4f
+#define KP_SCORE_THRESH  0.4f
+#define FALL_STD_THRESH  0.20f   /* 관절 y 분산 비율 상한 */
+#define FALL_RATIO_KP    1.8f    /* keypoint 있을 때 bbox 가로/세로 기준 */
+#define FALL_RATIO_NOKP  2.2f    /* keypoint 없을 때 bbox 가로/세로 기준 */
+#define FALL_MIN_H       30.0f   /* bbox 최소 세로 (px), 이하는 노이즈 */
+#define FALL_MIN_SCORE   0.30f   /* detection 신뢰도 하한 */
 static const int FALL_KP_IDX[] = {0, 5, 6, 11, 12};
 static const int FALL_KP_COUNT = 5;
 
@@ -86,11 +107,13 @@ static int is_horizontal_pose(const Detection *box) {
     int i, valid = 0;
     float y_sum = 0.0f, y_sq = 0.0f, y_mean, variance, std_ratio;
 
-    if (h <= 0.0f) return 0;
-    if (w <= h * 1.2f) return 0;  /* bbox가 세로 우세 → 서 있음 */
+    if (h < FALL_MIN_H)       return 0;  /* 너무 작은 검출은 노이즈 */
+    if (box->score < FALL_MIN_SCORE) return 0;  /* 저신뢰 검출 제외 */
 
-    if (box->keypoint_count < YOLO11_NUM_KEYPOINTS)
-        return 1;  /* keypoint 없으면 bbox 비율만으로 판정 */
+    /* keypoint 없거나 부족하면 더 엄격한 bbox 비율 기준 적용 */
+    if (box->keypoint_count < YOLO11_NUM_KEYPOINTS) {
+        return w > h * FALL_RATIO_NOKP;
+    }
 
     for (i = 0; i < FALL_KP_COUNT; ++i) {
         const Keypoint *kp = &box->kp[FALL_KP_IDX[i]];
@@ -100,13 +123,19 @@ static int is_horizontal_pose(const Detection *box) {
             valid++;
         }
     }
-    if (valid < 2) return 1;  /* keypoint 부족 → bbox 비율로 대체 */
+
+    /* 유효 관절이 3개 미만이면 keypoint 없는 경우와 동일하게 엄격한 기준 적용 */
+    if (valid < 3) {
+        return w > h * FALL_RATIO_NOKP;
+    }
+
+    if (w <= h * FALL_RATIO_KP) return 0;  /* bbox 비율 조건 미충족 */
 
     y_mean   = y_sum / (float)valid;
     variance = y_sq / (float)valid - y_mean * y_mean;
     if (variance < 0.0f) variance = 0.0f;
     std_ratio = (float)sqrt((double)variance) / h;
-    return std_ratio <= 0.25f;
+    return std_ratio <= FALL_STD_THRESH;
 }
 
 void rules_evaluate(RulesEngine *re, TrackList *tl, double now, EventLog *elog) {
