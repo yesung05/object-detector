@@ -259,3 +259,94 @@ float config_float(const Config *c, const char *key,
     if (errno || !end || *end != '\0' || parsed < lo || parsed > hi) return def;
     return parsed;
 }
+
+int config_rect(const Config *c, const char *key, ConfigRect *out) {
+    const char *v;
+    double vals[4];
+    const char *p;
+    int i;
+
+    if (!c || !key || !out) return 0;
+    if (config_get(c, key, &v) != 0 || !v || !*v) return 0;
+
+    p = v;
+    for (i = 0; i < 4; ++i) {
+        char *end = NULL;
+        errno = 0;
+        vals[i] = strtod(p, &end);
+        if (errno || end == p) return 0;
+        p = end;
+        while (*p == ' ' || *p == '\t') ++p;
+        if (i < 3) {
+            if (*p != ',') return 0;
+            ++p;
+        }
+    }
+    while (*p == ' ' || *p == '\t') ++p;
+    if (*p != '\0') return 0;              /* 뒤에 잡다한 문자가 남으면 거부 */
+    if (vals[2] <= 0.0 || vals[3] <= 0.0) return 0;  /* 폭·높이는 양수여야 함 */
+
+    out->x = (float)vals[0];
+    out->y = (float)vals[1];
+    out->w = (float)vals[2];
+    out->h = (float)vals[3];
+    return 1;
+}
+
+int config_rect_list(const Config *c, const char *prefix,
+                     ConfigRect *out, int max_count) {
+    int n = 0;
+    if (!c || !prefix || !out || max_count <= 0) return 0;
+    while (n < max_count) {
+        char key[128];
+        snprintf(key, sizeof(key), "%s_%d", prefix, n + 1);
+        if (!config_rect(c, key, &out[n])) break;   /* 번호가 끊기면 종료 */
+        ++n;
+    }
+    return n;
+}
+
+/* "HH:MM" 을 자정 기준 분으로. 실패하면 -1. */
+static int parse_hhmm(const char *s, const char **end_out) {
+    int hh = 0, mm = 0, digits = 0;
+    const char *p = s;
+
+    while (*p >= '0' && *p <= '9' && digits < 2) { hh = hh * 10 + (*p++ - '0'); ++digits; }
+    if (digits == 0 || *p != ':') return -1;
+    ++p;
+    digits = 0;
+    while (*p >= '0' && *p <= '9' && digits < 2) { mm = mm * 10 + (*p++ - '0'); ++digits; }
+    if (digits == 0) return -1;
+    if (hh > 23 || mm > 59) return -1;
+    if (end_out) *end_out = p;
+    return hh * 60 + mm;
+}
+
+int config_time_range(const Config *c, const char *key,
+                      int *start_minute, int *end_minute) {
+    const char *v;
+    const char *p = NULL;
+    int start, end;
+
+    if (!c || !key || !start_minute || !end_minute) return 0;
+    if (config_get(c, key, &v) != 0 || !v || !*v) return 0;
+
+    start = parse_hhmm(v, &p);
+    if (start < 0 || !p || *p != '-') return 0;
+    end = parse_hhmm(p + 1, &p);
+    if (end < 0 || !p) return 0;
+    while (*p == ' ' || *p == '\t') ++p;
+    if (*p != '\0') return 0;
+    if (start == end) return 0;   /* 빈 구간은 설정 실수로 보고 거부합니다 */
+
+    *start_minute = start;
+    *end_minute   = end;
+    return 1;
+}
+
+int config_time_in_range(int now_minute, int start_minute, int end_minute) {
+    if (start_minute <= end_minute)
+        return now_minute >= start_minute && now_minute < end_minute;
+    /* 자정을 넘는 구간: 22:00-02:00 이면 22:00~23:59 또는 00:00~01:59 */
+    return now_minute >= start_minute || now_minute < end_minute;
+}

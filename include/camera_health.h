@@ -21,21 +21,24 @@ typedef struct {
     int motion_threshold;        /* 픽셀 변화 임계값 (기본 8) */
 } CameraHealthConfig;
 
+/*
+ * 픽셀을 직접 훑지 않습니다. 호출자가 gray_analyze()로 한 번에 계산한
+ * GrayStats를 넘겨주면 임계값 판정과 히스테리시스만 담당합니다.
+ *
+ * 예전에는 이 모듈이 그레이 버퍼를 두 번 순회하고 이전 프레임 사본까지
+ * 따로 들고 있었습니다. 모션 게이트가 같은 데이터를 또 훑고 또 한 벌
+ * 들고 있었으므로, 같은 일을 두 곳에서 중복하고 있었습니다.
+ */
 typedef struct {
     CameraHealthConfig config;
-    uint8_t *prev_gray;  /* CameraHealth 소유, camera_health_destroy 에서 free */
-    int      gray_size;
     int      anomaly_streak; /* 현재 이상 조건 연속 프레임 수 */
     int      frozen_streak;  /* 변화 없는 프레임 연속 수 */
     CamState state;
 } CameraHealth;
 
-/*
- * gray_width * gray_height 크기의 prev_gray 버퍼를 할당합니다.
- * config == NULL 이면 기본값을 사용합니다.
- */
-int  camera_health_init(CameraHealth *h, int gray_width, int gray_height,
-                        const CameraHealthConfig *config,
+/* config == NULL 이면 기본값을 사용합니다. 버퍼를 소유하지 않으므로
+ * 실패할 일이 없지만, 호출부 형태를 유지하기 위해 오류 인자를 남겨 둡니다. */
+int  camera_health_init(CameraHealth *h, const CameraHealthConfig *config,
                         char *error, size_t error_size);
 void camera_health_destroy(CameraHealth *h);
 
@@ -43,8 +46,11 @@ void camera_health_destroy(CameraHealth *h);
  * 상태가 바뀌면 1, 유지면 0을 반환합니다.
  * state_out 에 새 상태를 씁니다.
  * 진입·복구 양쪽 모두 호출자가 로그를 남길 수 있도록 항상 state_out 을 갱신합니다.
+ *
+ * stats: 이번 프레임의 gray_analyze() 결과. 호출자 소유이며 읽기만 합니다.
  */
-int  camera_health_update(CameraHealth *h, const GrayBuf *g, CamState *state_out);
+int  camera_health_update(CameraHealth *h, const GrayStats *stats,
+                          CamState *state_out);
 const char *cam_state_name(CamState s);
 
 #endif /* CAMERA_HEALTH_H */

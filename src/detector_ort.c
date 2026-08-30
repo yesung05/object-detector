@@ -56,10 +56,33 @@ struct Detector {
     DetectorRunStats last_stats;
     OrtAllocator *allocator;
     /* 최근 추론 시간 링 버퍼 (ms). 시작 시 1회 할당, 프레임 수와 무관한 고정 크기. */
-    double *latency_buf;   /* Pipeline 소유, detector_destroy 에서 해제 */
+    double *latency_buf;   /* Detector 소유, detector_destroy 에서 해제 */
     int latency_head;
     int latency_count;
+    /*
+     * 백분위 계산용 정렬 사본입니다. latency_buf 와 함께 1회 할당하고
+     * detector_destroy 에서 해제합니다.
+     *
+     * 스택 지역 배열(2KB)이 아니라 구조체 멤버로 둔 이유: 이 배열은 추론
+     * 경로에서 만들어졌다 사라지기를 반복하며 L1 을 오염시켰습니다.
+     * i5-4200U 의 L1d 는 코어당 32KB 뿐이라 무시할 수 없습니다.
+     */
+    double *latency_sorted;
+    /*
+     * 마지막으로 백분위를 다시 계산한 시각과 그 결과입니다.
+     *
+     * 추론마다 256개를 복사·정렬하던 것을 주기 계산으로 바꾼 이유:
+     * p50/p95 는 metrics 출력과 스로틀링 감시에만 쓰이는 관측값이므로
+     * 추론 지연 경로에서 매번 계산할 이유가 없습니다.
+     */
+    double latency_stats_time;
+    double latency_p50_ms;
+    double latency_p95_ms;
+    double latency_max_ms;
 };
+
+/* 백분위 재계산 주기(초). 스로틀링 감시(10분 단위 비교)에 충분한 해상도입니다. */
+#define LATENCY_STATS_INTERVAL 5.0
 
 /* printf와 같은 형식으로 호출자의 오류 문자열 버퍼를 채우는 보조 함수입니다. */
 static void set_error(char *error, size_t error_size, const char *format, ...) {
@@ -133,6 +156,7 @@ static void detector_release_members(Detector *d) {
     free(d->output_data);
     free(d->input_data);
     free(d->latency_buf);
+    free(d->latency_sorted);
 }
 
 Detector *detector_create(const char *model_path, const DetectorOptions *options,
@@ -489,9 +513,10 @@ Detector *detector_create(const char *model_path, const DetectorOptions *options
         }
     }
 
-    /* 링 버퍼는 시작 시 1회 할당합니다. 프레임 수에 무관한 고정 상한. */
+    /* 링 버퍼와 정렬 사본은 시작 시 1회 할당합니다. 프레임 수에 무관한 고정 상한. */
     d->latency_buf = (double *)calloc(LATENCY_BUF_SIZE, sizeof(double));
-    if (!d->latency_buf) {
+    d->latency_sorted = (double *)calloc(LATENCY_BUF_SIZE, sizeof(double));
+    if (!d->latency_buf || !d->latency_sorted) {
         set_error(error, error_size, "out of memory allocating latency buffer");
         goto fail;
     }
@@ -569,30 +594,46 @@ int detector_run(Detector *d, const uint8_t *rgb, int width, int height,
     d->last_stats.inference_seconds =
         platform_monotonic_seconds() - phase_start;
 
-    /* 링 버퍼에 최근 추론 시간(ms)을 기록하고 백분위 통계를 갱신합니다.
-     * insertion sort는 n<=256에서 충분히 빠릅니다. */
+    /*
+     * 링 버퍼 기록은 매 추론마다(O(1)), 백분위 재계산은 주기적으로만 합니다.
+     * 이전에는 추론 1회마다 최대 256개를 복사하고 삽입 정렬(평균 약 16,000회
+     * 비교)했는데, 그 결과는 metrics 출력 시점에만 소비됩니다.
+     */
     {
         double inference_ms = d->last_stats.inference_seconds * 1000.0;
-        double sorted[LATENCY_BUF_SIZE];
-        int n, i, j;
-        double tmp;
+        double now = platform_monotonic_seconds();
         d->latency_buf[d->latency_head] = inference_ms;
         d->latency_head = (d->latency_head + 1) % LATENCY_BUF_SIZE;
         if (d->latency_count < LATENCY_BUF_SIZE) d->latency_count++;
-        n = d->latency_count;
-        memcpy(sorted, d->latency_buf, (size_t)n * sizeof(double));
-        for (i = 1; i < n; ++i) {
-            tmp = sorted[i];
-            j = i;
-            while (j > 0 && sorted[j - 1] > tmp) {
-                sorted[j] = sorted[j - 1];
-                --j;
+
+        /* 표본이 아직 적을 때는 매번 다시 계산합니다. n<32 의 삽입 정렬은
+         * 수백 회 비교라 무시할 수 있고, 이렇게 하지 않으면 수십 초짜리
+         * 벤치마크 실행에서 p50/p95 가 첫 표본 하나에 고정됩니다. */
+        if (d->latency_stats_time <= 0.0 ||
+            d->latency_count < 32 ||
+            (now - d->latency_stats_time) >= LATENCY_STATS_INTERVAL) {
+            double *sorted = d->latency_sorted;
+            int n = d->latency_count;
+            int i, j;
+            memcpy(sorted, d->latency_buf, (size_t)n * sizeof(double));
+            for (i = 1; i < n; ++i) {
+                double tmp = sorted[i];
+                j = i;
+                while (j > 0 && sorted[j - 1] > tmp) {
+                    sorted[j] = sorted[j - 1];
+                    --j;
+                }
+                sorted[j] = tmp;
             }
-            sorted[j] = tmp;
+            d->latency_p50_ms = sorted[n / 2];
+            d->latency_p95_ms = sorted[(int)((size_t)n * 95 / 100)];
+            d->latency_max_ms = sorted[n - 1];
+            d->latency_stats_time = now;
         }
-        d->last_stats.inference_p50_ms = sorted[n / 2];
-        d->last_stats.inference_p95_ms = sorted[(int)((size_t)n * 95 / 100)];
-        d->last_stats.inference_max_ms = sorted[n - 1];
+        /* 마지막으로 계산된 값을 그대로 노출합니다 (최대 5초 지연). */
+        d->last_stats.inference_p50_ms = d->latency_p50_ms;
+        d->last_stats.inference_p95_ms = d->latency_p95_ms;
+        d->last_stats.inference_max_ms = d->latency_max_ms;
     }
 
     phase_start = platform_monotonic_seconds();

@@ -38,8 +38,12 @@ endif
 endif
 
 # 각 .c 파일을 .o(목적 파일)로 컴파일한 뒤 마지막에 실행 파일로 연결합니다.
+# CMakeLists.txt 의 yolo11-person 타겟과 같은 목록을 유지해야 합니다.
+# stream.c 는 WinSocket2 전용이라 제외하고, main.c 가 스텁으로 대체합니다.
 SOURCES := src/main.c src/postprocess.c src/draw.c src/detector_ort.c \
-           src/media_ffmpeg.c src/tracker.c src/platform.c
+           src/media_ffmpeg.c src/tracker.c src/platform.c \
+           src/gray.c src/log.c src/config.c src/camera_health.c \
+           src/tracks.c src/rules.c src/door.c
 OBJECTS := $(SOURCES:.c=.o)
 TARGET := yolo11-person
 

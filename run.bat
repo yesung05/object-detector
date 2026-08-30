@@ -44,7 +44,12 @@ echo [log] %LOGFILE%
 echo [start] Press Ctrl+C to stop.
 echo.
 
-"%EXE%" --model "%MODEL%" --camera --camera-size 1280x720 --camera-fps 15 --preview --provider cpu --detect-every 3 --track --warmup 2 --event-log "%LOGFILE%" --config "%ROOT%\config.json"
+rem --preview 는 기본으로 켜지 않습니다. ffplay 는 별도 프로세스로 코어 하나를
+rem 차지하고, 프레임마다 raw RGB 를 파이프로 보냅니다(720p 15fps 기준 41MB/s).
+rem 배포 대상 i5-4200U 에서는 이것만으로 예산의 상당 부분이 사라집니다.
+rem 화면 확인이 필요하면 대시보드(http://localhost:8081/stream)를 쓰거나
+rem 아래 줄에 --preview 를 직접 붙이세요.
+"%EXE%" --model "%MODEL%" --camera --camera-size 1280x720 --camera-fps 15 --provider cpu --detect-every 3 --track --warmup 2 --event-log "%LOGFILE%" --config "%ROOT%\config.json"
 
 echo.
 echo [done] Event log: %LOGFILE%
