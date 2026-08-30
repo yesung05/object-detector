@@ -56,7 +56,7 @@ echo [log]   %LOGFILE%
 rem -- Start dashboard in background --
 if exist "%DASHBOARD%" (
     echo [dash]  http://localhost:8080 ^(background^)
-    start "" /B "%DASHBOARD%" --root "%ROOT%\dashboard" --config "%ROOT%\config.json"
+    start "" /B "%DASHBOARD%" --root "%ROOT%" --config "%ROOT%\config.json"
 ) else (
     echo [dash]  dashboard binary not found ^(build to enable^)
 )
