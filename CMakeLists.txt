@@ -173,7 +173,11 @@ endif()
 
 # ── 대시보드 서버 (WinSocket2 전용, Python/Flask 불필요) ─────────────────────
 if(WIN32)
-    add_executable(hunik-dashboard dashboard/server.c)
+    # config.c 를 함께 빌드하는 이유: 설정 저장 시 기존 파일의 키를 읽어
+    # 병합해야 합니다. 대시보드 UI 가 모르는 키가 저장 한 번에 사라지면
+    # detector 가 조용히 기본값으로 되돌아갑니다.
+    add_executable(hunik-dashboard dashboard/server.c src/config.c)
+    target_include_directories(hunik-dashboard PRIVATE include)
     target_link_libraries(hunik-dashboard ws2_32)
     if(MSVC)
         target_compile_options(hunik-dashboard PRIVATE /utf-8 /W3)

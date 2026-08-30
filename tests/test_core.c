@@ -803,7 +803,7 @@ static void feed_health(CameraHealth *health, GrayBuf *g, uint8_t *prev,
                         int *ready, CamState *state) {
     GrayStats stats;
     gray_analyze(g, *ready ? prev : NULL, 8, health->config.motion_threshold,
-                 &stats);
+                 2, &stats, NULL);
     camera_health_update(health, &stats, state);
     memcpy(prev, g->data, (size_t)g->width * g->height);
     *ready = 1;
@@ -897,14 +897,14 @@ static void test_gray_analyze_single_pass(void) {
         }
     }
     gray_buf_update(&g, rgb, SRC_W, SRC_H, SRC_W * 3);
-    gray_analyze(&g, prev, 8, 8, &st);
+    gray_analyze(&g, prev, 8, 8, 2, &st, NULL);
     EXPECT_INT_EQ(st.pixels, SRC_W);
     /* |diff| > 8  → 109, 150 두 개 */
     EXPECT_INT_EQ((int)st.changed_motion, 2);
     /* |diff| >= 8 → 108, 109, 150 세 개 */
     EXPECT_INT_EQ((int)st.changed_health, 3);
     /* prev == NULL 이면 변화량은 0, luma 합만 계산 */
-    gray_analyze(&g, NULL, 8, 8, &st);
+    gray_analyze(&g, NULL, 8, 8, 2, &st, NULL);
     EXPECT_INT_EQ((int)st.changed_motion, 0);
     EXPECT_INT_EQ((int)st.changed_health, 0);
     EXPECT_TRUE(st.luma_sum > 0);
@@ -935,6 +935,52 @@ static void test_motion_gate_static_scene(void) {
     }
     ratio = (double)changed / (double)total;
     EXPECT_TRUE(ratio < 0.004);  /* 완전 정적 → ratio=0.0 */
+    gray_buf_destroy(&g);
+}
+
+static void test_motion_map_locates_change(void) {
+    /* 변화 블록의 위치가 실제 변화 지점과 맞아야 하고,
+     * 그 블록을 덮는 박스를 주면 "박스 밖 변화"가 0이어야 합니다. */
+    enum { W = 32, H = 16, DS = 1 };
+    GrayBuf g;
+    uint8_t prev[W * H];
+    uint8_t rgb[W * H * 3];
+    GrayStats st;
+    MotionMap map;
+    GrayRect box;
+    int i;
+    ASSERT_INT_EQ(gray_buf_init(&g, W, H, DS), 0);
+    memset(prev, 100, sizeof(prev));
+    memset(rgb, 100, sizeof(rgb));
+    /* (x=17..20, y=9..10) 영역만 크게 바꿉니다 → 블록 (2,1) */
+    for (i = 0; i < 4; ++i) {
+        int x = 17 + i, y = 9;
+        rgb[(y * W + x) * 3 + 0] = 200;
+        rgb[(y * W + x) * 3 + 1] = 200;
+        rgb[(y * W + x) * 3 + 2] = 200;
+    }
+    gray_buf_update(&g, rgb, W, H, W * 3);
+    gray_analyze(&g, prev, 8, 8, 2, &st, &map);
+
+    EXPECT_INT_EQ(map.blocks_x, W / GRAY_BLOCK_SIZE);
+    EXPECT_INT_EQ(map.blocks_y, H / GRAY_BLOCK_SIZE);
+    EXPECT_INT_EQ(map.changed_blocks, 1);
+    EXPECT_TRUE(motion_map_get(&map, 1 * map.blocks_x + 2) == 1);
+
+    /* 변화 지점을 덮는 박스 → 박스 밖 변화 없음 */
+    box.x1 = 16.0f; box.y1 = 8.0f; box.x2 = 24.0f; box.y2 = 16.0f;
+    EXPECT_INT_EQ(gray_blocks_outside(&map, &box, 1, DS, 0), 0);
+    /* 엉뚱한 곳의 박스 → 변화 블록 1개가 박스 밖 */
+    box.x1 = 0.0f; box.y1 = 0.0f; box.x2 = 8.0f; box.y2 = 8.0f;
+    EXPECT_INT_EQ(gray_blocks_outside(&map, &box, 1, DS, 0), 1);
+
+    /* 변화가 전혀 없으면 블록도 0 */
+    gray_buf_update(&g, rgb, W, H, W * 3);
+    memcpy(prev, g.data, (size_t)g.width * g.height);
+    gray_analyze(&g, prev, 8, 8, 2, &st, &map);
+    EXPECT_INT_EQ(map.changed_blocks, 0);
+    EXPECT_INT_EQ(gray_blocks_outside(&map, &box, 1, DS, 0), 0);
+
     gray_buf_destroy(&g);
 }
 
@@ -1037,6 +1083,7 @@ int main(void) {
     RUN_TEST(test_camera_health_frozen);
     RUN_TEST(test_gray_luma_matches_plane);
     RUN_TEST(test_gray_analyze_single_pass);
+    RUN_TEST(test_motion_map_locates_change);
     RUN_TEST(test_motion_gate_static_scene);
     RUN_TEST(test_door_state_debounce);
     RUN_TEST(test_gray_matches_reference);

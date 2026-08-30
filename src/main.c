@@ -53,6 +53,9 @@ typedef struct {
      * 최적화 대상 구간의 계측입니다. 이 값들이 없으면 개선 여부를 주장할 수
      * 없어 추가했습니다 — 측정되지 않는 구간은 최적화 대상이 될 수 없습니다.
      */
+    int64_t gate_l1_hits;        /* 변화 자체가 없어 추론을 건너뛴 프레임 */
+    int64_t gate_l3_hits;        /* 변화가 기존 트랙 안에만 있어 추적기로 대체한 프레임 */
+    int64_t track_refresh_runs;  /* L3 상태에서 안전 밸브로 강제 추론한 횟수 */
     double  gray_seconds;        /* 그레이 변환 + 모션 게이트 + 카메라 헬스 */
     double  door_seconds;        /* door_check 픽셀 비교 */
     double  stream_seconds;      /* stream_push (복사 + 주기 판정) */
@@ -73,6 +76,16 @@ typedef struct {
     double       motion_ratio_threshold;  /* 기본 0.004 */
     double       idle_refresh_seconds;    /* 기본 10.0 */
     double       last_detection_time;
+    /*
+     * 변화 위치 기반 게이트 설정.
+     * track_refresh_seconds: 변화가 트랙 안에만 있어 추론을 건너뛰더라도
+     *   이 시간이 지나면 한 번은 강제로 YOLO를 돌립니다. 추적기 드리프트가
+     *   누적되어 영영 갱신되지 않는 상태를 막는 안전 밸브입니다.
+     */
+    int          block_gate_enabled;
+    int          block_min_changed;
+    int          block_margin;
+    double       track_refresh_seconds;
     /* 실시간 FPS — 지수 이동 평균(EMA).
      * 누적 평균은 시작 초기값의 영향을 오래 받으므로
      * EMA를 사용해 최근 몇 초간의 순간 FPS를 표시합니다. */
@@ -572,6 +585,11 @@ static void reload_config(AppContext *app) {
         (double)config_float(&cfg, "motion_ratio_threshold", 0.004f, 0.0001f, 1.0f);
     app->idle_refresh_seconds   =
         (double)config_float(&cfg, "idle_refresh_seconds", 10.0f, 1.0f, 3600.0f);
+    app->block_gate_enabled = (int)config_long(&cfg, "block_gate", 1, 0, 1);
+    app->block_min_changed  = (int)config_long(&cfg, "block_min_changed", 2, 1, 64);
+    app->block_margin       = (int)config_long(&cfg, "block_margin", 1, 0, 16);
+    app->track_refresh_seconds =
+        (double)config_float(&cfg, "track_refresh_seconds", 5.0f, 0.5f, 120.0f);
 
     /* 문 여닫이 설정 */
     app->door.enabled                = (int)config_long(&cfg, "door_enabled", 0, 0, 1);
@@ -757,9 +775,12 @@ static int process_frame(RgbFrame *frame, void *opaque,
      */
     {
         GrayStats stats;
+        MotionMap map;
         CamState cam_state;
+        int want_map = app->block_gate_enabled && app->gray_ready;
         gray_analyze(&app->gray, app->gray_ready ? app->gray_prev : NULL,
-                     8, app->cam_health.config.motion_threshold, &stats);
+                     8, app->cam_health.config.motion_threshold,
+                     app->block_min_changed, &stats, want_map ? &map : NULL);
 
         /* 카메라 장애 상태가 바뀔 때마다 이벤트를 남깁니다. */
         if (camera_health_update(&app->cam_health, &stats, &cam_state) > 0) {
@@ -771,15 +792,66 @@ static int process_frame(RgbFrame *frame, void *opaque,
                             "camera", cam_msg);
         }
 
-        /* 모션 게이트: 픽셀 변화 비율이 임계값 미만이고 마지막 추론 이후
-         * idle_refresh_seconds 안이면 YOLO 주기 추론을 건너뜁니다.
-         * SAD 추적기가 실패하면 adaptive run이 이를 우선 적용합니다. */
+        /*
+         * 추론 회피 게이트.
+         *
+         * 블록 지도가 있으면 위치 기반 판정이 비율 판정을 대체합니다. 비율
+         * 하나로는 "창밖 나뭇가지"와 "좌석의 사람"을 구분할 수 없고, 이미
+         * 추적 중인 사람이 제자리에서 움직이는 것과 새 사람이 들어온 것도
+         * 구분되지 않기 때문입니다. 두 게이트를 겹쳐 걸면 먼저 걸린 쪽이
+         * 뒤쪽을 가려 계측이 무의미해지므로 하나만 적용합니다.
+         */
         if (app->motion_gate_enabled && run_detector && app->gray_ready) {
-            double limit = app->motion_ratio_threshold * (double)stats.pixels;
-            if ((double)stats.changed_motion < limit &&
-                (now - app->last_detection_time) < app->idle_refresh_seconds) {
-                run_detector = 0;
-                app->gated_frames++;
+            double since_detect = now - app->last_detection_time;
+
+            if (want_map && map.blocks_x > 0) {
+                if (map.changed_blocks == 0) {
+                    /* L1 — 변화 없음. idle_refresh_seconds 까지만 건너뜁니다. */
+                    if (since_detect < app->idle_refresh_seconds) {
+                        run_detector = 0;
+                        app->gated_frames++;
+                        app->gate_l1_hits++;
+                    } else {
+                        app->track_refresh_runs++;
+                    }
+                } else if (app->tracking &&
+                           since_detect < app->track_refresh_seconds) {
+                    /*
+                     * L3 — 변화가 전부 이미 추적 중인 박스 안에서 일어났다면
+                     * 새 객체가 등장한 것이 아니므로 SAD 추적기로 충분합니다.
+                     * 앉아 있는 손님 한 명 때문에 추론이 계속 도는 상황이
+                     * 여기서 걸립니다.
+                     *
+                     * track_refresh_seconds 안에서만 유효합니다. 그 시간이
+                     * 지나면 추적기 드리프트를 끊기 위해 한 번은 실행합니다.
+                     */
+                    GrayRect boxes[64];
+                    int n = 0;
+                    size_t ti;
+                    for (ti = 0; ti < app->tracks.count && n < 64; ++ti) {
+                        const Track *t = &app->tracks.items[ti];
+                        if (!t->active) continue;
+                        boxes[n].x1 = t->box.x1; boxes[n].y1 = t->box.y1;
+                        boxes[n].x2 = t->box.x2; boxes[n].y2 = t->box.y2;
+                        n++;
+                    }
+                    if (n > 0 &&
+                        gray_blocks_outside(&map, boxes, n,
+                                            app->gray.downsample,
+                                            app->block_margin) == 0) {
+                        run_detector = 0;
+                        app->gated_frames++;
+                        app->gate_l3_hits++;
+                    }
+                }
+            } else {
+                /* 폴백 — 블록 지도를 쓸 수 없을 때의 기존 비율 게이트. */
+                double limit = app->motion_ratio_threshold * (double)stats.pixels;
+                if ((double)stats.changed_motion < limit &&
+                    since_detect < app->idle_refresh_seconds) {
+                    run_detector = 0;
+                    app->gated_frames++;
+                }
             }
         }
     }
@@ -970,6 +1042,9 @@ static int write_metrics(const char *path, const Arguments *args,
             "  \"reused_frames\": %lld,\n"
             "  \"adaptive_runs\": %lld,\n"
             "  \"gated_frames\": %lld,\n"
+            "  \"gate_l1_hits\": %lld,\n"
+            "  \"gate_l3_hits\": %lld,\n"
+            "  \"track_refresh_runs\": %lld,\n"
             "  \"motion_gate\": %s,\n"
             "  \"frame_rate\": %.6f,\n"
             "  \"video_seconds\": %.6f,\n"
@@ -1009,6 +1084,9 @@ static int write_metrics(const char *path, const Arguments *args,
             (long long)app->tracked_frames, (long long)app->reused_frames,
             (long long)app->adaptive_runs,
             (long long)app->gated_frames,
+            (long long)app->gate_l1_hits,
+            (long long)app->gate_l3_hits,
+            (long long)app->track_refresh_runs,
             app->motion_gate_enabled ? "true" : "false",
             media->frame_rate, video_seconds,
             wall_seconds, cpu_seconds,
@@ -1136,6 +1214,11 @@ int main(int argc, char **argv) {
             (double)config_float(&cfg, "motion_ratio_threshold", 0.004f, 0.0001f, 1.0f);
         app.idle_refresh_seconds  =
             (double)config_float(&cfg, "idle_refresh_seconds", 10.0f, 1.0f, 3600.0f);
+        app.block_gate_enabled = (int)config_long(&cfg, "block_gate", 1, 0, 1);
+        app.block_min_changed  = (int)config_long(&cfg, "block_min_changed", 2, 1, 64);
+        app.block_margin       = (int)config_long(&cfg, "block_margin", 1, 0, 16);
+        app.track_refresh_seconds =
+            (double)config_float(&cfg, "track_refresh_seconds", 5.0f, 0.5f, 120.0f);
         /* 문 여닫이 설정 — door_load는 cfg 블록 밖에서 (data_dir 필요) */
         app.door.enabled                 = (int)config_long (&cfg, "door_enabled",        0,    0,    1);
         app.door.diff_threshold          = config_float      (&cfg, "door_diff_threshold",  0.05f, 0.001f, 1.0f);

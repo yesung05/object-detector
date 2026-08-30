@@ -21,6 +21,9 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
+#include "../include/config.h"
+
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -417,7 +420,11 @@ static const char *DEFAULT_CONFIG =
     "\"door_roi_x\":0,"
     "\"door_roi_y\":0,"
     "\"door_roi_w\":0,"
-    "\"door_roi_h\":0"
+    "\"door_roi_h\":0,"
+    "\"block_gate\":1,"
+    "\"block_min_changed\":2,"
+    "\"block_margin\":1,"
+    "\"track_refresh_seconds\":5.0"
     "}";
 
 /* GET /api/config → config.json 반환 (없으면 기본값)
@@ -496,13 +503,72 @@ static void serve_config_post(SOCKET s, const char *body, int body_len) {
         send(s, "{\"ok\":false}", 12, 0);
         return;
     }
+    /*
+     * 기존 파일에만 있고 이번 본문에 없는 키를 살려서 함께 저장합니다.
+     *
+     * 예전에는 받은 본문으로 파일을 통째로 덮어썼습니다. 대시보드 UI가
+     * 모르는 설정(예: 게이트 튜닝 값)은 점주가 "저장"을 누르는 순간
+     * 조용히 사라지고, detector 는 기본값으로 되돌아갔습니다. 기능이
+     * 꺼졌다는 사실이 아무 데도 남지 않는 종류의 사고입니다.
+     *
+     * flat JSON 만 지원하면 되므로 본문에 "key" 문자열이 있는지로 존재를
+     * 판정합니다. 중첩 객체를 쓰게 되면 이 방식을 바꿔야 합니다.
+     */
+    char *merged = NULL;
+    int merged_len = 0;
+    {
+        Config existing;
+        char err[128] = {0};
+        if (config_load(&existing, g_config_path, err, sizeof(err)) == 0 &&
+            existing.count > 0) {
+            size_t cap = (size_t)body_len + 4096;
+            size_t i;
+            merged = (char *)malloc(cap);
+            if (merged) {
+                int trimmed = body_len;
+                while (trimmed > 0 &&
+                       isspace((unsigned char)body[trimmed - 1]))
+                    trimmed--;
+                if (trimmed > 0 && body[trimmed - 1] == '}') trimmed--;
+                memcpy(merged, body, (size_t)trimmed);
+                merged_len = trimmed;
+                for (i = 0; i < existing.count; ++i) {
+                    char probe[128];
+                    int n;
+                    if (!existing.keys[i] || !existing.values[i]) continue;
+                    snprintf(probe, sizeof(probe), "\"%s\"", existing.keys[i]);
+                    if (strstr(body, probe)) continue;  /* 본문에 이미 있음 */
+                    n = snprintf(NULL, 0, ",\"%s\":%s",
+                                 existing.keys[i], existing.values[i]);
+                    if (n <= 0 || (size_t)(merged_len + n + 2) >= cap) continue;
+                    merged_len += snprintf(merged + merged_len,
+                                           cap - (size_t)merged_len,
+                                           ",\"%s\":%s",
+                                           existing.keys[i], existing.values[i]);
+                }
+                if ((size_t)(merged_len + 2) < cap) {
+                    /* fwrite 는 merged_len 을 쓰므로 끝 문자가 필요 없습니다. */
+                    merged[merged_len++] = '}';
+                } else {
+                    free(merged);
+                    merged = NULL;
+                    merged_len = 0;
+                }
+            }
+            config_destroy(&existing);
+        }
+    }
+
     FILE *f = fopen(g_config_path, "w");
     if (!f) {
+        free(merged);
         send_header(s, 500, "application/json", 12);
         send(s, "{\"ok\":false}", 12, 0);
         return;
     }
-    fwrite(body, 1, (size_t)body_len, f);
+    if (merged && merged_len > 0) fwrite(merged, 1, (size_t)merged_len, f);
+    else                          fwrite(body, 1, (size_t)body_len, f);
+    free(merged);
     fclose(f);
     fprintf(stderr, "config: saved %d bytes → %s\n", body_len, g_config_path);
     const char *ok = "{\"ok\":true}";
