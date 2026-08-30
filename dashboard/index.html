@@ -71,7 +71,7 @@
     background: #000;
     border-bottom: 1px solid var(--border);
     display: flex; align-items: center; justify-content: center;
-    height: 260px; position: relative; overflow: hidden;
+    height: 420px; position: relative; overflow: hidden;
   }
   .camera-panel img { max-height: 100%; max-width: 100%; object-fit: contain; display: block; }
   .camera-offline {
@@ -1072,6 +1072,16 @@ function clearRoi() {
 
 // ── 초기화 ──────────────────────────────────────────────────────────────────
 loadLogList();
+
+// 페이지 로드 시 스트림 자동 연결 — config에서 포트를 읽은 뒤 바로 연결합니다
+(async () => {
+  try {
+    const res = await fetch("/api/config");
+    const cfg = await res.json();
+    if (cfg.stream_port) portInput.value = cfg.stream_port;
+  } catch (_) {}
+  connectStream();
+})();
 
 // 30초마다 로그 목록 갱신
 setInterval(async () => {
