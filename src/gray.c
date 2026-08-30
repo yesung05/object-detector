@@ -77,7 +77,7 @@ void gray_buf_update_luma(GrayBuf *g, const uint8_t *luma,
     }
 }
 
-void gray_analyze(const GrayBuf *cur, const uint8_t *prev,
+void gray_analyze(const GrayBuf *cur, const uint8_t *prev, const uint8_t *ref,
                   int motion_gt, int health_ge,
                   int block_min_changed,
                   GrayStats *out, MotionMap *map) {
@@ -124,9 +124,12 @@ void gray_analyze(const GrayBuf *cur, const uint8_t *prev,
     }
 
     /* 한 번의 순회에서 luma 합, 두 종류의 변화 픽셀 수, 블록 지도를 모두 냅니다. */
+    if (!ref) ref = prev;
+
     for (y = 0; y < h; ++y) {
         const uint8_t *c = cur->data + (size_t)y * (size_t)w;
         const uint8_t *p = prev      + (size_t)y * (size_t)w;
+        const uint8_t *r = ref       + (size_t)y * (size_t)w;
         int brow = y / GRAY_BLOCK_SIZE;
 
         if (map && brow != cur_brow) {
@@ -146,14 +149,16 @@ void gray_analyze(const GrayBuf *cur, const uint8_t *prev,
 
         for (x = 0; x < w; ++x) {
             int v = c[x];
-            int diff = v - (int)p[x];
-            if (diff < 0) diff = -diff;
+            int dp = v - (int)p[x];      /* 직전 프레임 대비 — freeze 판정 */
+            int dr = v - (int)r[x];      /* 마지막 추론 대비 — 게이트 판정 */
+            if (dp < 0) dp = -dp;
+            if (dr < 0) dr = -dr;
             luma_sum += (unsigned long)v;
-            if (diff >  motion_gt) {
+            if (dr >  motion_gt) {
                 changed_motion++;
                 if (map) row_counts[x / GRAY_BLOCK_SIZE]++;
             }
-            if (diff >= health_ge) changed_health++;
+            if (dp >= health_ge) changed_health++;
         }
     }
 

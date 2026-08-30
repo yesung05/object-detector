@@ -17,6 +17,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <sys/stat.h>  /* _stat / stat: config.json mtime 감시용 */
 
 #if defined(_WIN32)
@@ -53,7 +54,9 @@ typedef struct {
      * 최적화 대상 구간의 계측입니다. 이 값들이 없으면 개선 여부를 주장할 수
      * 없어 추가했습니다 — 측정되지 않는 구간은 최적화 대상이 될 수 없습니다.
      */
+    int64_t gate_l0_hits;        /* 영업시간 밖이라 추론을 건너뛴 프레임 */
     int64_t gate_l1_hits;        /* 변화 자체가 없어 추론을 건너뛴 프레임 */
+    int64_t gate_l2_hits;        /* 변화가 감시 제외 영역에만 있어 건너뛴 프레임 */
     int64_t gate_l3_hits;        /* 변화가 기존 트랙 안에만 있어 추적기로 대체한 프레임 */
     int64_t track_refresh_runs;  /* L3 상태에서 안전 밸브로 강제 추론한 횟수 */
     double  gray_seconds;        /* 그레이 변환 + 모션 게이트 + 카메라 헬스 */
@@ -63,7 +66,15 @@ typedef struct {
     DetectorRunStats detector_stats;
     /* 이상 탐지 모듈 */
     GrayBuf      gray;           /* 현재 프레임 그레이스케일 (지연 초기화) */
-    uint8_t     *gray_prev;      /* AppContext 소유, 이전 프레임 gray (모션 게이트 + 카메라 헬스 공용) */
+    uint8_t     *gray_prev;      /* AppContext 소유, 직전 프레임 gray (freeze 판정) */
+    /*
+     * 마지막으로 추론한 시점의 gray 스냅샷입니다. 게이트는 "직전 프레임과
+     * 달라졌는가"가 아니라 "지난번에 본 뒤로 달라졌는가"를 물어야 하므로
+     * 별도 버퍼가 필요합니다. 다운샘플 8 기준 720p 에서 14KB 이므로
+     * 두 벌을 들고 있어도 28KB 입니다.
+     */
+    uint8_t     *gray_ref;
+    int          gray_ref_ready;
     int          gray_ready;     /* gray_prev 가 유효한지 여부 */
     int          gray_from_luma; /* 1이면 디코더 Y 평면 직접 사용, 0이면 RGB 폴백 */
     int          gray_path_logged;
@@ -86,6 +97,17 @@ typedef struct {
     int          block_min_changed;
     int          block_margin;
     double       track_refresh_seconds;
+    /*
+     * 감시 제외 영역. 창밖 도로, 간판 조명, 모니터 화면처럼 변화는 있지만
+     * 감지 대상이 아닌 구역입니다. 변화가 전부 이 안에서만 일어났다면
+     * 추론할 이유가 없습니다.
+     */
+    GrayRect     ignore_roi[16];   /* x1,y1,x2,y2 로 변환해 보관 */
+    int          ignore_roi_count;
+    /* 영업시간. 이 밖에서는 추론을 아예 하지 않고 카메라 헬스만 봅니다. */
+    int          active_hours_set;
+    int          active_start_min;
+    int          active_end_min;
     /* 실시간 FPS — 지수 이동 평균(EMA).
      * 누적 평균은 시작 초기값의 영향을 오래 받으므로
      * EMA를 사용해 최근 몇 초간의 순간 FPS를 표시합니다. */
@@ -570,6 +592,56 @@ static void preview_frame(AppContext *app, const RgbFrame *frame) {
  * detector, tracker, media 설정 등 재시작이 필요한 항목은 제외하고,
  * 런타임에 안전하게 바꿀 수 있는 임계값들만 업데이트합니다.
  */
+/*
+ * 시작과 hot-reload 양쪽에서 같은 값을 읽도록 한 곳에 모읍니다.
+ *
+ * 예전에는 두 경로가 각각 config 를 파싱했고, 그 결과 reload_config() 가
+ * 읽지 않는 키는 파일에 적어도 재시작 전까지 반영되지 않았습니다.
+ * roi_kiosk 처럼 한쪽에만 추가되면 조용히 동작하지 않는 원인이 됩니다.
+ */
+static void apply_gate_config(AppContext *app, const Config *cfg) {
+    app->block_gate_enabled = (int)config_long(cfg, "block_gate", 1, 0, 1);
+    app->block_min_changed  = (int)config_long(cfg, "block_min_changed", 2, 1, 64);
+    app->block_margin       = (int)config_long(cfg, "block_margin", 1, 0, 16);
+    app->track_refresh_seconds =
+        (double)config_float(cfg, "track_refresh_seconds", 5.0f, 0.5f, 120.0f);
+
+    /* 설정은 x,y,w,h 로 적지만 블록 판정은 x1,y1,x2,y2 를 쓰므로
+     * 프레임마다 변환하지 않도록 여기서 한 번만 바꿔 둡니다. */
+    {
+        ConfigRect raw[16];
+        int n = config_rect_list(cfg, "ignore_roi", raw,
+                                 (int)(sizeof(raw) / sizeof(raw[0])));
+        int i;
+        for (i = 0; i < n; ++i) {
+            app->ignore_roi[i].x1 = raw[i].x;
+            app->ignore_roi[i].y1 = raw[i].y;
+            app->ignore_roi[i].x2 = raw[i].x + raw[i].w;
+            app->ignore_roi[i].y2 = raw[i].y + raw[i].h;
+        }
+        app->ignore_roi_count = n;
+    }
+
+    app->active_hours_set =
+        config_time_range(cfg, "active_hours",
+                          &app->active_start_min, &app->active_end_min);
+}
+
+/* 키오스크 ROI 를 rules 설정에 채웁니다. 미설정이면 roi_kiosk_set = 0 이 되어
+ * 주문 상태 전환 자체가 비활성화됩니다(호출자가 로그로 알립니다). */
+static void apply_roi_kiosk(RulesConfig *rc, const Config *cfg) {
+    ConfigRect r;
+    if (config_rect(cfg, "roi_kiosk", &r)) {
+        rc->roi_kiosk_x = r.x;
+        rc->roi_kiosk_y = r.y;
+        rc->roi_kiosk_w = r.w;
+        rc->roi_kiosk_h = r.h;
+        rc->roi_kiosk_set = 1;
+    } else {
+        rc->roi_kiosk_set = 0;
+    }
+}
+
 static void reload_config(AppContext *app) {
     Config cfg;
     char err[128] = {0};
@@ -585,11 +657,7 @@ static void reload_config(AppContext *app) {
         (double)config_float(&cfg, "motion_ratio_threshold", 0.004f, 0.0001f, 1.0f);
     app->idle_refresh_seconds   =
         (double)config_float(&cfg, "idle_refresh_seconds", 10.0f, 1.0f, 3600.0f);
-    app->block_gate_enabled = (int)config_long(&cfg, "block_gate", 1, 0, 1);
-    app->block_min_changed  = (int)config_long(&cfg, "block_min_changed", 2, 1, 64);
-    app->block_margin       = (int)config_long(&cfg, "block_margin", 1, 0, 16);
-    app->track_refresh_seconds =
-        (double)config_float(&cfg, "track_refresh_seconds", 5.0f, 0.5f, 120.0f);
+    apply_gate_config(app, &cfg);
 
     /* 문 여닫이 설정 */
     app->door.enabled                = (int)config_long(&cfg, "door_enabled", 0, 0, 1);
@@ -620,6 +688,7 @@ static void reload_config(AppContext *app) {
         (double)config_float(&cfg, "unordered_grace_seconds", 300.0f, 0.0f, 3600.0f);
     rules_cfg.fall_hold_seconds =
         (double)config_float(&cfg, "fall_hold_seconds", 5.0f, 1.0f, 60.0f);
+    apply_roi_kiosk(&rules_cfg, &cfg);
     rules_update_config(&app->rules, &rules_cfg);
 
     config_destroy(&cfg);
@@ -663,6 +732,8 @@ static int process_frame(RgbFrame *frame, void *opaque,
     int run_detector = frame->index % app->detect_every == 0;
     int tracked = 0;
     int requested = 0;
+    /* 게이트가 "볼 것이 없다"고 판정하면 adaptive 재추론도 막습니다. */
+    int gate_hard_block = 0;
     const char *kind = "reused";
     double started;
     double now = platform_monotonic_seconds();
@@ -733,8 +804,10 @@ static int process_frame(RgbFrame *frame, void *opaque,
         }
         app->gray_prev = (uint8_t *)calloc(
             (size_t)app->gray.width * app->gray.height, 1);
-        if (!app->gray_prev) {
-            snprintf(error, error_size, "gray_prev: out of memory");
+        app->gray_ref = (uint8_t *)calloc(
+            (size_t)app->gray.width * app->gray.height, 1);
+        if (!app->gray_prev || !app->gray_ref) {
+            snprintf(error, error_size, "gray_prev/gray_ref: out of memory");
             return -1;
         }
         if (camera_health_init(&app->cam_health, NULL,
@@ -778,7 +851,9 @@ static int process_frame(RgbFrame *frame, void *opaque,
         MotionMap map;
         CamState cam_state;
         int want_map = app->block_gate_enabled && app->gray_ready;
-        gray_analyze(&app->gray, app->gray_ready ? app->gray_prev : NULL,
+        gray_analyze(&app->gray,
+                     app->gray_ready ? app->gray_prev : NULL,
+                     app->gray_ref_ready ? app->gray_ref : NULL,
                      8, app->cam_health.config.motion_threshold,
                      app->block_min_changed, &stats, want_map ? &map : NULL);
 
@@ -801,29 +876,77 @@ static int process_frame(RgbFrame *frame, void *opaque,
          * 구분되지 않기 때문입니다. 두 게이트를 겹쳐 걸면 먼저 걸린 쪽이
          * 뒤쪽을 가려 계측이 무의미해지므로 하나만 적용합니다.
          */
-        if (app->motion_gate_enabled && run_detector && app->gray_ready) {
+        /*
+         * 추론 회피 게이트.
+         *
+         * 판정을 run_detector 와 분리해서 계산합니다. 예전에는 run_detector 가
+         * 이미 0이면 게이트를 아예 건너뛰었는데, 그 뒤의 adaptive 재추론
+         * 경로가 run_detector 를 다시 1로 되돌려 게이트를 무력화했습니다.
+         * 실측에서 추론 30회 중 29회가 그 경로로 들어왔습니다.
+         *
+         * 그래서 판정을 두 등급으로 나눕니다.
+         *
+         *   hard — "볼 것이 없다" (L0 영업시간 밖 / L1 변화 없음 /
+         *          L2 변화가 감시 제외 영역 안)
+         *          추적기가 재추론을 요청해도 막습니다. 볼 것이 없는데
+         *          추적기가 흔들렸다면 그 요청 자체가 노이즈입니다.
+         *
+         *   soft — "변화는 있지만 이미 아는 대상이다" (L3)
+         *          추적기가 대상을 놓쳤다고 하면 그 말을 따릅니다.
+         *          추적 실패를 무시하면 트랙이 끊어진 채 방치됩니다.
+         */
+        if (app->motion_gate_enabled && app->gray_ready) {
             double since_detect = now - app->last_detection_time;
+            int verdict_skip = 0;   /* 이번 프레임에 볼 이유가 없는가 */
 
-            if (want_map && map.blocks_x > 0) {
+            /* L0 — 영업시간 밖. 픽셀을 한 개도 보지 않고 판정합니다. */
+            if (app->active_hours_set) {
+                time_t raw = time(NULL);
+                struct tm tmv;
+#if defined(_WIN32)
+                localtime_s(&tmv, &raw);
+#else
+                localtime_r(&raw, &tmv);
+#endif
+                if (!config_time_in_range(tmv.tm_hour * 60 + tmv.tm_min,
+                                          app->active_start_min,
+                                          app->active_end_min)) {
+                    app->gate_l0_hits++;
+                    gate_hard_block = 1;
+                    verdict_skip = 1;
+                }
+            }
+
+            if (!verdict_skip && want_map && map.blocks_x > 0) {
                 if (map.changed_blocks == 0) {
                     /* L1 — 변화 없음. idle_refresh_seconds 까지만 건너뜁니다. */
                     if (since_detect < app->idle_refresh_seconds) {
-                        run_detector = 0;
-                        app->gated_frames++;
                         app->gate_l1_hits++;
+                        gate_hard_block = 1;
+                        verdict_skip = 1;
                     } else {
                         app->track_refresh_runs++;
                     }
+                } else if (app->ignore_roi_count > 0 &&
+                           since_detect < app->idle_refresh_seconds &&
+                           gray_blocks_outside(&map, app->ignore_roi,
+                                               app->ignore_roi_count,
+                                               app->gray.downsample, 0) == 0) {
+                    /*
+                     * L2 — 변화가 전부 감시 제외 영역 안이다.
+                     * 창밖 도로, 간판 조명, 흔들리는 현수막처럼 변화는 계속
+                     * 있지만 감지 대상이 아닌 구역이다.
+                     */
+                    app->gate_l2_hits++;
+                    gate_hard_block = 1;
+                    verdict_skip = 1;
                 } else if (app->tracking &&
                            since_detect < app->track_refresh_seconds) {
                     /*
-                     * L3 — 변화가 전부 이미 추적 중인 박스 안에서 일어났다면
-                     * 새 객체가 등장한 것이 아니므로 SAD 추적기로 충분합니다.
+                     * L3 — 변화가 전부 이미 추적 중인 박스 안이다.
+                     * 새 객체가 등장한 것이 아니므로 추적기로 충분하다.
                      * 앉아 있는 손님 한 명 때문에 추론이 계속 도는 상황이
-                     * 여기서 걸립니다.
-                     *
-                     * track_refresh_seconds 안에서만 유효합니다. 그 시간이
-                     * 지나면 추적기 드리프트를 끊기 위해 한 번은 실행합니다.
+                     * 여기서 걸린다. hard 가 아니므로 추적 실패는 존중된다.
                      */
                     GrayRect boxes[64];
                     int n = 0;
@@ -839,19 +962,21 @@ static int process_frame(RgbFrame *frame, void *opaque,
                         gray_blocks_outside(&map, boxes, n,
                                             app->gray.downsample,
                                             app->block_margin) == 0) {
-                        run_detector = 0;
-                        app->gated_frames++;
                         app->gate_l3_hits++;
+                        verdict_skip = 1;
                     }
                 }
-            } else {
+            } else if (!verdict_skip && !want_map) {
                 /* 폴백 — 블록 지도를 쓸 수 없을 때의 기존 비율 게이트. */
                 double limit = app->motion_ratio_threshold * (double)stats.pixels;
                 if ((double)stats.changed_motion < limit &&
-                    since_detect < app->idle_refresh_seconds) {
-                    run_detector = 0;
-                    app->gated_frames++;
-                }
+                    since_detect < app->idle_refresh_seconds)
+                    verdict_skip = 1;
+            }
+
+            if (verdict_skip && run_detector) {
+                run_detector = 0;
+                app->gated_frames++;
             }
         }
     }
@@ -869,7 +994,7 @@ static int process_frame(RgbFrame *frame, void *opaque,
                            &requested, error, error_size) != 0)
             return -1;
         app->tracking_seconds += platform_monotonic_seconds() - started;
-        if (requested) {
+        if (requested && !gate_hard_block) {
             run_detector = 1;
             app->adaptive_runs++;
         } else {
@@ -912,6 +1037,13 @@ static int process_frame(RgbFrame *frame, void *opaque,
             }
         }
         app->last_detection_time = now;
+        /* 게이트 기준 프레임을 이번 추론 시점으로 갱신합니다.
+         * 이 시점 이후의 변화만 "새로 볼 이유"가 됩니다. */
+        if (app->gray.data && app->gray_ref) {
+            memcpy(app->gray_ref, app->gray.data,
+                   (size_t)app->gray.width * app->gray.height);
+            app->gray_ref_ready = 1;
+        }
         tracks_update(&app->tracks, &app->detections, now);
         rules_evaluate(&app->rules, &app->tracks, now, &app->event_log);
     } else if (!tracked) {
@@ -1042,7 +1174,9 @@ static int write_metrics(const char *path, const Arguments *args,
             "  \"reused_frames\": %lld,\n"
             "  \"adaptive_runs\": %lld,\n"
             "  \"gated_frames\": %lld,\n"
+            "  \"gate_l0_hits\": %lld,\n"
             "  \"gate_l1_hits\": %lld,\n"
+            "  \"gate_l2_hits\": %lld,\n"
             "  \"gate_l3_hits\": %lld,\n"
             "  \"track_refresh_runs\": %lld,\n"
             "  \"motion_gate\": %s,\n"
@@ -1084,7 +1218,9 @@ static int write_metrics(const char *path, const Arguments *args,
             (long long)app->tracked_frames, (long long)app->reused_frames,
             (long long)app->adaptive_runs,
             (long long)app->gated_frames,
+            (long long)app->gate_l0_hits,
             (long long)app->gate_l1_hits,
+            (long long)app->gate_l2_hits,
             (long long)app->gate_l3_hits,
             (long long)app->track_refresh_runs,
             app->motion_gate_enabled ? "true" : "false",
@@ -1214,11 +1350,8 @@ int main(int argc, char **argv) {
             (double)config_float(&cfg, "motion_ratio_threshold", 0.004f, 0.0001f, 1.0f);
         app.idle_refresh_seconds  =
             (double)config_float(&cfg, "idle_refresh_seconds", 10.0f, 1.0f, 3600.0f);
-        app.block_gate_enabled = (int)config_long(&cfg, "block_gate", 1, 0, 1);
-        app.block_min_changed  = (int)config_long(&cfg, "block_min_changed", 2, 1, 64);
-        app.block_margin       = (int)config_long(&cfg, "block_margin", 1, 0, 16);
-        app.track_refresh_seconds =
-            (double)config_float(&cfg, "track_refresh_seconds", 5.0f, 0.5f, 120.0f);
+        apply_gate_config(&app, &cfg);
+        apply_roi_kiosk(&rules_cfg, &cfg);
         /* 문 여닫이 설정 — door_load는 cfg 블록 밖에서 (data_dir 필요) */
         app.door.enabled                 = (int)config_long (&cfg, "door_enabled",        0,    0,    1);
         app.door.diff_threshold          = config_float      (&cfg, "door_diff_threshold",  0.05f, 0.001f, 1.0f);
@@ -1251,6 +1384,49 @@ int main(int argc, char **argv) {
         goto done;
     }
     event_log_init(&app.event_log, event_log_file, LOG_INFO);
+
+    /*
+     * 조용히 꺼져 있는 기능을 기동 시 한 블록으로 알립니다.
+     *
+     * roi_kiosk 가 설정되지 않아 주문 판정이 죽어 있던 문제가 정확히 이
+     * 사례입니다. 코드는 정상 동작했지만 그 기능이 꺼져 있다는 사실이
+     * 아무 데도 남지 않았습니다. 현장에서 "왜 이 기능이 안 되죠"에
+     * 로그 한 장으로 답할 수 있어야 합니다.
+     */
+    {
+        char msg[192];
+        if (!app.rules.config.roi_kiosk_set)
+            event_log_write(&app.event_log, LOG_WARN, "startup",
+                            "roi_kiosk 미설정 — 주문 상태 전환(ORDERED) 비활성, "
+                            "order_unverified 판정 근거 없음");
+        else {
+            snprintf(msg, sizeof(msg),
+                     "roi_kiosk=%.0f,%.0f,%.0f,%.0f 주문 상태 전환 활성",
+                     app.rules.config.roi_kiosk_x, app.rules.config.roi_kiosk_y,
+                     app.rules.config.roi_kiosk_w, app.rules.config.roi_kiosk_h);
+            event_log_write(&app.event_log, LOG_INFO, "startup", msg);
+        }
+
+        if (app.active_hours_set) {
+            snprintf(msg, sizeof(msg), "active_hours=%02d:%02d-%02d:%02d",
+                     app.active_start_min / 60, app.active_start_min % 60,
+                     app.active_end_min / 60, app.active_end_min % 60);
+            event_log_write(&app.event_log, LOG_INFO, "startup", msg);
+        } else {
+            event_log_write(&app.event_log, LOG_INFO, "startup",
+                            "active_hours 미설정 — 24시간 감시");
+        }
+
+        snprintf(msg, sizeof(msg),
+                 "block_gate=%s ignore_roi=%d track_refresh=%.1fs",
+                 app.block_gate_enabled ? "on" : "off",
+                 app.ignore_roi_count, app.track_refresh_seconds);
+        event_log_write(&app.event_log, LOG_INFO, "startup", msg);
+
+        if (!app.door.enabled)
+            event_log_write(&app.event_log, LOG_INFO, "startup",
+                            "door_enabled=0 — 문 개방 감지 비활성");
+    }
 
     fprintf(stderr,
             "model input: %dx%d, provider: %s, threads: %d, detect every: %d, tracker: %s, "
@@ -1375,6 +1551,7 @@ done:
     tracks_destroy(&app.tracks);
     camera_health_destroy(&app.cam_health);
     free(app.gray_prev);
+    free(app.gray_ref);
     gray_buf_destroy(&app.gray);
     tracker_destroy(app.tracker);
     detector_destroy(app.detector);

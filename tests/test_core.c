@@ -802,11 +802,68 @@ static void test_rules_unordered_seated(void) {
 static void feed_health(CameraHealth *health, GrayBuf *g, uint8_t *prev,
                         int *ready, CamState *state) {
     GrayStats stats;
-    gray_analyze(g, *ready ? prev : NULL, 8, health->config.motion_threshold,
-                 2, &stats, NULL);
+    gray_analyze(g, *ready ? prev : NULL, NULL, 8,
+                 health->config.motion_threshold, 2, &stats, NULL);
     camera_health_update(health, &stats, state);
     memcpy(prev, g->data, (size_t)g->width * g->height);
     *ready = 1;
+}
+
+static void test_config_rect_and_time(void) {
+    Config c;
+    ConfigRect r;
+    ConfigRect list[8];
+    char err[128] = {0};
+    int start = 0, end = 0, n;
+    const char *path = "test_rect.json";
+    FILE *f = fopen(path, "w");
+    ASSERT_TRUE(f != NULL);
+    fputs("{\n"
+          "  \"roi_kiosk\": \"820,120,300,420\",\n"
+          "  \"bad_rect\": \"1,2,3\",\n"
+          "  \"zero_rect\": \"1,2,0,4\",\n"
+          "  \"trailing\": \"1,2,3,4x\",\n"
+          "  \"ignore_roi_1\": \"0,0,320,180\",\n"
+          "  \"ignore_roi_2\": \"900,0,380,200\",\n"
+          "  \"ignore_roi_4\": \"5,5,5,5\",\n"
+          "  \"active_hours\": \"07:00-23:30\",\n"
+          "  \"night\": \"22:00-02:00\",\n"
+          "  \"bad_time\": \"7-23\"\n"
+          "}\n", f);
+    fclose(f);
+    ASSERT_INT_EQ(config_load(&c, path, err, sizeof(err)), 0);
+
+    ASSERT_INT_EQ(config_rect(&c, "roi_kiosk", &r), 1);
+    EXPECT_TRUE(r.x == 820.0f && r.y == 120.0f);
+    EXPECT_TRUE(r.w == 300.0f && r.h == 420.0f);
+
+    /* 형식이 어긋나면 "미설정"으로 다뤄야 합니다 — 잘못된 값을 쓰면 안 됩니다. */
+    EXPECT_INT_EQ(config_rect(&c, "bad_rect", &r), 0);
+    EXPECT_INT_EQ(config_rect(&c, "zero_rect", &r), 0);
+    EXPECT_INT_EQ(config_rect(&c, "trailing", &r), 0);
+    EXPECT_INT_EQ(config_rect(&c, "missing", &r), 0);
+
+    /* 번호가 끊기면(3번 없음) 거기서 멈춥니다. */
+    n = config_rect_list(&c, "ignore_roi", list, 8);
+    EXPECT_INT_EQ(n, 2);
+    EXPECT_TRUE(list[1].x == 900.0f && list[1].w == 380.0f);
+
+    ASSERT_INT_EQ(config_time_range(&c, "active_hours", &start, &end), 1);
+    EXPECT_INT_EQ(start, 7 * 60);
+    EXPECT_INT_EQ(end, 23 * 60 + 30);
+    EXPECT_INT_EQ(config_time_in_range(8 * 60, start, end), 1);
+    EXPECT_INT_EQ(config_time_in_range(6 * 60, start, end), 0);
+
+    /* 자정을 넘는 구간 */
+    ASSERT_INT_EQ(config_time_range(&c, "night", &start, &end), 1);
+    EXPECT_INT_EQ(config_time_in_range(23 * 60, start, end), 1);
+    EXPECT_INT_EQ(config_time_in_range(1 * 60, start, end), 1);
+    EXPECT_INT_EQ(config_time_in_range(12 * 60, start, end), 0);
+
+    EXPECT_INT_EQ(config_time_range(&c, "bad_time", &start, &end), 0);
+
+    config_destroy(&c);
+    remove(path);
 }
 
 static void test_camera_health_whiteout(void) {
@@ -897,14 +954,14 @@ static void test_gray_analyze_single_pass(void) {
         }
     }
     gray_buf_update(&g, rgb, SRC_W, SRC_H, SRC_W * 3);
-    gray_analyze(&g, prev, 8, 8, 2, &st, NULL);
+    gray_analyze(&g, prev, NULL, 8, 8, 2, &st, NULL);
     EXPECT_INT_EQ(st.pixels, SRC_W);
     /* |diff| > 8  → 109, 150 두 개 */
     EXPECT_INT_EQ((int)st.changed_motion, 2);
     /* |diff| >= 8 → 108, 109, 150 세 개 */
     EXPECT_INT_EQ((int)st.changed_health, 3);
     /* prev == NULL 이면 변화량은 0, luma 합만 계산 */
-    gray_analyze(&g, NULL, 8, 8, 2, &st, NULL);
+    gray_analyze(&g, NULL, NULL, 8, 8, 2, &st, NULL);
     EXPECT_INT_EQ((int)st.changed_motion, 0);
     EXPECT_INT_EQ((int)st.changed_health, 0);
     EXPECT_TRUE(st.luma_sum > 0);
@@ -960,7 +1017,7 @@ static void test_motion_map_locates_change(void) {
         rgb[(y * W + x) * 3 + 2] = 200;
     }
     gray_buf_update(&g, rgb, W, H, W * 3);
-    gray_analyze(&g, prev, 8, 8, 2, &st, &map);
+    gray_analyze(&g, prev, NULL, 8, 8, 2, &st, &map);
 
     EXPECT_INT_EQ(map.blocks_x, W / GRAY_BLOCK_SIZE);
     EXPECT_INT_EQ(map.blocks_y, H / GRAY_BLOCK_SIZE);
@@ -977,7 +1034,7 @@ static void test_motion_map_locates_change(void) {
     /* 변화가 전혀 없으면 블록도 0 */
     gray_buf_update(&g, rgb, W, H, W * 3);
     memcpy(prev, g.data, (size_t)g.width * g.height);
-    gray_analyze(&g, prev, 8, 8, 2, &st, &map);
+    gray_analyze(&g, prev, NULL, 8, 8, 2, &st, &map);
     EXPECT_INT_EQ(map.changed_blocks, 0);
     EXPECT_INT_EQ(gray_blocks_outside(&map, &box, 1, DS, 0), 0);
 
@@ -1079,6 +1136,7 @@ int main(void) {
     RUN_TEST(test_rules_fall_geometry);
     RUN_TEST(test_rules_fall_requires_hold);
     RUN_TEST(test_rules_unordered_seated);
+    RUN_TEST(test_config_rect_and_time);
     RUN_TEST(test_camera_health_whiteout);
     RUN_TEST(test_camera_health_frozen);
     RUN_TEST(test_gray_luma_matches_plane);

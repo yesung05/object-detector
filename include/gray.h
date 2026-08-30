@@ -99,7 +99,20 @@ static inline int motion_map_get(const MotionMap *m, int index) {
  * block_min_changed: 블록 안 변화 픽셀이 이 수 이상이어야 변화 블록으로 셉니다.
  *                    1로 두면 센서 노이즈 한 점에도 반응하므로 2 이상을 권합니다.
  */
-void gray_analyze(const GrayBuf *cur, const uint8_t *prev,
+/*
+ * prev 와 ref 를 따로 받는 이유 — 두 소비자가 서로 다른 질문을 합니다.
+ *
+ *   prev (직전 프레임)      : "화면이 멈췄는가?"  → 카메라 freeze 판정
+ *   ref  (마지막 추론 시점) : "지난번에 본 뒤로 달라진 게 있는가?" → 게이트
+ *
+ * 게이트를 직전 프레임 기준으로 판정하면 느린 움직임을 놓칩니다. 10m 거리의
+ * 사람이 천천히 걸으면 프레임당 변위가 다운샘플 격자에서 1픽셀 미만이라
+ * 매 프레임 임계값 아래로 깔리고, 실제로는 계속 움직이는데 "변화 없음"이
+ * 됩니다. 마지막으로 추론한 시점과 비교하면 그 변위가 누적되어 잡힙니다.
+ *
+ * ref 가 NULL 이면 prev 를 대신 씁니다.
+ */
+void gray_analyze(const GrayBuf *cur, const uint8_t *prev, const uint8_t *ref,
                   int motion_gt, int health_ge,
                   int block_min_changed,
                   GrayStats *out, MotionMap *map);
