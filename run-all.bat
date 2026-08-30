@@ -9,12 +9,12 @@ set EXE=%ROOT%\build-windows\Release\yolo11-person.exe
 set DASHBOARD=%ROOT%\build-windows\Release\hunik-dashboard.exe
 
 if not exist "%EXE%" (
-    echo [ERROR] 실행 파일이 없습니다. 먼저 빌드하세요:
+    echo [ERROR] Executable not found. Build first:
     echo         scripts\test.ps1 -Full -OrtRoot C:\deps\onnxruntime -FfmpegRoot C:\deps\ffmpeg
     pause & exit /b 1
 )
 
-rem ── DLL 경로 탐색 ─────────────────────────────────────────────────────────
+rem -- DLL path search --
 set FFMPEG_BIN=
 for %%d in ("C:\deps\ffmpeg\bin" "%ROOT%\deps\ffmpeg\bin") do (
     if not defined FFMPEG_BIN if exist "%%~d\ffmpeg.exe" set "FFMPEG_BIN=%%~d"
@@ -26,12 +26,12 @@ for %%d in ("C:\deps\onnxruntime\lib" "%ROOT%\deps\onnxruntime\lib") do (
 if defined FFMPEG_BIN set "PATH=%FFMPEG_BIN%;%PATH%"
 if defined ORT_LIB   set "PATH=%ORT_LIB%;%PATH%"
 
-rem ── 모델 경로 결정 ────────────────────────────────────────────────────────
-rem   models\ 폴더가 있으면 비율 자동 선택, 없으면 루트의 단일 파일로 fallback
+rem -- Model path: use models\ dir for auto aspect-ratio selection,
+rem    fall back to single file in project root --
 set MODEL=
 if exist "%ROOT%\models\" (
     set "MODEL=%ROOT%\models"
-    echo [model] models\ ^(비율 자동 선택^)
+    echo [model] models\ (auto aspect-ratio selection)
 ) else (
     for %%f in (
         "%ROOT%\yolo11n-416.onnx"
@@ -40,32 +40,32 @@ if exist "%ROOT%\models\" (
         if not defined MODEL if exist "%%~f" set "MODEL=%%~f"
     )
     if not defined MODEL (
-        echo [ERROR] models\ 폴더와 루트 ONNX 파일을 모두 찾지 못했습니다.
+        echo [ERROR] No model found. Put *.onnx files in models\ or project root.
         pause & exit /b 1
     )
     echo [model] %MODEL%
 )
 
-rem ── 이벤트 로그 경로 ──────────────────────────────────────────────────────
+rem -- Event log path --
 if not exist "%ROOT%\logs" mkdir "%ROOT%\logs"
 for /f %%i in ('powershell -NoProfile -Command "Get-Date -Format yyyyMMdd_HHmmss"') do set STAMP=%%i
 set LOGFILE=%ROOT%\logs\%STAMP%.log
 echo [log]   %LOGFILE%
 
-rem ── 대시보드 백그라운드 실행 ──────────────────────────────────────────────
+rem -- Start dashboard in background --
 if exist "%DASHBOARD%" (
-    echo [dash]  http://localhost:8080 ^(백그라운드^)
+    echo [dash]  http://localhost:8080 (background)
     start "" /B "%DASHBOARD%" --root "%ROOT%\dashboard" --config "%ROOT%\config.json"
 ) else (
-    echo [dash]  대시보드 실행 파일 없음 ^(빌드하면 자동으로 시작됩니다^)
+    echo [dash]  dashboard binary not found (build to enable)
 )
 
-echo [start] Ctrl+C 로 종료합니다.
+echo [start] Press Ctrl+C to stop.
 echo.
 
-rem --preview 는 기본으로 켜지 않습니다. ffplay 는 별도 프로세스로 코어 하나를
-rem 차지하고, 프레임마다 raw RGB 를 파이프로 보냅니다(720p 15fps 기준 41MB/s).
-rem 화면 확인은 대시보드 스트림(http://localhost:8081/stream)을 쓰세요.
+rem -- Preview (ffplay) is off by default.
+rem    ffplay uses a full core + 41MB/s pipe writes at 720p 15fps.
+rem    Use the dashboard stream at http://localhost:8081/stream instead.
 "%EXE%" ^
     --model "%MODEL%" ^
     --camera ^
@@ -79,5 +79,5 @@ rem 화면 확인은 대시보드 스트림(http://localhost:8081/stream)을 쓰
     --config "%ROOT%\config.json"
 
 echo.
-echo [done] 이벤트 로그: %LOGFILE%
+echo [done] Event log: %LOGFILE%
 pause
