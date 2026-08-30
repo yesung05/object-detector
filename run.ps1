@@ -35,7 +35,8 @@ param(
 
     # 모델 / 경로 (기본값은 프로젝트 루트 기준)
     [string]$Model    = "",
-    [string]$Provider = "cpu"
+    [string]$Provider = "cpu",
+    [int]   $StreamPort = 0
 )
 
 Set-StrictMode -Version Latest
@@ -45,6 +46,9 @@ $ROOT = Split-Path -Parent $MyInvocation.MyCommand.Path
 
 # ── 경로 기본값 ───────────────────────────────────────────────────────────
 if (-not $Model)    { $Model = "$ROOT\yolo11n-416.onnx" }
+# Dashboard settings are stored here.  Always pass it to the detector so
+# startup values and the in-process hot-reload watcher use the same file.
+if (-not $Config)   { $Config = "$ROOT\config.json" }
 $EXE = "$ROOT\build-windows\Release\yolo11-person.exe"
 
 # ── 사전 확인 ─────────────────────────────────────────────────────────────
@@ -101,6 +105,7 @@ if ($Metrics)    { $args_list += @("--metrics",    $Metrics)    }
 if ($Detections) { $args_list += @("--detections", $Detections) }
 if ($EventLog)   { $args_list += @("--event-log",  $EventLog)   }
 if ($Config)     { $args_list += @("--config",     $Config)     }
+if ($StreamPort -gt 0) { $args_list += @("--stream-port", $StreamPort) }
 
 $args_list += @("--detect-every", $DetectEvery)
 $args_list += @("--confidence",   $Confidence)

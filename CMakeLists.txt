@@ -105,7 +105,8 @@ add_executable(test_core
     src/config.c
     src/camera_health.c
     src/tracks.c
-    src/rules.c)
+    src/rules.c
+    src/door.c)
 target_include_directories(test_core PRIVATE include tests)
 if(MSVC)
     target_compile_options(test_core PRIVATE /O1 /W4 /utf-8)

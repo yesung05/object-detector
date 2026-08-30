@@ -44,7 +44,7 @@ echo [log] %LOGFILE%
 echo [start] Press Ctrl+C to stop.
 echo.
 
-"%EXE%" --model "%MODEL%" --camera --camera-size 1280x720 --camera-fps 15 --preview --provider cpu --detect-every 3 --track --warmup 2 --event-log "%LOGFILE%" --stream-port 8081
+"%EXE%" --model "%MODEL%" --camera --camera-size 1280x720 --camera-fps 15 --preview --provider cpu --detect-every 3 --track --warmup 2 --event-log "%LOGFILE%" --config "%ROOT%\config.json"
 
 echo.
 echo [done] Event log: %LOGFILE%

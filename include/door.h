@@ -48,6 +48,9 @@ typedef struct {
 
     /* 지속 시간 기반 이벤트 — 열린 상태가 이 시간 이상 유지될 때만 로그 발생.
      * 문이 잠깐 열렸다 닫히는 정상 상황(고객 입퇴장)을 필터링하기 위한 값. */
+    int    confirm_frames;
+    int    candidate_state;
+    int    candidate_frames;
     double open_threshold_seconds; /* config: door_open_seconds, 기본 30.0 */
     double open_since;             /* 열림 시작 시각 (monotonic). -1=닫힌 상태 */
     int    open_event_fired;       /* 1=이번 개방 주기에 이미 이벤트를 발생시킴 */

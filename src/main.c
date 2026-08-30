@@ -79,6 +79,11 @@ typedef struct {
     char   config_reload_path[512]; /* 재로드할 config 파일 경로 */
     time_t config_mtime;            /* 마지막으로 읽은 파일 수정 시각 */
     double config_check_time;       /* 마지막으로 mtime을 체크한 시각 */
+    char   door_closed_path[600];
+    char   door_open_path[600];
+    time_t door_closed_mtime;
+    time_t door_open_mtime;
+    double door_refs_check_time;
 } AppContext;
 
 /* 명령줄에서 읽은 경로와 프로그램 내부 기본 설정을 한곳에 모읍니다. */
@@ -99,6 +104,7 @@ typedef struct {
     double detect_fps_limit;  /* --detect-fps: YOLO 최대 FPS, 0=무제한 */
     int stream_port;          /* --stream-port: MJPEG 포트, 0=비활성 */
     int tracking;
+    int stream_port_set;
     int preview;
     int preview_fps;
     int camera;
@@ -331,6 +337,7 @@ static int parse_arguments(int argc, char **argv, Arguments *args) {
             if (require_value(argc, argv, &i, &value) != 0 ||
                 parse_long(value, 1024, 65535, &parsed) != 0) return -1;
             args->stream_port = (int)parsed;
+            args->stream_port_set = 1;
         } else if (strcmp(argv[i], "--confidence") == 0) {
             if (require_value(argc, argv, &i, &value) != 0 ||
                 parse_float(value, 0.0f, 1.0f,
@@ -540,6 +547,7 @@ static void reload_config(AppContext *app) {
     /* 문 여닫이 설정 */
     app->door.enabled                = (int)config_long(&cfg, "door_enabled", 0, 0, 1);
     app->door.diff_threshold         = config_float(&cfg, "door_diff_threshold", 0.05f, 0.001f, 1.0f);
+    app->door.confirm_frames         = (int)config_long(&cfg, "door_confirm_frames", 5, 1, 300);
     app->door.open_threshold_seconds = (double)config_float(&cfg, "door_open_seconds", 30.0f, 1.0f, 3600.0f);
     app->door.roi_x = (int)config_long(&cfg, "door_roi_x", 0, 0, 9999);
     app->door.roi_y = (int)config_long(&cfg, "door_roi_y", 0, 0, 9999);
@@ -569,6 +577,31 @@ static void reload_config(AppContext *app) {
 
     config_destroy(&cfg);
     fprintf(stderr, "config: reloaded from %s\n", app->config_reload_path);
+}
+
+static time_t door_ref_mtime(const char *path) {
+    if (!path || !path[0]) return 0;
+#if defined(_WIN32)
+    struct _stat st;
+    return _stat(path, &st) == 0 ? st.st_mtime : 0;
+#else
+    struct stat st;
+    return stat(path, &st) == 0 ? (time_t)st.st_mtime : 0;
+#endif
+}
+
+static void reload_door_references(AppContext *app) {
+    time_t closed_mtime = door_ref_mtime(app->door_closed_path);
+    time_t open_mtime = door_ref_mtime(app->door_open_path);
+    if (closed_mtime == app->door_closed_mtime &&
+        open_mtime == app->door_open_mtime) return;
+    if (door_load(&app->door, app->door_closed_path, app->door_open_path) != 0) {
+        fprintf(stderr, "door: failed to reload references\n");
+        return;
+    }
+    app->door_closed_mtime = closed_mtime;
+    app->door_open_mtime = open_mtime;
+    fprintf(stderr, "door: references reloaded\n");
 }
 
 /*
@@ -607,6 +640,11 @@ static int process_frame(RgbFrame *frame, void *opaque,
             reload_config(app);
         }
 #endif
+    }
+    if (app->door_closed_path[0] &&
+        (now - app->door_refs_check_time) >= 2.0) {
+        app->door_refs_check_time = now;
+        reload_door_references(app);
     }
 
     /* 첫 프레임에서 HUD FPS 계산 기준 시각을 기록합니다. */
@@ -995,7 +1033,8 @@ int main(int argc, char **argv) {
             (double)config_float(&cfg, "unordered_grace_seconds", 300.0f, 0.0f, 3600.0f);
         rules_cfg.fall_hold_seconds =
             (double)config_float(&cfg, "fall_hold_seconds", 5.0f, 1.0f, 60.0f);
-        app.motion_gate_enabled   = args.motion_gate;
+        app.motion_gate_enabled   =
+            (int)config_long(&cfg, "motion_gate", args.motion_gate, 0, 1);
         app.motion_ratio_threshold =
             (double)config_float(&cfg, "motion_ratio_threshold", 0.004f, 0.0001f, 1.0f);
         app.idle_refresh_seconds  =
@@ -1003,11 +1042,14 @@ int main(int argc, char **argv) {
         /* 문 여닫이 설정 — door_load는 cfg 블록 밖에서 (data_dir 필요) */
         app.door.enabled                 = (int)config_long (&cfg, "door_enabled",        0,    0,    1);
         app.door.diff_threshold          = config_float      (&cfg, "door_diff_threshold",  0.05f, 0.001f, 1.0f);
+        app.door.confirm_frames          = (int)config_long  (&cfg, "door_confirm_frames",  5,    1,  300);
         app.door.open_threshold_seconds  = (double)config_float(&cfg, "door_open_seconds", 30.0f, 1.0f, 3600.0f);
         app.door.roi_x                   = (int)config_long (&cfg, "door_roi_x",          0,    0, 9999);
         app.door.roi_y          = (int)config_long (&cfg, "door_roi_y",         0,    0, 9999);
         app.door.roi_w          = (int)config_long (&cfg, "door_roi_w",         0,    0, 9999);
         app.door.roi_h          = (int)config_long (&cfg, "door_roi_h",         0,    0, 9999);
+        if (!args.stream_port_set)
+            app.stream_port = (int)config_long(&cfg, "stream_port", 0, 1024, 65535);
         config_destroy(&cfg);
         if (tracks_init(&app.tracks, 64, 0.4f, 5,
                         error, sizeof(error)) != 0) {
@@ -1088,12 +1130,11 @@ int main(int argc, char **argv) {
     /* 문 여닫이 기준 이미지 로드 — 닫힘/열림 기준 각각 로드합니다.
      * 파일 없으면 0 반환(에러 아님)이므로 그냥 계속 진행합니다. */
     {
-        char closed_path[600], open_path[600];
-        snprintf(closed_path, sizeof(closed_path),
+        snprintf(app.door_closed_path, sizeof(app.door_closed_path),
                  "%s\\door_closed_reference.raw", data_dir);
-        snprintf(open_path,   sizeof(open_path),
-                 "%s\\door_open_reference.raw",   data_dir);
-        if (door_load(&app.door, closed_path, open_path) != 0)
+        snprintf(app.door_open_path, sizeof(app.door_open_path),
+                 "%s\\door_open_reference.raw", data_dir);
+        if (door_load(&app.door, app.door_closed_path, app.door_open_path) != 0)
             fprintf(stderr, "door: failed to load reference\n");
         else {
             if (app.door.ref_closed_rgb)
@@ -1103,6 +1144,8 @@ int main(int argc, char **argv) {
                 fprintf(stderr, "door: open reference loaded %dx%d\n",
                         app.door.ref_open_w, app.door.ref_open_h);
         }
+        app.door_closed_mtime = door_ref_mtime(app.door_closed_path);
+        app.door_open_mtime = door_ref_mtime(app.door_open_path);
     }
     start = platform_monotonic_seconds();
     cpu_start = platform_process_cpu_seconds();

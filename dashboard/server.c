@@ -412,6 +412,7 @@ static const char *DEFAULT_CONFIG =
     "\"frozen_frames_threshold\":45,"
     "\"door_enabled\":0,"
     "\"door_diff_threshold\":0.05,"
+    "\"door_confirm_frames\":5,"
     "\"door_open_seconds\":30,"
     "\"door_roi_x\":0,"
     "\"door_roi_y\":0,"
@@ -468,6 +469,18 @@ static const char *extract_body(const char *buf, int buflen, int *body_len) {
     return NULL;
 }
 
+static int content_length(const char *buf) {
+    const char *p = strstr(buf, "Content-Length:");
+    char *end;
+    long n;
+    if (!p) return 0;
+    p += strlen("Content-Length:");
+    while (*p == ' ' || *p == '\t') p++;
+    n = strtol(p, &end, 10);
+    if (end == p || n < 0 || n > 7000) return -1;
+    return (int)n;
+}
+
 /* POST /api/config body: { ... } → config.json 저장 */
 static void serve_config_post(SOCKET s, const char *body, int body_len) {
     if (!body || body_len <= 0) {
@@ -509,6 +522,33 @@ static DWORD WINAPI client_thread(LPVOID arg) {
 
     char method[16], path[512], query[512];
     parse_request(buf, method, path, query);
+
+    /* TCP recv() 한 번에 HTTP POST 본문 전체가 도착한다는 보장은 없습니다.
+     * config 저장 요청은 Content-Length만큼 끝까지 받아야 브라우저에서
+     * 간헐적으로 빈 본문으로 처리되는 일을 막을 수 있습니다. */
+    if (strcmp(method, "POST") == 0) {
+        int body_len = 0;
+        const char *body = extract_body(buf, n, &body_len);
+        int expected = content_length(buf);
+        if (!body || expected < 0 || expected > (int)sizeof(buf) - (int)(body - buf) - 1) {
+            send_header(s, 400, "application/json", 12);
+            send(s, "{\"ok\":false}", 12, 0);
+            closesocket(s);
+            return 0;
+        }
+        while (body_len < expected) {
+            int got = recv(s, buf + n, (int)sizeof(buf) - 1 - n, 0);
+            if (got <= 0) {
+                send_header(s, 400, "application/json", 12);
+                send(s, "{\"ok\":false}", 12, 0);
+                closesocket(s);
+                return 0;
+            }
+            n += got;
+            buf[n] = '\0';
+            body_len = n - (int)(body - buf);
+        }
+    }
 
     /* CORS 프리플라이트 */
     if (strcmp(method, "OPTIONS") == 0) {

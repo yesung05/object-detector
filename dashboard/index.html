@@ -421,6 +421,11 @@
             <span class="setting-value-display" id="disp-door_diff_threshold">0.05</span>
           </div>
           <div class="setting-row">
+            <div><div class="setting-label">상태 전환 확인 프레임</div><div class="setting-desc">door_confirm_frames — 같은 상태가 연속 관측된 횟수</div></div>
+            <input type="number" class="setting-input" id="cfg-door_confirm_frames" min="1" max="300" value="5">
+            <span></span>
+          </div>
+          <div class="setting-row">
             <div><div class="setting-label">개방 유지 시간</div><div class="setting-desc">door_open_seconds — 이 시간(초) 이상 열려 있어야 이벤트 발생</div></div>
             <input type="range" class="setting-input" id="cfg-door_open_seconds" min="5" max="300" step="5" value="30" oninput="syncDisplay(this)">
             <span class="setting-value-display" id="disp-door_open_seconds">30</span>
@@ -438,17 +443,23 @@
           <div style="margin-top:8px;">
             <div class="setting-label" style="margin-bottom:6px;">ROI 드래그 선택기</div>
             <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:6px;">
-              <button class="btn" onclick="openRoiPicker()">스냅샷 불러오기</button>
+              <button class="btn" onclick="openRoiPicker()">1. 현재 화면 불러오기</button>
               <button class="btn" onclick="clearRoi()" style="font-size:11px">ROI 초기화</button>
-              <span class="door-status" id="roi-hint">스냅샷을 불러온 뒤 이미지 위에서 드래그하세요.</span>
+              <span class="door-status" id="roi-hint">문짝과 문틀만 포함하도록 드래그하세요. 사람·통로·창문은 제외하세요.</span>
             </div>
             <div id="roi-picker-wrap" style="display:none; position:relative; max-width:480px; border:1px solid var(--border); border-radius:6px; overflow:hidden;">
               <canvas id="roi-canvas" style="display:block; width:100%; cursor:crosshair;"></canvas>
               <div style="padding:8px; background:var(--surface); border-top:1px solid var(--border); display:flex; gap:8px; align-items:center;">
-                <button class="btn success" id="roi-save-btn" disabled onclick="roiSave()" style="font-weight:700;">ROI 저장</button>
+                <button class="btn success" id="roi-save-btn" disabled onclick="roiSave()" style="font-weight:700;">3. ROI 저장 및 적용</button>
                 <span id="roi-save-hint" style="font-size:11px; color:var(--muted)">드래그로 영역 선택 후 저장하세요.</span>
               </div>
             </div>
+          </div>
+          <div id="roi-summary" class="door-status" style="margin-top:8px; padding:8px; border:1px solid var(--border); border-radius:5px;">
+            ROI를 지정하지 않았습니다. 현재는 화면 전체를 비교하므로 오탐 가능성이 높습니다.
+          </div>
+          <div class="door-status" style="margin-top:6px; line-height:1.5;">
+            설정 순서: ① 현재 화면 불러오기 → ② 문짝/문틀만 드래그 → ③ ROI 저장 및 적용 → ④ 사람이 없는 상태에서 닫힘·열림 기준 이미지를 각각 캡처합니다. 저장 후 detector가 최대 2초 내 반영합니다.
           </div>
 
           <!-- 기준 이미지 캡처 -->
@@ -774,9 +785,10 @@ async function loadSettings() {
       "stream_port","motion_gate","motion_ratio_threshold","idle_refresh_seconds",
       "dwell_limit_seconds","unordered_grace_seconds","fall_hold_seconds",
       "luma_black_threshold","luma_white_threshold","frozen_frames_threshold",
-      "door_enabled","door_diff_threshold","door_open_seconds","door_roi_x","door_roi_y","door_roi_w","door_roi_h"
+      "door_enabled","door_diff_threshold","door_confirm_frames","door_open_seconds","door_roi_x","door_roi_y","door_roi_w","door_roi_h"
     ];
     keys.forEach(k => { if (cfg[k] !== undefined) setCfgVal(k, cfg[k]); });
+    updateRoiSummary();
     // 스트림 포트를 연결 포트에도 동기화
     if (cfg.stream_port) portInput.value = cfg.stream_port;
     document.getElementById("save-status").textContent = "";
@@ -788,6 +800,9 @@ async function loadSettings() {
 }
 
 async function saveSettings() {
+  const st = document.getElementById("save-status");
+  st.textContent = "ROI 설정 저장 중...";
+  st.style.color = "var(--muted)";
   const cfg = {
     stream_port:              cfgVal("stream_port"),
     motion_gate:              cfgVal("motion_gate"),
@@ -801,30 +816,40 @@ async function saveSettings() {
     frozen_frames_threshold:  cfgVal("frozen_frames_threshold"),
     door_enabled:             cfgVal("door_enabled"),
     door_diff_threshold:      cfgVal("door_diff_threshold"),
+    door_confirm_frames:      cfgVal("door_confirm_frames"),
     door_open_seconds:        cfgVal("door_open_seconds"),
     door_roi_x:               cfgVal("door_roi_x"),
     door_roi_y:               cfgVal("door_roi_y"),
     door_roi_w:               cfgVal("door_roi_w"),
     door_roi_h:               cfgVal("door_roi_h"),
   };
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 5000);
   try {
     const res = await fetch("/api/config", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(cfg, null, 2)
+      body: JSON.stringify(cfg, null, 2),
+      signal: controller.signal
     });
     const json = await res.json();
-    const st = document.getElementById("save-status");
     if (json.ok) {
-      st.textContent = "저장 완료 (2초 내 자동 적용)";
+      st.textContent = "저장됨 — 문 감지/ROI는 최대 2초 내 반영됩니다. 스트림 포트 변경은 detector 재시작이 필요합니다.";
       st.style.color = "var(--green)";
+      setTimeout(() => { st.textContent = ""; st.style.color = ""; }, 4000);
+      return true;
     } else {
       st.textContent = "저장 실패";
       st.style.color = "var(--red)";
+      setTimeout(() => { st.textContent = ""; st.style.color = ""; }, 4000);
+      return false;
     }
-    setTimeout(() => { st.textContent = ""; st.style.color = ""; }, 4000);
   } catch (_) {
-    document.getElementById("save-status").textContent = "서버 오류";
+    st.textContent = "저장 실패 — 대시보드 서버(8080)가 실행 중인지 확인하세요.";
+    st.style.color = "var(--red)";
+    return false;
+  } finally {
+    clearTimeout(timeout);
   }
 }
 
@@ -842,7 +867,7 @@ async function captureDoorRef(state) {
     const res = await fetch(`http://localhost:${port}/door/save?state=${state}`, { method: "POST" });
     const json = await res.json();
     if (json.ok) {
-      st.textContent = `${label} 캡처 완료`;
+      st.textContent = `${label} 기준 이미지 저장됨 — detector가 최대 2초 내 다시 읽습니다.`;
       refreshDoorPreview(state);
     } else {
       st.textContent = json.error || "캡처 실패";
@@ -895,6 +920,21 @@ pollDoorState();
 // ── 문 ROI 드래그 선택기 ─────────────────────────────────────────────────────
 let _roiImg = null, _roiDrag = null;
 
+function updateRoiSummary() {
+  const x = parseInt(document.getElementById("cfg-door_roi_x").value, 10) || 0;
+  const y = parseInt(document.getElementById("cfg-door_roi_y").value, 10) || 0;
+  const w = parseInt(document.getElementById("cfg-door_roi_w").value, 10) || 0;
+  const h = parseInt(document.getElementById("cfg-door_roi_h").value, 10) || 0;
+  const el = document.getElementById("roi-summary");
+  if (w > 0 && h > 0) {
+    el.textContent = `선택된 ROI: x=${x}, y=${y}, 너비=${w}, 높이=${h}px. 이 영역만 문 상태 판단에 사용합니다.`;
+    el.style.color = "var(--green)";
+  } else {
+    el.textContent = "ROI를 지정하지 않았습니다. 현재는 화면 전체를 비교하므로 오탐 가능성이 높습니다.";
+    el.style.color = "var(--orange)";
+  }
+}
+
 async function openRoiPicker() {
   const port = getStreamPort();
   document.getElementById("roi-hint").textContent = "스냅샷 로딩 중...";
@@ -940,6 +980,7 @@ function drawRoiRect(ctx, x, y, w, h) {
 
 function setupRoiDrag(canvas) {
   const ctx = canvas.getContext("2d");
+  canvas.style.touchAction = "none";
   const getPos = e => {
     const r = canvas.getBoundingClientRect();
     const scaleX = canvas.width  / r.width;
@@ -949,8 +990,7 @@ function setupRoiDrag(canvas) {
       y: Math.max(0, Math.min(canvas.height, (e.clientY - r.top)  * scaleY))
     };
   };
-  canvas.onmousedown = e => { _roiDrag = getPos(e); };
-  canvas.onmousemove = e => {
+  const redraw = e => {
     if (!_roiDrag) return;
     const p = getPos(e);
     const x = Math.min(_roiDrag.x, p.x), y = Math.min(_roiDrag.y, p.y);
@@ -959,7 +999,7 @@ function setupRoiDrag(canvas) {
     ctx.drawImage(_roiImg, 0, 0);
     if (w > 4 && h > 4) drawRoiRect(ctx, x, y, w, h);
   };
-  canvas.onmouseup = e => {
+  const finish = e => {
     if (!_roiDrag) return;
     const p = getPos(e);
     const x = Math.round(Math.min(_roiDrag.x, p.x));
@@ -974,16 +1014,35 @@ function setupRoiDrag(canvas) {
     document.getElementById("cfg-door_roi_h").value = h;
     document.getElementById("roi-hint").textContent =
       `x=${x} y=${y} w=${w} h=${h}`;
+    updateRoiSummary();
     document.getElementById("roi-save-btn").disabled = false;
     document.getElementById("roi-save-hint").textContent = "선택 완료 — [ROI 저장] 버튼으로 적용하세요.";
     document.getElementById("roi-save-hint").style.color = "var(--green)";
   };
-  canvas.onmouseleave = () => { _roiDrag = null; };
+  canvas.onpointerdown = e => {
+    e.preventDefault();
+    _roiDrag = getPos(e);
+    canvas.setPointerCapture(e.pointerId);
+  };
+  canvas.onpointermove = redraw;
+  canvas.onpointerup = e => {
+    finish(e);
+    if (canvas.hasPointerCapture(e.pointerId)) canvas.releasePointerCapture(e.pointerId);
+  };
+  canvas.onpointercancel = e => {
+    _roiDrag = null;
+    if (canvas.hasPointerCapture(e.pointerId)) canvas.releasePointerCapture(e.pointerId);
+  };
 }
 
 async function roiSave() {
-  await saveSettings();
-  document.getElementById("roi-save-hint").textContent = "저장 완료!";
+  const saved = await saveSettings();
+  if (!saved) {
+    document.getElementById("roi-save-hint").textContent = "저장에 실패했습니다. detector 연결과 대시보드 서버를 확인하세요.";
+    document.getElementById("roi-save-hint").style.color = "var(--red)";
+    return;
+  }
+  document.getElementById("roi-save-hint").textContent = "저장됨 — detector 반영 대기(최대 2초)";
   document.getElementById("roi-save-hint").style.color = "var(--green)";
   document.getElementById("roi-save-btn").disabled = true;
   setTimeout(() => {
@@ -995,6 +1054,7 @@ async function roiSave() {
 function clearRoi() {
   ["door_roi_x","door_roi_y","door_roi_w","door_roi_h"]
     .forEach(k => document.getElementById("cfg-"+k).value = 0);
+  updateRoiSummary();
   if (_roiImg) {
     const canvas = document.getElementById("roi-canvas");
     const ctx = canvas.getContext("2d");

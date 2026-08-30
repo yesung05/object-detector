@@ -8,6 +8,7 @@
 #include "log.h"
 #include "rules.h"
 #include "tracks.h"
+#include "door.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -869,6 +870,33 @@ static void test_motion_gate_static_scene(void) {
     gray_buf_destroy(&g);
 }
 
+static void test_door_state_debounce(void) {
+    DoorMonitor d;
+    uint8_t closed[3] = {0, 0, 0};
+    uint8_t open[3] = {255, 255, 255};
+    uint8_t frame[3] = {0, 0, 0};
+    int changed = 0;
+    memset(&d, 0, sizeof(d));
+    d.enabled = 1;
+    d.ref_closed_rgb = (uint8_t *)malloc(sizeof(closed));
+    d.ref_open_rgb = (uint8_t *)malloc(sizeof(open));
+    ASSERT_TRUE(d.ref_closed_rgb != NULL && d.ref_open_rgb != NULL);
+    memcpy(d.ref_closed_rgb, closed, sizeof(closed));
+    memcpy(d.ref_open_rgb, open, sizeof(open));
+    d.ref_closed_w = d.ref_open_w = 1;
+    d.ref_closed_h = d.ref_open_h = 1;
+    d.confirm_frames = 3;
+    d.last_state = -1;
+
+    EXPECT_INT_EQ(door_check(&d, frame, 1, 1, 3, &changed), 0);
+    memset(frame, 255, sizeof(frame));
+    EXPECT_INT_EQ(door_check(&d, frame, 1, 1, 3, &changed), 0);
+    EXPECT_INT_EQ(door_check(&d, frame, 1, 1, 3, &changed), 0);
+    EXPECT_INT_EQ(door_check(&d, frame, 1, 1, 3, &changed), 1);
+    EXPECT_INT_EQ(changed, 1);
+    door_destroy(&d);
+}
+
 static void test_gray_matches_reference(void) {
     /* BT.601 근사: (77R + 150G + 29B + 128) >> 8 결과를 검증합니다. */
     enum { SRC_W = 4, SRC_H = 4, DS = 1 };
@@ -940,6 +968,7 @@ int main(void) {
     RUN_TEST(test_camera_health_whiteout);
     RUN_TEST(test_camera_health_frozen);
     RUN_TEST(test_motion_gate_static_scene);
+    RUN_TEST(test_door_state_debounce);
     RUN_TEST(test_gray_matches_reference);
     TEST_SUITE_END();
 }

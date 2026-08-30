@@ -56,6 +56,8 @@ int door_load(DoorMonitor *d,
     d->ref_open_h   = 0;
 
     d->last_state        = -1;
+    d->candidate_state   = -1;
+    d->candidate_frames  = 0;
     d->open_since        = -1.0; /* -1 = 현재 닫혀 있음 */
     d->open_event_fired  = 0;
 
@@ -193,9 +195,26 @@ int door_check(DoorMonitor *d,
         state = (ratio < d->diff_threshold) ? 1 : 0; /* 열림 기준과 가까우면 열림 */
     }
 
-    if (state_changed) {
-        *state_changed = (d->last_state != state) ? 1 : 0;
+    if (d->last_state < 0) {
+        d->last_state = state;
+        d->candidate_state = state;
+        d->candidate_frames = 0;
+        return state;
     }
-    d->last_state = state;
-    return state;
+    if (state == d->last_state) {
+        d->candidate_state = state;
+        d->candidate_frames = 0;
+        return state;
+    }
+    if (d->candidate_state == state) d->candidate_frames++;
+    else {
+        d->candidate_state = state;
+        d->candidate_frames = 1;
+    }
+    if (d->candidate_frames >= (d->confirm_frames > 0 ? d->confirm_frames : 5)) {
+        d->last_state = state;
+        d->candidate_frames = 0;
+        if (state_changed) *state_changed = 1;
+    }
+    return d->last_state;
 }
