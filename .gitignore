@@ -13,6 +13,7 @@ yolo11n-pose.pt
 !yolo11n-pose-416-int8.onnx
 !yolo11n-416.onnx
 !yolo11n.onnx
+!models/*.onnx
 
 # 카메라 녹화·테스트 출력 영상 (로컬 전용)
 *.mp4
