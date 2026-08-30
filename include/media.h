@@ -18,6 +18,17 @@ typedef struct {
     int height;
     int stride;
     int64_t index;
+    /*
+     * 디코더가 만든 luma(Y) 평면입니다. FFmpeg(AVFrame)이 소유하며 콜백이
+     * 반환하는 순간 무효화됩니다. free 하지 말고 콜백 밖으로 보관하지도
+     * 마세요. 픽셀을 수정해서도 안 됩니다 — data와 달리 디코더의 참조
+     * 프레임일 수 있어 이후 프레임 디코딩에 영향을 줍니다.
+     *
+     * 입력이 YUV420P 계열이 아니어서 Y 평면을 그대로 쓸 수 없으면 NULL입니다.
+     * 이 평면이 있으면 그레이스케일을 RGB에서 다시 계산할 필요가 없습니다.
+     */
+    const uint8_t *luma;
+    int luma_stride;
 } RgbFrame;
 
 /*

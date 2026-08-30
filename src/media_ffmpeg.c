@@ -7,6 +7,7 @@
 #include <libavutil/error.h>
 #include <libavutil/imgutils.h>
 #include <libavutil/opt.h>
+#include <libavutil/pixdesc.h>
 #include <libswscale/swscale.h>
 
 #include <stdarg.h>
@@ -439,6 +440,30 @@ static int handle_decoded_frame(Pipeline *pipeline, const AVFrame *decoded,
     rgb.height = pipeline->height;
     rgb.stride = pipeline->rgb_stride[0];
     rgb.index = pipeline->frame_index++;
+
+    /*
+     * 디코더 출력이 YUV 계열이면 data[0]이 곧 luma 평면입니다. 콜백이 이것을
+     * 그대로 쓰면 RGB에서 그레이스케일을 다시 계산하지 않아도 됩니다.
+     *
+     * 평면 개수와 크로마 서브샘플링을 직접 판별하지 않고 av_pix_fmt_desc_get()에
+     * 물어보는 이유: YUV420P/YUVJ420P/NV12/YUV422P 등 변형이 많고, 그중
+     * "첫 평면이 8비트 luma"인 경우만 안전하게 골라내야 하기 때문입니다.
+     * 팔레트·비트스트림·RGB 계열은 여기서 걸러집니다.
+     */
+    {
+        const AVPixFmtDescriptor *desc =
+            av_pix_fmt_desc_get((enum AVPixelFormat)decoded->format);
+        int planar_luma8 =
+            desc && desc->nb_components >= 3 &&
+            !(desc->flags & (AV_PIX_FMT_FLAG_RGB | AV_PIX_FMT_FLAG_PAL |
+                             AV_PIX_FMT_FLAG_BITSTREAM)) &&
+            desc->comp[0].plane == 0 &&
+            desc->comp[0].depth == 8 &&
+            desc->comp[0].step == 1 &&
+            decoded->data[0] && decoded->linesize[0] >= decoded->width;
+        rgb.luma        = planar_luma8 ? decoded->data[0] : NULL;
+        rgb.luma_stride = planar_luma8 ? decoded->linesize[0] : 0;
+    }
 
     /* main.c의 process_frame이 같은 rgb.data 위에 감지 박스와 태그를 그립니다. */
     started = monotonic_seconds();

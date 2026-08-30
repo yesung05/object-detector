@@ -6,35 +6,22 @@
 
 static const CameraHealthConfig DEFAULT_CONFIG = {240, 12, 150, 5, 8};
 
-int camera_health_init(CameraHealth *h, int gray_width, int gray_height,
-                       const CameraHealthConfig *config,
+int camera_health_init(CameraHealth *h, const CameraHealthConfig *config,
                        char *error, size_t error_size) {
-    int size;
-    uint8_t *buf;
-    if (!h || gray_width <= 0 || gray_height <= 0) {
+    if (!h) {
         if (error) snprintf(error, error_size,
                             "camera_health_init: invalid arguments");
         return -1;
     }
-    size = gray_width * gray_height;
-    buf = (uint8_t *)calloc((size_t)size, 1);
-    if (!buf) {
-        if (error) snprintf(error, error_size,
-                            "camera_health_init: out of memory");
-        return -1;
-    }
     memset(h, 0, sizeof(*h));
-    h->config    = config ? *config : DEFAULT_CONFIG;
-    h->prev_gray = buf;
-    h->gray_size = size;
-    h->state     = CAM_OK;
+    h->config = config ? *config : DEFAULT_CONFIG;
+    h->state  = CAM_OK;
     return 0;
 }
 
 void camera_health_destroy(CameraHealth *h) {
-    if (!h) return;
-    free(h->prev_gray);
-    h->prev_gray = NULL;
+    /* 소유한 버퍼가 없습니다. 호출부의 정리 흐름을 유지하기 위해 남겨 둡니다. */
+    (void)h;
 }
 
 const char *cam_state_name(CamState s) {
@@ -47,35 +34,23 @@ const char *cam_state_name(CamState s) {
     }
 }
 
-int camera_health_update(CameraHealth *h, const GrayBuf *g, CamState *state_out) {
-    int n, i, changed, luma_sum;
+int camera_health_update(CameraHealth *h, const GrayStats *stats,
+                         CamState *state_out) {
+    int n;
     unsigned long luma_avg;
+    size_t changed;
     CamState new_state;
     CamState old_state;
 
-    if (!h || !g || !g->data || !state_out) {
+    if (!h || !stats || !state_out) {
         if (state_out) *state_out = CAM_OK;
         return 0;
     }
     old_state = h->state;
-    n = g->width * g->height;
-    if (n > h->gray_size) n = h->gray_size;
+    n = stats->pixels;
+    changed = stats->changed_health;
 
-    /* 평균 luma 계산 */
-    luma_sum = 0;
-    for (i = 0; i < n; ++i) luma_sum += g->data[i];
-    luma_avg = n > 0 ? (unsigned long)luma_sum / (unsigned long)n : 128u;
-
-    /* 변화 픽셀 수 (freeze 감지) */
-    changed = 0;
-    for (i = 0; i < n; ++i) {
-        int diff = (int)g->data[i] - (int)h->prev_gray[i];
-        if (diff < 0) diff = -diff;
-        if (diff >= h->config.motion_threshold) changed++;
-    }
-
-    /* prev_gray 갱신 */
-    memcpy(h->prev_gray, g->data, (size_t)n);
+    luma_avg = n > 0 ? stats->luma_sum / (unsigned long)n : 128u;
 
     /* 이상 조건 판정 */
     if ((int)luma_avg > h->config.luma_white_threshold) {
@@ -84,7 +59,8 @@ int camera_health_update(CameraHealth *h, const GrayBuf *g, CamState *state_out)
     } else if ((int)luma_avg < h->config.luma_black_threshold) {
         h->anomaly_streak++;
         h->frozen_streak = 0;
-    } else if (changed == 0 || (n > 0 && changed * 1000 / n < 2)) {
+    } else if (changed == 0 ||
+               (n > 0 && changed * 1000 / (size_t)n < 2)) {
         /* 변화 픽셀 비율 0.2% 미만 → freeze 후보 */
         h->frozen_streak++;
         h->anomaly_streak = 0;

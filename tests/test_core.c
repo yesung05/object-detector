@@ -797,22 +797,35 @@ static void test_rules_unordered_seated(void) {
 
 /* ── CameraHealth 테스트 ─────────────────────────────────────────────────── */
 
+/* 그레이 버퍼와 이전 프레임 사본으로 한 프레임을 진행시키는 헬퍼입니다.
+ * main.c 의 흐름(analyze → health → prev 갱신)과 같은 순서를 씁니다. */
+static void feed_health(CameraHealth *health, GrayBuf *g, uint8_t *prev,
+                        int *ready, CamState *state) {
+    GrayStats stats;
+    gray_analyze(g, *ready ? prev : NULL, 8, health->config.motion_threshold,
+                 &stats);
+    camera_health_update(health, &stats, state);
+    memcpy(prev, g->data, (size_t)g->width * g->height);
+    *ready = 1;
+}
+
 static void test_camera_health_whiteout(void) {
     /* 흰 화면 8프레임 연속 → CAM_WHITEOUT (기본 anomaly_hold=5) */
     enum { SRC_W = 8, SRC_H = 8, DS = 4 };
     CameraHealth health;
     GrayBuf g;
     uint8_t rgb[SRC_W * SRC_H * 3];
+    uint8_t prev[2 * 2];
+    int ready = 0;
     CamState state = CAM_OK;
     char error[128] = {0};
     int i;
     ASSERT_INT_EQ(gray_buf_init(&g, SRC_W, SRC_H, DS), 0);
-    ASSERT_INT_EQ(camera_health_init(&health, g.width, g.height, NULL,
-                                     error, sizeof(error)), 0);
+    ASSERT_INT_EQ(camera_health_init(&health, NULL, error, sizeof(error)), 0);
     memset(rgb, 255, sizeof(rgb));  /* 완전 흰색 */
     for (i = 0; i < 8; ++i) {
         gray_buf_update(&g, rgb, SRC_W, SRC_H, SRC_W * 3);
-        camera_health_update(&health, &g, &state);
+        feed_health(&health, &g, prev, &ready, &state);
     }
     EXPECT_INT_EQ((int)state, (int)CAM_WHITEOUT);
     gray_buf_destroy(&g);
@@ -825,22 +838,77 @@ static void test_camera_health_frozen(void) {
     CameraHealth health;
     GrayBuf g;
     uint8_t rgb[SRC_W * SRC_H * 3];
+    uint8_t prev[2 * 2];
+    int ready = 0;
     CamState state = CAM_OK;
     /* 낮은 임계값으로 빠르게 frozen 감지 */
     CameraHealthConfig cfg = {240, 12, 3, 2, 8};
     char error[128] = {0};
     int i;
     ASSERT_INT_EQ(gray_buf_init(&g, SRC_W, SRC_H, DS), 0);
-    ASSERT_INT_EQ(camera_health_init(&health, g.width, g.height, &cfg,
-                                     error, sizeof(error)), 0);
+    ASSERT_INT_EQ(camera_health_init(&health, &cfg, error, sizeof(error)), 0);
     memset(rgb, 128, sizeof(rgb));  /* 중간 밝기 정적 프레임 */
     for (i = 0; i < 10; ++i) {
         gray_buf_update(&g, rgb, SRC_W, SRC_H, SRC_W * 3);
-        camera_health_update(&health, &g, &state);
+        feed_health(&health, &g, prev, &ready, &state);
     }
     EXPECT_INT_EQ((int)state, (int)CAM_FROZEN);
     gray_buf_destroy(&g);
     camera_health_destroy(&health);
+}
+
+static void test_gray_luma_matches_plane(void) {
+    /* luma 경로는 Y 평면 값을 산술 없이 그대로 옮겨야 합니다. */
+    enum { SRC_W = 8, SRC_H = 8, DS = 4, PAD = 5 };
+    GrayBuf g;
+    uint8_t luma[SRC_H * (SRC_W + PAD)];  /* stride > width 인 경우 포함 */
+    int x, y;
+    ASSERT_INT_EQ(gray_buf_init(&g, SRC_W, SRC_H, DS), 0);
+    /* 각 픽셀에 고유 값을 넣어 좌표 매핑까지 검증합니다. */
+    for (y = 0; y < SRC_H; ++y)
+        for (x = 0; x < SRC_W + PAD; ++x)
+            luma[y * (SRC_W + PAD) + x] = (uint8_t)(y * 16 + x);
+    gray_buf_update_luma(&g, luma, SRC_W, SRC_H, SRC_W + PAD);
+    /* DS=4 이므로 셀 중앙은 (2,2), (6,2), (2,6), (6,6) */
+    EXPECT_INT_EQ((int)g.data[0],            2 * 16 + 2);
+    EXPECT_INT_EQ((int)g.data[1],            2 * 16 + 6);
+    EXPECT_INT_EQ((int)g.data[g.width + 0],  6 * 16 + 2);
+    EXPECT_INT_EQ((int)g.data[g.width + 1],  6 * 16 + 6);
+    gray_buf_destroy(&g);
+}
+
+static void test_gray_analyze_single_pass(void) {
+    /* 두 임계값의 비교 방향이 기존 동작과 같아야 합니다.
+     * 모션 게이트는 |diff| > motion_gt, 카메라 헬스는 |diff| >= health_ge. */
+    enum { SRC_W = 4, SRC_H = 1, DS = 1 };
+    GrayBuf g;
+    uint8_t prev[SRC_W] = {100, 100, 100, 100};
+    uint8_t rgb[SRC_W * SRC_H * 3];
+    GrayStats st;
+    int i;
+    ASSERT_INT_EQ(gray_buf_init(&g, SRC_W, SRC_H, DS), 0);
+    /* 회색(v,v,v) 는 luma 로 거의 v 가 됩니다. diff 를 0/8/9/50 으로 만듭니다. */
+    {
+        const int vals[SRC_W] = {100, 108, 109, 150};
+        for (i = 0; i < SRC_W; ++i) {
+            rgb[i * 3 + 0] = (uint8_t)vals[i];
+            rgb[i * 3 + 1] = (uint8_t)vals[i];
+            rgb[i * 3 + 2] = (uint8_t)vals[i];
+        }
+    }
+    gray_buf_update(&g, rgb, SRC_W, SRC_H, SRC_W * 3);
+    gray_analyze(&g, prev, 8, 8, &st);
+    EXPECT_INT_EQ(st.pixels, SRC_W);
+    /* |diff| > 8  → 109, 150 두 개 */
+    EXPECT_INT_EQ((int)st.changed_motion, 2);
+    /* |diff| >= 8 → 108, 109, 150 세 개 */
+    EXPECT_INT_EQ((int)st.changed_health, 3);
+    /* prev == NULL 이면 변화량은 0, luma 합만 계산 */
+    gray_analyze(&g, NULL, 8, 8, &st);
+    EXPECT_INT_EQ((int)st.changed_motion, 0);
+    EXPECT_INT_EQ((int)st.changed_health, 0);
+    EXPECT_TRUE(st.luma_sum > 0);
+    gray_buf_destroy(&g);
 }
 
 /* ── 모션 게이트 / GrayBuf 테스트 ───────────────────────────────────────── */
@@ -967,6 +1035,8 @@ int main(void) {
     RUN_TEST(test_rules_unordered_seated);
     RUN_TEST(test_camera_health_whiteout);
     RUN_TEST(test_camera_health_frozen);
+    RUN_TEST(test_gray_luma_matches_plane);
+    RUN_TEST(test_gray_analyze_single_pass);
     RUN_TEST(test_motion_gate_static_scene);
     RUN_TEST(test_door_state_debounce);
     RUN_TEST(test_gray_matches_reference);

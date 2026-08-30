@@ -60,8 +60,10 @@ typedef struct {
     DetectorRunStats detector_stats;
     /* 이상 탐지 모듈 */
     GrayBuf      gray;           /* 현재 프레임 그레이스케일 (지연 초기화) */
-    uint8_t     *gray_prev;      /* AppContext 소유, 이전 프레임 gray (모션 게이트용) */
+    uint8_t     *gray_prev;      /* AppContext 소유, 이전 프레임 gray (모션 게이트 + 카메라 헬스 공용) */
     int          gray_ready;     /* gray_prev 가 유효한지 여부 */
+    int          gray_from_luma; /* 1이면 디코더 Y 평면 직접 사용, 0이면 RGB 폴백 */
+    int          gray_path_logged;
     CameraHealth cam_health;     /* 카메라 장애 감지 */
     int          cam_health_init_done;
     TrackList    tracks;
@@ -701,7 +703,13 @@ static int process_frame(RgbFrame *frame, void *opaque,
     /* 첫 프레임에서 GrayBuf와 CameraHealth를 지연 초기화합니다.
      * frame->width/height는 콜백이 와야 알 수 있습니다. */
     if (app->gray.data == NULL) {
-        if (gray_buf_init(&app->gray, frame->width, frame->height, 4) != 0) {
+        /*
+         * 다운샘플 8: 모션 게이트·카메라 헬스·문 트리거는 위치 해상도가
+         * 거칠어도 되는 판정입니다. 720p 기준 160x90 = 14KB 라 i5-4200U 의
+         * L1d(코어당 32KB) 안에 통째로 들어가고, 이후 모든 차분 연산이
+         * 캐시 미스 없이 끝납니다. 4로 두면 57KB 라 L1 을 넘칩니다.
+         */
+        if (gray_buf_init(&app->gray, frame->width, frame->height, 8) != 0) {
             snprintf(error, error_size, "gray_buf_init: out of memory");
             return -1;
         }
@@ -711,20 +719,50 @@ static int process_frame(RgbFrame *frame, void *opaque,
             snprintf(error, error_size, "gray_prev: out of memory");
             return -1;
         }
-        if (camera_health_init(&app->cam_health, app->gray.width,
-                               app->gray.height, NULL,
+        if (camera_health_init(&app->cam_health, NULL,
                                error, error_size) != 0)
             return -1;
         app->cam_health_init_done = 1;
     }
     started = platform_monotonic_seconds();
-    gray_buf_update(&app->gray, frame->data, frame->width, frame->height,
-                    frame->stride);
+    /*
+     * 그레이스케일 원본 선택.
+     *
+     * 디코더가 YUV 계열이면 Y 평면이 곧 우리가 원하는 그레이스케일이므로
+     * RGB에서 다시 계산하지 않습니다. 어느 경로를 탔는지는 한 번만 로그로
+     * 남겨, 현장에서 "왜 이 기기만 느리지"를 로그로 구분할 수 있게 합니다.
+     */
+    app->gray_from_luma = (frame->luma != NULL);
+    if (app->gray_from_luma)
+        gray_buf_update_luma(&app->gray, frame->luma, frame->width,
+                             frame->height, frame->luma_stride);
+    else
+        gray_buf_update(&app->gray, frame->data, frame->width, frame->height,
+                        frame->stride);
+    if (!app->gray_path_logged) {
+        app->gray_path_logged = 1;
+        event_log_write(&app->event_log, LOG_INFO, "gray",
+                        app->gray_from_luma
+                            ? "source=luma_plane 그레이스케일 RGB 재계산 생략"
+                            : "source=rgb_fallback 입력에 luma 평면 없음");
+    }
 
-    /* 카메라 장애 상태가 바뀔 때마다 이벤트를 남깁니다. */
+    /*
+     * 프레임 통계를 단일 순회로 계산합니다.
+     *
+     * 예전에는 같은 버퍼를 세 번 훑었습니다 — 평균 luma, 카메라 헬스용
+     * 변화 픽셀 수, 모션 게이트용 변화 픽셀 수. 임계값만 다르고 읽는
+     * 데이터는 같았으며, 이전 프레임 사본도 두 벌(gray_prev + CameraHealth
+     * 내부 prev_gray) 유지했습니다. 이제 사본은 gray_prev 하나뿐입니다.
+     */
     {
+        GrayStats stats;
         CamState cam_state;
-        if (camera_health_update(&app->cam_health, &app->gray, &cam_state) > 0) {
+        gray_analyze(&app->gray, app->gray_ready ? app->gray_prev : NULL,
+                     8, app->cam_health.config.motion_threshold, &stats);
+
+        /* 카메라 장애 상태가 바뀔 때마다 이벤트를 남깁니다. */
+        if (camera_health_update(&app->cam_health, &stats, &cam_state) > 0) {
             char cam_msg[64];
             snprintf(cam_msg, sizeof(cam_msg), "state=%s",
                      cam_state_name(cam_state));
@@ -732,36 +770,25 @@ static int process_frame(RgbFrame *frame, void *opaque,
                             cam_state != CAM_OK ? LOG_WARN : LOG_INFO,
                             "camera", cam_msg);
         }
-    }
 
-    /* 모션 게이트: 픽셀 변화 비율이 임계값 미만이고 마지막 추론 이후
-     * idle_refresh_seconds 안이면 YOLO 주기 추론을 건너뜁니다.
-     * SAD 추적기가 실패하면 adaptive run이 이를 우선 적용합니다. */
-    if (app->motion_gate_enabled && run_detector && app->gray_ready) {
-        size_t k, changed = 0;
-        size_t total = (size_t)app->gray.width * app->gray.height;
-        /*
-         * 비율 대신 절대 개수와 비교하고, 그 개수를 넘는 순간 순회를 멈춥니다.
-         *
-         * 판정에 필요한 것은 "임계값을 넘었는가" 뿐인데 예전에는 넘은 뒤에도
-         * 남은 픽셀을 끝까지 셌습니다. 사람이 움직이는 흔한 경우는 보통 첫
-         * 몇 줄에서 임계 개수에 도달하므로, 게이트가 열리는 프레임의 비용이
-         * 전체 순회에서 일부 순회로 줄어듭니다. 판정 결과는 동일합니다.
-         */
-        double limit = app->motion_ratio_threshold * (double)total;
-        for (k = 0; k < total; ++k) {
-            int diff = (int)app->gray.data[k] - (int)app->gray_prev[k];
-            if (diff < -8 || diff > 8) {
-                if ((double)(++changed) >= limit) break;
+        /* 모션 게이트: 픽셀 변화 비율이 임계값 미만이고 마지막 추론 이후
+         * idle_refresh_seconds 안이면 YOLO 주기 추론을 건너뜁니다.
+         * SAD 추적기가 실패하면 adaptive run이 이를 우선 적용합니다. */
+        if (app->motion_gate_enabled && run_detector && app->gray_ready) {
+            double limit = app->motion_ratio_threshold * (double)stats.pixels;
+            if ((double)stats.changed_motion < limit &&
+                (now - app->last_detection_time) < app->idle_refresh_seconds) {
+                run_detector = 0;
+                app->gated_frames++;
             }
-        }
-        if ((double)changed < limit &&
-            (now - app->last_detection_time) < app->idle_refresh_seconds) {
-            run_detector = 0;
-            app->gated_frames++;
         }
     }
     app->gray_seconds += platform_monotonic_seconds() - started;
+
+    /* 추적기도 같은 luma 평면을 쓰게 합니다. 프레임마다 갱신해야 합니다 —
+     * 포인터는 이 콜백이 반환하면 무효가 됩니다. */
+    if (app->tracker)
+        tracker_set_luma(app->tracker, frame->luma, frame->luma_stride);
 
     if (!run_detector && app->tracking) {
         started = platform_monotonic_seconds();

@@ -17,6 +17,9 @@ struct LightTracker {
     int gray_width;
     int gray_height;
     int ready;
+    /* tracker_set_luma()가 설정하는 차용 포인터. 소유하지 않습니다. */
+    const uint8_t *luma;
+    int luma_stride;
 };
 
 static void set_error(char *error, size_t error_size, const char *format, ...) {
@@ -70,9 +73,33 @@ static int ensure_buffers(LightTracker *tracker, int width, int height,
     return 0;
 }
 
+void tracker_set_luma(LightTracker *tracker, const uint8_t *luma, int stride) {
+    if (!tracker) return;
+    tracker->luma        = luma;
+    tracker->luma_stride = stride;
+}
+
 static void make_gray(const LightTracker *tracker, const uint8_t *rgb,
                       int stride, uint8_t *gray) {
     int step = tracker->options.downsample;
+    /* luma 평면이 있으면 픽셀당 1바이트를 그대로 옮깁니다. 곱셈 3회와
+     * 시프트가 사라지고, RGB(3바이트/픽셀)보다 접근 간격이 좁아
+     * 같은 다운샘플 격자를 읽어도 캐시 라인을 덜 낭비합니다. */
+    if (tracker->luma) {
+        for (int y = 0; y < tracker->gray_height; ++y) {
+            int source_y = clampi(y * step + step / 2, 0,
+                                  tracker->source_height - 1);
+            const uint8_t *row = tracker->luma +
+                                 (size_t)source_y * (size_t)tracker->luma_stride;
+            uint8_t *dst = gray + (size_t)y * (size_t)tracker->gray_width;
+            for (int x = 0; x < tracker->gray_width; ++x) {
+                int source_x = clampi(x * step + step / 2, 0,
+                                      tracker->source_width - 1);
+                dst[x] = row[source_x];
+            }
+        }
+        return;
+    }
     for (int y = 0; y < tracker->gray_height; ++y) {
         int source_y = clampi(y * step + step / 2, 0,
                               tracker->source_height - 1);
