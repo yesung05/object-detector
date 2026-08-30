@@ -84,4 +84,16 @@ int media_process(const char *input_path, const char *output_path,
  */
 int media_first_video_device(const char *format, char *buf, size_t bufsize);
 
+/*
+ * 입력을 열어 첫 번째 비디오 스트림의 해상도만 읽고 닫습니다.
+ * 모델 자동 선택을 위해 카메라나 파일의 실제 해상도를 미리 알아야 할 때 씁니다.
+ *
+ * 빠른 경로: options->video_size 가 "1280x720" 형태로 지정돼 있으면
+ * FFmpeg 없이 문자열을 파싱해 바로 반환합니다(카메라를 두 번 열지 않아도 됩니다).
+ *
+ * 반환: 0 = 성공, -1 = 실패
+ */
+int media_probe(const char *input_path, const MediaOptions *options,
+                int *width, int *height, char *error, size_t error_size);
+
 #endif

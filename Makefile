@@ -43,7 +43,7 @@ endif
 SOURCES := src/main.c src/postprocess.c src/draw.c src/detector_ort.c \
            src/media_ffmpeg.c src/tracker.c src/platform.c \
            src/gray.c src/log.c src/config.c src/camera_health.c \
-           src/tracks.c src/rules.c src/door.c
+           src/tracks.c src/rules.c src/door.c src/model_select.c
 OBJECTS := $(SOURCES:.c=.o)
 TARGET := yolo11-person
 

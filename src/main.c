@@ -5,6 +5,7 @@
 #include "gray.h"
 #include "log.h"
 #include "media.h"
+#include "model_select.h"
 #include "platform.h"
 #include "rules.h"
 #include "tracker.h"
@@ -209,7 +210,8 @@ static void usage(const char *program) {
         "  %s --model yolo11n.onnx --camera --output capture.mp4 [options]\n"
         "\n"
         "Required:\n"
-        "  -m, --model PATH        fixed-shape YOLO11/YOLO11n ONNX model\n"
+        "  -m, --model PATH        ONNX 모델 파일, 또는 *-WxH.onnx 파일이 담긴 디렉터리\n"
+        "                          디렉터리 지정 시 카메라 비율에 맞는 모델을 자동 선택합니다\n"
         "  -i, --input PATH        input image/video (mutually exclusive with --camera)\n"
         "  --camera                capture from the default camera until Ctrl+C\n"
         "  -o, --output PATH       annotated image/video (optional with camera preview)\n"
@@ -1256,10 +1258,24 @@ static int write_metrics(const char *path, const Arguments *args,
     return 0;
 }
 
+/* --model에 디렉터리가 지정됐는지 확인합니다.
+ * 파일로 지정됐거나 존재하지 않으면 0을 반환합니다.
+ * sys/stat.h 는 이미 포함돼 있고 MSVC에서도 _stat/_S_IFDIR 을 씁니다. */
+static int is_directory(const char *path) {
+#if defined(_WIN32)
+    struct _stat st;
+    return _stat(path, &st) == 0 && (st.st_mode & _S_IFDIR) != 0;
+#else
+    struct stat st;
+    return stat(path, &st) == 0 && S_ISDIR(st.st_mode);
+#endif
+}
+
 int main(int argc, char **argv) {
     Arguments args;
     AppContext app;
     char error[512] = {0};
+    char auto_model[512] = {0}; /* model_select()가 고른 경로를 담는 버퍼 */
     double start;
     double end;
     double cpu_start;
@@ -1296,6 +1312,26 @@ int main(int argc, char **argv) {
         fprintf(stderr, "failed to allocate bounded detection buffer\n");
         goto done;
     }
+
+    /* --model에 디렉터리가 지정된 경우: 입력 해상도를 먼저 파악하고
+     * letterbox 낭비가 가장 적은 *-WxH.onnx 모델을 자동으로 고릅니다. */
+    if (is_directory(args.model)) {
+        int probe_w = 0, probe_h = 0;
+        if (media_probe(args.input, &args.media, &probe_w, &probe_h,
+                        error, sizeof(error)) != 0) {
+            fprintf(stderr, "model-select: 입력 해상도 파악 실패: %s\n", error);
+            goto done;
+        }
+        if (!model_select(args.model, probe_w, probe_h,
+                          auto_model, sizeof(auto_model))) {
+            fprintf(stderr,
+                    "model-select: %s 에서 적합한 모델을 찾지 못했습니다\n",
+                    args.model);
+            goto done;
+        }
+        args.model = auto_model;
+    }
+
     app.detector = detector_create(args.model, &args.detector,
                                    error, sizeof(error));
     if (!app.detector) {

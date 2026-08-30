@@ -795,3 +795,69 @@ done:
         options->stats->frames = pipeline.frame_index;
     return result;
 }
+
+int media_probe(const char *input_path, const MediaOptions *options,
+                int *width, int *height, char *error, size_t error_size) {
+    /* --camera-size "1280x720" 처럼 이미 크기가 명시됐으면 FFmpeg 없이 파싱합니다.
+     * 카메라 장치를 두 번 여는 비용과 대기 시간을 피하기 위한 빠른 경로입니다. */
+    if (options && options->video_size) {
+        int w = 0, h = 0;
+        if (sscanf(options->video_size, "%dx%d", &w, &h) == 2 && w > 0 && h > 0) {
+            *width = w;
+            *height = h;
+            return 0;
+        }
+    }
+
+    AVFormatContext  *fmt  = NULL;
+    const AVInputFormat *ifmt = NULL;
+    AVDictionary     *opts = NULL;
+    int result = -1;
+    int ret;
+
+    av_log_set_level(AV_LOG_ERROR);
+
+    if (options && options->input_format) {
+        avdevice_register_all();
+        ifmt = av_find_input_format(options->input_format);
+        if (!ifmt) {
+            set_error(error, error_size,
+                      "media_probe: 카메라 형식 '%s'을 찾을 수 없습니다",
+                      options->input_format);
+            return -1;
+        }
+        if (options->video_size)
+            av_dict_set(&opts, "video_size", options->video_size, 0);
+        if (options->framerate)
+            av_dict_set(&opts, "framerate", options->framerate, 0);
+    }
+
+    ret = avformat_open_input(&fmt, input_path, ifmt, &opts);
+    av_dict_free(&opts);
+    if (ret < 0) {
+        set_av_error(error, error_size, "media_probe: avformat_open_input", ret);
+        return -1;
+    }
+
+    ret = avformat_find_stream_info(fmt, NULL);
+    if (ret < 0) {
+        set_av_error(error, error_size, "media_probe: avformat_find_stream_info", ret);
+        goto done;
+    }
+
+    for (unsigned i = 0; i < fmt->nb_streams; ++i) {
+        AVCodecParameters *cp = fmt->streams[i]->codecpar;
+        if (cp->codec_type == AVMEDIA_TYPE_VIDEO && cp->width > 0 && cp->height > 0) {
+            *width  = cp->width;
+            *height = cp->height;
+            result  = 0;
+            break;
+        }
+    }
+    if (result != 0)
+        set_error(error, error_size, "media_probe: 비디오 스트림을 찾지 못했습니다");
+
+done:
+    avformat_close_input(&fmt);
+    return result;
+}
