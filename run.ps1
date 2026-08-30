@@ -18,7 +18,11 @@ param(
 
     # 출력
     [string]$Output     = "",         # 어노테이션 영상 저장 경로
-    [switch]$Preview    = $true,      # ffplay 미리보기 (기본 켜짐)
+    # ffplay 미리보기. 기본 꺼짐 — ffplay 가 별도 프로세스로 코어 하나를 차지하고
+    # 프레임마다 raw RGB 를 파이프로 보냅니다(720p 15fps 기준 41MB/s).
+    # 배포 대상 i5-4200U 에서는 이 비용이 추론 예산을 직접 잠식합니다.
+    # 화면 확인은 대시보드 스트림(http://localhost:8081/stream)을 쓰세요.
+    [switch]$Preview    = $false,
     [string]$Metrics    = "",         # 성능 지표 JSON 경로
     [string]$Detections = "",         # 프레임별 검출 CSV 경로
     [string]$EventLog   = "auto",      # 이벤트 로그 경로 (기본: logs\YYYYMMDD_HHMMSS.log)

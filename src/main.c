@@ -39,6 +39,7 @@ typedef struct {
     int tracking;
     int preview;
     int preview_fps;
+    int has_output;      /* --output 지정 여부. 그리기 필요성 판단에 사용 */
     int64_t frames;
     int64_t inference_runs;
     int64_t tracked_frames;
@@ -48,6 +49,14 @@ typedef struct {
     int64_t event_count;
     double tracking_seconds;
     double drawing_seconds;
+    /*
+     * 최적화 대상 구간의 계측입니다. 이 값들이 없으면 개선 여부를 주장할 수
+     * 없어 추가했습니다 — 측정되지 않는 구간은 최적화 대상이 될 수 없습니다.
+     */
+    double  gray_seconds;        /* 그레이 변환 + 모션 게이트 + 카메라 헬스 */
+    double  door_seconds;        /* door_check 픽셀 비교 */
+    double  stream_seconds;      /* stream_push (복사 + 주기 판정) */
+    int64_t drawn_frames;        /* 실제로 그린 프레임 수 (관찰자가 있던 프레임) */
     DetectorRunStats detector_stats;
     /* 이상 탐지 모듈 */
     GrayBuf      gray;           /* 현재 프레임 그레이스케일 (지연 초기화) */
@@ -255,7 +264,16 @@ static int parse_arguments(int argc, char **argv, Arguments *args) {
     memset(args, 0, sizeof(*args));
     args->detector.confidence = 0.25f;
     args->detector.iou = 0.45f;
-    args->detector.max_candidates = 1024;
+    /*
+     * NMS 이전 후보 상한입니다. 1024는 7~10평 매장에서 도달할 수 없는 값이고,
+     * DetectionList(후보당 224바이트)를 229KB로 만들어 i5-4200U의 L2 256KB를
+     * 혼자 차지했습니다. 128이면 29KB라 L2에 여유롭게 상주합니다.
+     *
+     * 상한에 걸려도 append_candidate()가 점수가 낮은 후보부터 밀어내므로
+     * 상위 128개는 항상 보존됩니다. max_detections(64)의 두 배라 NMS가
+     * 고를 여지도 충분합니다.
+     */
+    args->detector.max_candidates = 128;
     args->detector.max_detections = 64;
     args->detector.threads = 1;
     args->detector.resize_mode = RESIZE_BILINEAR;
@@ -421,7 +439,16 @@ static int parse_arguments(int argc, char **argv, Arguments *args) {
             return -1;
         }
     }
-    if (!args->model || (!args->output && !(args->camera && args->preview)) ||
+    /*
+     * 출력을 필수로 두지 않습니다.
+     *
+     * 예전에는 --output 이 없으면 "카메라 + 미리보기" 조합만 허용했습니다.
+     * 그러나 실제 배포 형태는 화면도 파일도 없는 헤드리스 상시 감시이고,
+     * 결과는 이벤트 로그·감지 CSV·대시보드 스트림으로 나갑니다.
+     * 미리보기(ffplay)는 배포 기기에서 오히려 꺼야 하는 기능이므로
+     * 그것을 실행 조건으로 삼으면 안 됩니다.
+     */
+    if (!args->model ||
         (args->camera && args->input) ||
         (!args->camera && !args->input))
         return -1;
@@ -690,6 +717,7 @@ static int process_frame(RgbFrame *frame, void *opaque,
             return -1;
         app->cam_health_init_done = 1;
     }
+    started = platform_monotonic_seconds();
     gray_buf_update(&app->gray, frame->data, frame->width, frame->height,
                     frame->stride);
 
@@ -712,18 +740,28 @@ static int process_frame(RgbFrame *frame, void *opaque,
     if (app->motion_gate_enabled && run_detector && app->gray_ready) {
         size_t k, changed = 0;
         size_t total = (size_t)app->gray.width * app->gray.height;
-        double ratio;
+        /*
+         * 비율 대신 절대 개수와 비교하고, 그 개수를 넘는 순간 순회를 멈춥니다.
+         *
+         * 판정에 필요한 것은 "임계값을 넘었는가" 뿐인데 예전에는 넘은 뒤에도
+         * 남은 픽셀을 끝까지 셌습니다. 사람이 움직이는 흔한 경우는 보통 첫
+         * 몇 줄에서 임계 개수에 도달하므로, 게이트가 열리는 프레임의 비용이
+         * 전체 순회에서 일부 순회로 줄어듭니다. 판정 결과는 동일합니다.
+         */
+        double limit = app->motion_ratio_threshold * (double)total;
         for (k = 0; k < total; ++k) {
             int diff = (int)app->gray.data[k] - (int)app->gray_prev[k];
-            if (diff < -8 || diff > 8) changed++;
+            if (diff < -8 || diff > 8) {
+                if ((double)(++changed) >= limit) break;
+            }
         }
-        ratio = total > 0 ? (double)changed / (double)total : 1.0;
-        if (ratio < app->motion_ratio_threshold &&
+        if ((double)changed < limit &&
             (now - app->last_detection_time) < app->idle_refresh_seconds) {
             run_detector = 0;
             app->gated_frames++;
         }
     }
+    app->gray_seconds += platform_monotonic_seconds() - started;
 
     if (!run_detector && app->tracking) {
         started = platform_monotonic_seconds();
@@ -785,20 +823,13 @@ static int process_frame(RgbFrame *frame, void *opaque,
         return -1;
     if (log_keypoints(app, frame->index, error, error_size) != 0)
         return -1;
-    started = platform_monotonic_seconds();
-    draw_detections(frame->data, frame->width, frame->height, frame->stride,
-                    &app->detections);
-    {
-        /* 실시간 EMA FPS를 HUD에 표시합니다.
-         * 시작 직후(EMA=0)에는 0이 표시되다가 몇 프레임 후 안정됩니다. */
-        draw_hud(frame->data, frame->width, frame->height, frame->stride,
-                 (float)app->realtime_inf_fps,
-                 (float)app->realtime_cam_fps);
-    }
-    if (app->stream_port > 0)
-        stream_push(frame->data, frame->width, frame->height, frame->stride);
 
     /* 문 여닫이 감지: 닫힘/열림 기준 이미지와 현재 프레임 ROI 비교
+     *
+     * 그리기보다 먼저 실행하는 이유: door_check()는 프레임 픽셀을 기준
+     * 이미지와 직접 비교합니다. 박스와 HUD를 먼저 그리면 그 픽셀이 그대로
+     * 비교 대상에 섞여 들어갑니다. 사람이 문 근처에 서면 그 사람의 박스
+     * 선이 ROI 안에 그려져 없던 변화를 만들어 냅니다.
      *
      * 이벤트 정책: 열리는 즉시 로그를 남기지 않고, open_threshold_seconds 이상
      * 열린 상태가 지속될 때만 door_open 이벤트를 발생시킵니다.
@@ -810,9 +841,12 @@ static int process_frame(RgbFrame *frame, void *opaque,
     }
     if (app->door.enabled && (app->door.ref_closed_rgb || app->door.ref_open_rgb)) {
         int changed = 0;
-        int state = door_check(&app->door,
-                               frame->data, frame->width, frame->height,
-                               frame->stride, &changed);
+        int state;
+        started = platform_monotonic_seconds();
+        state = door_check(&app->door,
+                           frame->data, frame->width, frame->height,
+                           frame->stride, &changed);
+        app->door_seconds += platform_monotonic_seconds() - started;
         /* 현재 문 상태를 stream 서버에 전달 — /door/state API로 실시간 조회 가능 */
         if (app->stream_port > 0)
             stream_set_door_state(state);
@@ -846,7 +880,35 @@ static int process_frame(RgbFrame *frame, void *opaque,
         }
     }
 
-    app->drawing_seconds += platform_monotonic_seconds() - started;
+    /*
+     * 그리기는 볼 사람이 있을 때만 합니다.
+     *
+     * 배포 상태(출력 파일 없음 + 미리보기 없음 + 대시보드 미접속)에서는
+     * 아무도 보지 않는 프레임에 박스와 HUD를 칠하고 있었습니다. 관찰자가
+     * 생기면 다음 프레임부터 즉시 다시 그려지므로 지연은 한 프레임입니다.
+     */
+    {
+        int has_observer = app->preview || app->has_output ||
+                           (app->stream_port > 0 && stream_client_count() > 0);
+        started = platform_monotonic_seconds();
+        if (has_observer) {
+            draw_detections(frame->data, frame->width, frame->height,
+                            frame->stride, &app->detections);
+            /* 실시간 EMA FPS를 HUD에 표시합니다.
+             * 시작 직후(EMA=0)에는 0이 표시되다가 몇 프레임 후 안정됩니다. */
+            draw_hud(frame->data, frame->width, frame->height, frame->stride,
+                     (float)app->realtime_inf_fps,
+                     (float)app->realtime_cam_fps);
+            app->drawn_frames++;
+        }
+        app->drawing_seconds += platform_monotonic_seconds() - started;
+    }
+
+    if (app->stream_port > 0) {
+        started = platform_monotonic_seconds();
+        stream_push(frame->data, frame->width, frame->height, frame->stride);
+        app->stream_seconds += platform_monotonic_seconds() - started;
+    }
     preview_frame(app, frame);
     /* 다음 프레임의 모션 게이트 비교를 위해 현재 gray를 복사합니다. */
     if (app->gray.data && app->gray_prev) {
@@ -896,6 +958,10 @@ static int write_metrics(const char *path, const Arguments *args,
             "  \"postprocess_seconds\": %.6f,\n"
             "  \"tracking_seconds\": %.6f,\n"
             "  \"drawing_seconds\": %.6f,\n"
+            "  \"gray_seconds\": %.6f,\n"
+            "  \"door_seconds\": %.6f,\n"
+            "  \"stream_seconds\": %.6f,\n"
+            "  \"drawn_frames\": %lld,\n"
             "  \"output_seconds\": %.6f,\n"
             "  \"inference_p50_ms\": %.3f,\n"
             "  \"inference_p95_ms\": %.3f,\n"
@@ -929,7 +995,10 @@ static int write_metrics(const char *path, const Arguments *args,
             app->detector_stats.preprocess_seconds,
             app->detector_stats.inference_seconds,
             app->detector_stats.postprocess_seconds,
-            app->tracking_seconds, app->drawing_seconds, media->output_seconds,
+            app->tracking_seconds, app->drawing_seconds,
+            app->gray_seconds, app->door_seconds, app->stream_seconds,
+            (long long)app->drawn_frames,
+            media->output_seconds,
             app->detector_stats.inference_p50_ms,
             app->detector_stats.inference_p95_ms,
             app->detector_stats.inference_max_ms,
@@ -973,6 +1042,7 @@ int main(int argc, char **argv) {
     app.tracking = args.tracking;
     app.preview = args.preview;
     app.preview_fps = args.preview_fps;
+    app.has_output = args.output != NULL;
     memset(&media_stats, 0, sizeof(media_stats));
     args.media.stats = &media_stats;
 

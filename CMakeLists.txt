@@ -5,6 +5,19 @@ set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS OFF)
 
+# 배포 대상 CPU의 명령어 집합 수준입니다.
+#
+# baseline: SSE2 까지만 사용합니다. i5-4200U(Haswell)와 차순위 배포 대상인
+#           Celeron J1900(Bay Trail) 모두에서 실행됩니다.
+# avx2    : Haswell 이상 전용입니다. J1900 은 AVX/AVX2 를 지원하지 않으므로
+#           이 바이너리는 시작 즉시 illegal instruction 으로 종료됩니다.
+#
+# 기본값을 baseline 으로 둔 이유: 하나의 배포 바이너리가 두 기기에서 모두
+# 동작해야 합니다. AVX2 가 필요한 핫스팟은 별도 번역 단위로 분리해 런타임에
+# CPU 지원 여부를 확인하고 호출할 예정입니다(docs/i5-4200u-optimization.md B-5).
+set(TARGET_ISA "baseline" CACHE STRING "baseline (SSE2, J1900 호환) | avx2 (Haswell 전용)")
+set_property(CACHE TARGET_ISA PROPERTY STRINGS baseline avx2)
+
 set(ORT_ROOT "" CACHE PATH "ONNX Runtime or Microsoft.ML.OnnxRuntime.DirectML package root")
 set(DIRECTML_ROOT "" CACHE PATH "Microsoft.AI.DirectML package root (optional DLL copy)")
 set(FFMPEG_ROOT "" CACHE PATH "FFmpeg development package root")
@@ -73,7 +86,12 @@ if(ORT_INCLUDE_DIR AND ORT_LIBRARY AND FFMPEG_INCLUDE_DIR AND FFMPEG_FOUND)
     if(MSVC)
         target_compile_definitions(yolo11-person PRIVATE
             ORT_DLL_IMPORT WIN32_LEAN_AND_MEAN _WIN32_WINNT=0x0601 _CRT_SECURE_NO_WARNINGS)
-        target_compile_options(yolo11-person PRIVATE /O2 /W4 /arch:AVX2 /utf-8)
+        # /Gw: 미사용 전역 데이터를 링커가 제거하게 합니다 (draw.c 글리프 테이블 등).
+        # /arch 는 TARGET_ISA 로만 올립니다 — 위 캐시 변수 설명 참조.
+        target_compile_options(yolo11-person PRIVATE /O2 /W4 /utf-8 /Gw)
+        if(TARGET_ISA STREQUAL "avx2")
+            target_compile_options(yolo11-person PRIVATE /arch:AVX2)
+        endif()
         foreach(runtime_dll IN LISTS runtime_dlls)
             add_custom_command(TARGET yolo11-person POST_BUILD
                 COMMAND "${CMAKE_COMMAND}" -E copy_if_different
