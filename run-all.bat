@@ -1,4 +1,5 @@
 @echo off
+chcp 65001 > nul
 setlocal EnableDelayedExpansion
 title YOLO11 Person Detector
 
@@ -31,7 +32,7 @@ rem    fall back to single file in project root --
 set MODEL=
 if exist "%ROOT%\models\" (
     set "MODEL=%ROOT%\models"
-    echo [model] models\ (auto aspect-ratio selection)
+    echo [model] models\ ^(auto aspect-ratio selection^)
 ) else (
     for %%f in (
         "%ROOT%\yolo11n-416.onnx"
@@ -54,10 +55,10 @@ echo [log]   %LOGFILE%
 
 rem -- Start dashboard in background --
 if exist "%DASHBOARD%" (
-    echo [dash]  http://localhost:8080 (background)
+    echo [dash]  http://localhost:8080 ^(background^)
     start "" /B "%DASHBOARD%" --root "%ROOT%\dashboard" --config "%ROOT%\config.json"
 ) else (
-    echo [dash]  dashboard binary not found (build to enable)
+    echo [dash]  dashboard binary not found ^(build to enable^)
 )
 
 echo [start] Press Ctrl+C to stop.
