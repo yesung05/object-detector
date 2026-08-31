@@ -6,8 +6,8 @@ title YOLO11 Person Detector
 set ROOT=%~dp0
 set ROOT=%ROOT:~0,-1%
 
-set EXE=%ROOT%\build-windows\Release\yolo11-person.exe
-set DASHBOARD=%ROOT%\build-windows\Release\hunik-dashboard.exe
+set EXE=%ROOT%\build\Release\yolo11-person.exe
+set DASHBOARD=%ROOT%\build\Release\hunik-dashboard.exe
 
 if not exist "%EXE%" (
     echo [ERROR] Executable not found. Build first:
@@ -15,13 +15,13 @@ if not exist "%EXE%" (
     pause & exit /b 1
 )
 
-rem -- DLL path search --
+rem -- DLL path search (also checks build\Release where DLLs are pre-copied) --
 set FFMPEG_BIN=
-for %%d in ("C:\deps\ffmpeg\bin" "%ROOT%\deps\ffmpeg\bin") do (
-    if not defined FFMPEG_BIN if exist "%%~d\ffmpeg.exe" set "FFMPEG_BIN=%%~d"
+for %%d in ("%ROOT%\build\Release" "C:\dev\ffmpeg-master-latest-win64-gpl-shared\bin" "C:\deps\ffmpeg\bin" "%ROOT%\deps\ffmpeg\bin") do (
+    if not defined FFMPEG_BIN if exist "%%~d\avcodec-63.dll" set "FFMPEG_BIN=%%~d"
 )
 set ORT_LIB=
-for %%d in ("C:\deps\onnxruntime\lib" "%ROOT%\deps\onnxruntime\lib") do (
+for %%d in ("%ROOT%\build\Release" "C:\dev\onnxruntime-win-x64-1.26.0\lib" "C:\deps\onnxruntime\lib" "%ROOT%\deps\onnxruntime\lib") do (
     if not defined ORT_LIB if exist "%%~d\onnxruntime.dll" set "ORT_LIB=%%~d"
 )
 if defined FFMPEG_BIN set "PATH=%FFMPEG_BIN%;%PATH%"
@@ -70,7 +70,6 @@ rem    Use the dashboard stream at http://localhost:8081/stream instead.
 "%EXE%" ^
     --model "%MODEL%" ^
     --camera ^
-    --camera-fps 15 ^
     --provider cpu ^
     --detect-every 3 ^
     --track ^
