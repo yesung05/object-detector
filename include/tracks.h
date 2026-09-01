@@ -45,4 +45,12 @@ void tracks_update(TrackList *tl, const DetectionList *detections, double now);
  */
 void tracks_mark_ordered(TrackList *tl, int track_id);
 
+/*
+ * RGB 버퍼에 모든 활성 트랙을 그립니다. draw_detections 의 TrackList 버전입니다.
+ * misses==0인 트랙(현재 감지됨)은 녹색 박스 + "#ID PERSON N%",
+ * misses>0인 트랙(프레임 밖, 만료 전)은 주황색 박스 + "#ID MISS" 레이블로 표시합니다.
+ */
+void draw_tracks(uint8_t *rgb, int width, int height, int stride,
+                 const TrackList *tracks);
+
 #endif /* TRACKS_H */

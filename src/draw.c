@@ -1,3 +1,4 @@
+#include "tracks.h"
 #include "yolo11.h"
 
 #include <stdio.h>
@@ -67,6 +68,9 @@ static const uint8_t *glyph(char c) {
     static const uint8_t a_g[7] = {14, 17, 17, 31, 17, 17, 17};
     static const uint8_t m_g[7] = {17, 27, 21, 17, 17, 17, 17};
     static const uint8_t colon[7] = {0, 4, 4, 0, 4, 4, 0};
+    /* CPU / 트랙 ID 표기용 */
+    static const uint8_t u_g[7] = {17, 17, 17, 17, 17, 17, 14};  /* U */
+    static const uint8_t hash[7] = {10, 10, 31, 10, 31, 10, 10}; /* # */
     static const uint8_t digits[10][7] = {
         {14, 17, 19, 21, 25, 17, 14},
         {4, 12, 4, 4, 4, 4, 14},
@@ -94,6 +98,8 @@ static const uint8_t *glyph(char c) {
         case 'A': return a_g;
         case 'M': return m_g;
         case ':': return colon;
+        case 'U': return u_g;
+        case '#': return hash;
         default: return blank;
     }
 }
@@ -267,26 +273,29 @@ void draw_detections(uint8_t *rgb, int width, int height, int stride,
 }
 
 /*
- * 화면 왼쪽 상단에 추론 FPS와 카메라 입력 FPS를 두 줄로 표시합니다.
- * 외부 라이브러리 없이 기존 glyph/draw_text/fill_blended 프리미티브만 씁니다.
+ * 화면 왼쪽 상단에 추론 FPS / 카메라 FPS / CPU 사용률 / CPU 온도를 표시합니다.
+ * cpu_percent < 0이면 CPU 줄을 생략합니다. temperature_celsius < 0이면 온도 줄을 생략합니다.
  */
 void draw_hud(uint8_t *rgb, int width, int height, int stride,
-              float detect_fps, float camera_fps) {
+              float detect_fps, float camera_fps,
+              float cpu_percent, int temperature_celsius) {
     int min_dim = width < height ? width : height;
     int scale   = min_dim >= 600 ? 2 : 1;
     int char_w  = 6 * scale;   /* 글자 폭(5) + 간격(1) */
     int row_h   = 7 * scale + 4;
     int pad     = 6;
-    char buf[12];
+    char buf[16];
     int text_w;
     int x = pad;
     int y = pad;
 
     if (!rgb || width <= 0 || height <= 0) return;
 
+    /* "CPU:100%" 기준 최대 폭을 기준으로 모든 줄의 배경 너비를 통일합니다. */
+    text_w = (int)(sizeof("CPU:100%") - 1) * char_w + pad * 2;
+
     /* 추론 FPS */
     snprintf(buf, sizeof(buf), "INF:%d", (int)(detect_fps + 0.5f));
-    text_w = (int)(sizeof("INF:000") - 1) * char_w + pad * 2;
     fill_blended(rgb, width, height, stride, x, y, x + text_w, y + row_h);
     draw_text(rgb, width, height, stride, x + pad / 2, y + 2, buf, scale);
 
@@ -295,4 +304,99 @@ void draw_hud(uint8_t *rgb, int width, int height, int stride,
     y += row_h + 2;
     fill_blended(rgb, width, height, stride, x, y, x + text_w, y + row_h);
     draw_text(rgb, width, height, stride, x + pad / 2, y + 2, buf, scale);
+
+    /* CPU 사용률 (프로세스 기준, 1코어 대비 %) */
+    if (cpu_percent >= 0.0f) {
+        int pct = (int)(cpu_percent + 0.5f);
+        if (pct > 999) pct = 999;
+        snprintf(buf, sizeof(buf), "CPU:%d%%", pct);
+        y += row_h + 2;
+        fill_blended(rgb, width, height, stride, x, y, x + text_w, y + row_h);
+        draw_text(rgb, width, height, stride, x + pad / 2, y + 2, buf, scale);
+    }
+
+    /* CPU 온도 (섭씨). 미지원이면 줄 자체를 생략합니다. */
+    if (temperature_celsius >= 0) {
+        snprintf(buf, sizeof(buf), "%dC", temperature_celsius);
+        y += row_h + 2;
+        fill_blended(rgb, width, height, stride, x, y, x + text_w, y + row_h);
+        draw_text(rgb, width, height, stride, x + pad / 2, y + 2, buf, scale);
+    }
+}
+
+/*
+ * TrackList 전체를 RGB 버퍼 위에 그립니다. draw_detections 의 트랙 ID 포함 버전입니다.
+ *
+ * misses==0 (현재 프레임에서 감지됨): 녹색 박스 + "#ID PERSON N%" 레이블
+ * misses>0  (프레임 밖, 만료 전):     주황색 박스 + "#ID MISS"      레이블
+ *
+ * 프레임 밖 트랙의 박스는 마지막으로 감지된 위치이므로, 사람이 떠난 경계 부근에
+ * 표시됩니다. max_misses 이내이면 재진입 시 동일 ID로 매칭됩니다.
+ */
+void draw_tracks(uint8_t *rgb, int width, int height, int stride,
+                 const TrackList *tracks) {
+    int min_dimension;
+    int thickness;
+    int font_scale;
+    size_t i;
+
+    if (!rgb || !tracks || width <= 0 || height <= 0 || stride < width * 3) return;
+
+    min_dimension = width < height ? width : height;
+    thickness = min_dimension / 320;
+    if (thickness < 1) thickness = 1;
+    if (thickness > 4) thickness = 4;
+    font_scale = min_dimension >= 600 ? 2 : 1;
+
+    for (i = 0; i < tracks->count; ++i) {
+        const Track *t = &tracks->items[i];
+        char label[32];
+        int x1, y1, x2, y2;
+        int label_height, label_y, label_width;
+        uint8_t br, bg, bb;  /* 박스 색상 */
+
+        if (!t->active) continue;
+
+        x1 = clampi((int)(t->box.x1 + 0.5f), 0, width - 1);
+        y1 = clampi((int)(t->box.y1 + 0.5f), 0, height - 1);
+        x2 = clampi((int)(t->box.x2 + 0.5f), 0, width - 1);
+        y2 = clampi((int)(t->box.y2 + 0.5f), 0, height - 1);
+        label_height = 7 * font_scale + 6;
+
+        if (t->misses == 0) {
+            /* 현재 감지된 트랙: 녹색, 신뢰도 포함 레이블 */
+            int confidence = (int)(t->box.score * 100.0f + 0.5f);
+            if (confidence > 100) confidence = 100;
+            snprintf(label, sizeof(label), "#%d PERSON %d%%", t->id, confidence);
+            br = 0; bg = 224; bb = 96;
+        } else {
+            /* 프레임 밖 트랙: 주황색, MISS 레이블 */
+            snprintf(label, sizeof(label), "#%d MISS", t->id);
+            br = 255; bg = 140; bb = 0;
+        }
+
+        label_width = (int)strlen(label) * 6 * font_scale + 6;
+        if (label_width > width) label_width = width;
+        label_y = y1 >= label_height ? y1 - label_height : y1;
+
+        draw_rectangle(rgb, width, height, stride, x1, y1, x2, y2, thickness,
+                       br, bg, bb);
+        fill_blended(rgb, width, height, stride, x1, label_y,
+                     x1 + label_width, label_y + label_height);
+
+        /* 레이블 색상 막대 (박스 색과 동일) */
+        {
+            int bx;
+            for (bx = x1; bx < x1 + label_width && bx < width; ++bx) {
+                set_pixel(rgb, width, height, stride, bx, label_y,     br, bg, bb);
+                set_pixel(rgb, width, height, stride, bx, label_y + 1, br, bg, bb);
+            }
+        }
+        draw_text(rgb, width, height, stride, x1 + 3, label_y + 4,
+                  label, font_scale);
+
+        /* 스켈레톤은 현재 감지된 트랙에만 그립니다. */
+        if (t->misses == 0 && t->box.keypoint_count > 0)
+            draw_skeleton(rgb, width, height, stride, &t->box);
+    }
 }

@@ -10,4 +10,9 @@ double platform_process_cpu_seconds(void);
 unsigned int platform_cpu_count(void);
 void platform_sleep_milliseconds(unsigned int milliseconds);
 
+/* CPU 온도를 섭씨로 반환합니다. 측정 불가 시 -1을 반환합니다.
+ * Linux: /sys/class/thermal/thermal_zoneN/temp (N=0..3) 순서로 시도합니다.
+ * Windows/macOS: 미지원, -1 반환. */
+int platform_cpu_temperature_celsius(void);
+
 #endif

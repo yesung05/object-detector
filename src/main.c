@@ -115,6 +115,14 @@ typedef struct {
     double       realtime_inf_fps;  /* 추론 간격 EMA, α=0.3 */
     double       realtime_cam_fps;  /* 프레임 간격 EMA, α=0.15 */
     double       last_frame_time;   /* 직전 프레임 시각 (cam FPS EMA용) */
+    /* HUD CPU 사용률 — 프로세스 CPU 시간 델타 / 경과 시간으로 계산합니다.
+     * 1코어 기준 % 로 표시하므로 4코어 머신에서 4개 코어를 모두 쓰면 400%가 됩니다. */
+    double       realtime_cpu_percent; /* 프로세스 CPU 점유율 EMA, α=0.2 */
+    double       cpu_prev_cpu;         /* 직전 프레임 process_cpu_seconds */
+    double       cpu_prev_wall;        /* 직전 프레임 monotonic_seconds */
+    /* CPU 온도 캐시 (2초마다 갱신). -1이면 미지원. */
+    int          cached_temperature;
+    double       last_temp_check_time;
     /* YOLO 추론 FPS 상한. 0이면 제한 없음. detect_every와 OR 조건으로 동작.
      * 카메라 입력에서 추론이 느려도 디코딩 루프를 막지 않기 위해 사용. */
     double       detect_fps_limit;
@@ -782,6 +790,31 @@ static int process_frame(RgbFrame *frame, void *opaque,
     }
     app->last_frame_time = now;
 
+    /* CPU 사용률 EMA (α=0.2): process_cpu_seconds 델타 / 경과 시간.
+     * 1코어 기준 % 이므로 멀티스레드 추론 시 100% 초과 가능합니다.
+     * cpu_prev_wall=0이면 첫 프레임이므로 스킵하고 기준점만 기록합니다. */
+    {
+        double cpu_now  = platform_process_cpu_seconds();
+        double wall_now = now;
+        if (app->cpu_prev_wall > 0.0) {
+            double cpu_delta  = cpu_now  - app->cpu_prev_cpu;
+            double wall_delta = wall_now - app->cpu_prev_wall;
+            if (wall_delta > 0.001) {
+                double inst = cpu_delta / wall_delta * 100.0;
+                app->realtime_cpu_percent =
+                    app->realtime_cpu_percent * 0.8 + inst * 0.2;
+            }
+        }
+        app->cpu_prev_cpu  = cpu_now;
+        app->cpu_prev_wall = wall_now;
+    }
+
+    /* CPU 온도: 2초마다 파일 읽기. 첫 프레임에서도 한 번 측정합니다. */
+    if (now - app->last_temp_check_time >= 2.0) {
+        app->cached_temperature   = platform_cpu_temperature_celsius();
+        app->last_temp_check_time = now;
+    }
+
     /* detect_fps_limit: 시간 기반 추론 상한.
      * 카메라 모드에서 추론이 느려도 디코딩 루프를 블로킹하지 않기 위해,
      * 마지막 추론 이후 경과 시간이 1/fps 미만이면 이번 프레임은 건너뜁니다.
@@ -1125,13 +1158,18 @@ static int process_frame(RgbFrame *frame, void *opaque,
                            (app->stream_port > 0 && stream_client_count() > 0);
         started = platform_monotonic_seconds();
         if (has_observer) {
-            draw_detections(frame->data, frame->width, frame->height,
-                            frame->stride, &app->detections);
-            /* 실시간 EMA FPS를 HUD에 표시합니다.
-             * 시작 직후(EMA=0)에는 0이 표시되다가 몇 프레임 후 안정됩니다. */
+            /* TrackList 기반으로 그립니다: 현재 감지 트랙(녹색 + #ID)과
+             * 프레임 밖 트랙(주황색 + #ID MISS)을 모두 표시합니다. */
+            draw_tracks(frame->data, frame->width, frame->height,
+                        frame->stride, &app->tracks);
+            /* 실시간 EMA FPS / CPU 사용률 / 온도를 HUD에 표시합니다.
+             * 시작 직후(EMA=0)에는 0이 표시되다가 몇 프레임 후 안정됩니다.
+             * cached_temperature는 2초 주기로 갱신되며 -1이면 온도 줄을 생략합니다. */
             draw_hud(frame->data, frame->width, frame->height, frame->stride,
                      (float)app->realtime_inf_fps,
-                     (float)app->realtime_cam_fps);
+                     (float)app->realtime_cam_fps,
+                     (float)app->realtime_cpu_percent,
+                     app->cached_temperature);
             app->drawn_frames++;
         }
         app->drawing_seconds += platform_monotonic_seconds() - started;

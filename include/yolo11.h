@@ -144,9 +144,11 @@ int yolo11_decode(const float *output, const int64_t *shape, size_t rank,
 void draw_detections(uint8_t *rgb, int width, int height, int stride,
                      const DetectionList *detections);
 
-/* 왼쪽 상단에 추론 FPS / 카메라 입력 FPS를 두 줄로 표시합니다. */
+/* 왼쪽 상단에 추론 FPS / 카메라 FPS / CPU 사용률 / 온도를 표시합니다.
+ * cpu_percent < 0이면 CPU 줄을 건너뜁니다. temperature_celsius < 0이면 온도 줄을 건너뜁니다. */
 void draw_hud(uint8_t *rgb, int width, int height, int stride,
-              float detect_fps, float camera_fps);
+              float detect_fps, float camera_fps,
+              float cpu_percent, int temperature_celsius);
 
 /*
  * detector_create()로 만든 포인터는 반드시 detector_destroy()로 해제해야 합니다.
