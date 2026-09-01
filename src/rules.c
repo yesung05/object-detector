@@ -81,12 +81,14 @@ static void release_state(RulesEngine *re, int track_id) {
  *
  * keypoint 있는 경우 (pose 모델):
  *   - bbox 가로 > 세로 × 1.8 (기존 1.2보다 엄격)
- *   - 신뢰 관절(score≥0.4) 3개 이상 유효해야 std 계산
+ *   - 신뢰 관절(score≥0.4) 3개 이상 + 엉덩이(11·12) 최소 1개 유효해야 std 계산
  *   - 머리·어깨·엉덩이 y 표준편차 / bbox높이 ≤ 0.20 (기존 0.25보다 엄격)
  *
- * keypoint 없는 경우 (detection 전용 모델 또는 유효 관절 2개 미만):
+ * keypoint 없는 경우 (detection 전용 모델, 유효 관절 2개 미만, 또는 엉덩이 없음):
  *   - bbox 가로 > 세로 × 2.2 로 훨씬 엄격하게 적용
  *   - 앉아서 팔 벌리거나 숙인 자세(1.2x 수준)는 오감지하지 않음
+ *   - 엉덩이 없이 코+어깨만으로 y-std 계산 시 해부학적으로 항상 작은 값이
+ *     나와 조건을 거의 항상 통과하므로 이 경로도 폴백으로 처리한다.
  *
  * 공통 가드:
  *   - bbox 세로 < 30px → 너무 작아서 노이즈, 무시
@@ -124,8 +126,13 @@ static int is_horizontal_pose(const Detection *box) {
         }
     }
 
-    /* 유효 관절이 3개 미만이면 keypoint 없는 경우와 동일하게 엄격한 기준 적용 */
-    if (valid < 3) {
+    /* 엉덩이(11·12) 중 유효한 관절 수 */
+    int hip_valid = (box->kp[11].score >= KP_SCORE_THRESH) +
+                    (box->kp[12].score >= KP_SCORE_THRESH);
+    /* 유효 관절 3개 미만이거나 엉덩이가 하나도 없으면 엄격한 기준 적용.
+     * 엉덩이 없이 코+어깨만으로 y-std를 계산하면 해부학적으로 항상 작은
+     * 값이 나와 조건을 거의 항상 통과하기 때문이다. */
+    if (valid < 3 || hip_valid == 0) {
         return w > h * FALL_RATIO_NOKP;
     }
 

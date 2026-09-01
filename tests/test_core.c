@@ -1041,6 +1041,90 @@ static void test_motion_map_locates_change(void) {
     gray_buf_destroy(&g);
 }
 
+/* 오탐 재현: 코+어깨만 유효(엉덩이 없음), w가 1.8x~2.2x 사이 → 미발화해야 함 */
+static void test_rules_fall_no_hip_no_fire(void) {
+    TrackList tl;
+    RulesEngine re;
+    EventLog elog;
+    RulesConfig rcfg = {3600.0, 300.0, 0.1, 0, 0, 0, 0, 0}; /* fall_hold=0.1s */
+    char error[128] = {0};
+    FILE *f = tmpfile();
+    int i;
+    ASSERT_TRUE(f != NULL);
+    event_log_init(&elog, f, LOG_INFO);
+    ASSERT_INT_EQ(tracks_init(&tl, 16, 0.3f, 5, error, sizeof(error)), 0);
+    ASSERT_INT_EQ(rules_init(&re, 16, &rcfg, error, sizeof(error)), 0);
+
+    tl.count = 1;
+    tl.items[0].id = 1;
+    tl.items[0].active = 1;
+    tl.items[0].order = TRACK_ORDERED;
+    /* w=190, h=100 → 190 > 100×1.8=180 (KP 비율 통과), 190 < 100×2.2=220 (NOKP 폴백 미충족) */
+    tl.items[0].box = (Detection){0, 0, 190, 100, 0.9f};
+    tl.items[0].box.keypoint_count = YOLO11_NUM_KEYPOINTS;
+    /* 코: y=20, 양어깨: y=40 — valid=3, y-std≈9.4px, std_ratio≈0.094 ≤ 0.20 */
+    tl.items[0].box.kp[0].x  = 95.0f; tl.items[0].box.kp[0].y  = 20.0f; tl.items[0].box.kp[0].score  = 0.9f;
+    tl.items[0].box.kp[5].x  = 50.0f; tl.items[0].box.kp[5].y  = 40.0f; tl.items[0].box.kp[5].score  = 0.9f;
+    tl.items[0].box.kp[6].x  = 140.0f; tl.items[0].box.kp[6].y = 40.0f; tl.items[0].box.kp[6].score  = 0.9f;
+    /* 엉덩이: score 미달 (hip_valid=0) */
+    tl.items[0].box.kp[11].score = 0.1f;
+    tl.items[0].box.kp[12].score = 0.1f;
+
+    rules_evaluate(&re, &tl, 100.0, &elog);
+    rules_evaluate(&re, &tl, 100.2, &elog); /* fall_hold(0.1s) 경과 */
+
+    /* track_id=1, capacity=16 → 슬롯 인덱스 1 */
+    i = 0;
+    while (i < (int)re.capacity && re.states[i].track_id != 1) i++;
+    ASSERT_TRUE(i < (int)re.capacity);
+    EXPECT_INT_EQ(re.states[i].fall_latched, 0); /* 오탐 발화 없어야 함 */
+
+    rules_destroy(&re);
+    tracks_destroy(&tl);
+    fclose(f);
+}
+
+/* 정상 감지: 코+어깨+엉덩이 모두 수평 → 발화해야 함 */
+static void test_rules_fall_with_hip_fires(void) {
+    TrackList tl;
+    RulesEngine re;
+    EventLog elog;
+    RulesConfig rcfg = {3600.0, 300.0, 0.1, 0, 0, 0, 0, 0}; /* fall_hold=0.1s */
+    char error[128] = {0};
+    FILE *f = tmpfile();
+    int i;
+    ASSERT_TRUE(f != NULL);
+    event_log_init(&elog, f, LOG_INFO);
+    ASSERT_INT_EQ(tracks_init(&tl, 16, 0.3f, 5, error, sizeof(error)), 0);
+    ASSERT_INT_EQ(rules_init(&re, 16, &rcfg, error, sizeof(error)), 0);
+
+    tl.count = 1;
+    tl.items[0].id = 1;
+    tl.items[0].active = 1;
+    tl.items[0].order = TRACK_ORDERED;
+    /* w=250, h=100 → 250 > 100×1.8=180 ✓ */
+    tl.items[0].box = (Detection){0, 0, 250, 100, 0.9f};
+    tl.items[0].box.keypoint_count = YOLO11_NUM_KEYPOINTS;
+    /* 코·양어깨·양엉덩이 모두 y=50 (완전 수평), valid=5, hip_valid=2, std=0 */
+    tl.items[0].box.kp[0].x  = 125.0f; tl.items[0].box.kp[0].y  = 50.0f; tl.items[0].box.kp[0].score  = 0.9f;
+    tl.items[0].box.kp[5].x  = 60.0f;  tl.items[0].box.kp[5].y  = 50.0f; tl.items[0].box.kp[5].score  = 0.9f;
+    tl.items[0].box.kp[6].x  = 190.0f; tl.items[0].box.kp[6].y  = 50.0f; tl.items[0].box.kp[6].score  = 0.9f;
+    tl.items[0].box.kp[11].x = 80.0f;  tl.items[0].box.kp[11].y = 50.0f; tl.items[0].box.kp[11].score = 0.9f;
+    tl.items[0].box.kp[12].x = 170.0f; tl.items[0].box.kp[12].y = 50.0f; tl.items[0].box.kp[12].score = 0.9f;
+
+    rules_evaluate(&re, &tl, 100.0, &elog);
+    rules_evaluate(&re, &tl, 100.2, &elog); /* fall_hold(0.1s) 경과 */
+
+    i = 0;
+    while (i < (int)re.capacity && re.states[i].track_id != 1) i++;
+    ASSERT_TRUE(i < (int)re.capacity);
+    EXPECT_INT_EQ(re.states[i].fall_latched, 1); /* 정상 발화 */
+
+    rules_destroy(&re);
+    tracks_destroy(&tl);
+    fclose(f);
+}
+
 static void test_door_state_debounce(void) {
     DoorMonitor d;
     uint8_t closed[3] = {0, 0, 0};
@@ -1136,6 +1220,8 @@ int main(void) {
     RUN_TEST(test_rules_fall_geometry);
     RUN_TEST(test_rules_fall_requires_hold);
     RUN_TEST(test_rules_unordered_seated);
+    RUN_TEST(test_rules_fall_no_hip_no_fire);
+    RUN_TEST(test_rules_fall_with_hip_fires);
     RUN_TEST(test_config_rect_and_time);
     RUN_TEST(test_camera_health_whiteout);
     RUN_TEST(test_camera_health_frozen);
