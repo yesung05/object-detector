@@ -37,6 +37,7 @@ logs/
 
 # CMake 빌드 산출물 (Windows)
 build-windows/
+*.obj
 
 # 문 감지 기준 이미지 — 매장별 캡처본, 로컬 전용
 *.raw

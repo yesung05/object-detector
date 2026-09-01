@@ -5,7 +5,40 @@
 #include <stdlib.h>
 #include <string.h>
 
-static const RulesConfig DEFAULT_RULES = {3600.0, 300.0, 5.0, 0, 0, 0, 0, 0};
+/* ── Tier 2 클래스 분류 헬퍼 ── */
+static int is_animal(int id)   { return id == OBJ_CAT || id == OBJ_DOG; }
+static int is_food(int id)     { return id >= OBJ_FOOD_FIRST && id <= OBJ_FOOD_LAST; }
+
+/*
+ * 두 Detection bbox 간의 IoU를 계산합니다.
+ * rules.c 내부에서만 사용하는 별도 구현으로, postprocess.c의
+ * intersection_over_union()와 독립적입니다.
+ */
+static float obj_iou(const Detection *a, const Detection *b) {
+    float left   = a->x1 > b->x1 ? a->x1 : b->x1;
+    float top    = a->y1 > b->y1 ? a->y1 : b->y1;
+    float right  = a->x2 < b->x2 ? a->x2 : b->x2;
+    float bottom = a->y2 < b->y2 ? a->y2 : b->y2;
+    float inter_w = right - left;
+    float inter_h = bottom - top;
+    float inter, area_a, area_b, denom;
+    if (inter_w <= 0.0f || inter_h <= 0.0f) return 0.0f;
+    inter  = inter_w * inter_h;
+    area_a = (a->x2 - a->x1) * (a->y2 - a->y1);
+    area_b = (b->x2 - b->x1) * (b->y2 - b->y1);
+    denom  = area_a + area_b - inter;
+    return denom > 0.0f ? inter / denom : 0.0f;
+}
+
+static const RulesConfig DEFAULT_RULES = {
+    3600.0,  /* dwell_limit_seconds */
+    300.0,   /* unordered_grace_seconds */
+    5.0,     /* fall_hold_seconds */
+    0, 0, 0, 0, /* roi_kiosk_{x,y,w,h} */
+    0,       /* roi_kiosk_set */
+    0.15f,   /* animal_iou_threshold */
+    1,       /* no_cup_margin */
+};
 
 int rules_init(RulesEngine *re, size_t capacity, const RulesConfig *config,
                char *error, size_t error_size) {
@@ -143,6 +176,123 @@ static int is_horizontal_pose(const Detection *box) {
     if (variance < 0.0f) variance = 0.0f;
     std_ratio = (float)sqrt((double)variance) / h;
     return std_ratio <= FALL_STD_THRESH;
+}
+
+/*
+ * 물체 감지 결과(DetectionList)와 현재 사람 트랙(TrackList)을 조합하여
+ * Tier 2 룰을 평가합니다. Tier 1의 track_id 기반 latch와 달리
+ * 물체 룰은 프레임 단위로 평가하며 RulesEngine 내 단일 래치 집합을 씁니다.
+ *
+ * 래치는 조건이 해소된 다음 호출 때 해제됩니다(0으로 초기화된 슬롯 재사용).
+ * 물체 룰 전용 슬롯으로 track_id=-2 예약 슬롯을 사용합니다.
+ */
+void rules_evaluate_objects(RulesEngine *re, const DetectionList *objs,
+                             const TrackList *tl, double now, EventLog *elog) {
+    size_t i, j;
+    int found_bottle = 0, found_food = 0;
+    int animal_on_chair = 0, animal_on_table = 0;
+    int cup_count = 0, active_persons = 0;
+    /* 래치 상태는 track_id==-2 슬롯에서 비트로 관리 */
+    TrackRuleState *s;
+    char msg[128];
+    float iou_thresh;
+
+    if (!re || !objs || !tl) return;
+
+    iou_thresh = re->config.animal_iou_threshold > 0.0f
+                 ? re->config.animal_iou_threshold : 0.15f;
+
+    /* 래치 슬롯 확보 (track_id==-2: 물체 룰 전용) */
+    s = get_state(re, -2);
+
+    /* 1패스: 물체 목록 분류 */
+    for (i = 0; i < objs->count; ++i) {
+        const Detection *obj = &objs->items[i];
+        int id = obj->class_id;
+
+        if (id == OBJ_BOTTLE)      { found_bottle = 1; }
+        else if (is_food(id))      { found_food   = 1; }
+        else if (id == OBJ_CUP)   { cup_count++; }
+
+        /* 동물-가구 IoU 체크 */
+        if (is_animal(id)) {
+            for (j = 0; j < objs->count; ++j) {
+                const Detection *furn = &objs->items[j];
+                if (furn->class_id == OBJ_CHAIR &&
+                    obj_iou(obj, furn) >= iou_thresh) {
+                    animal_on_chair = 1;
+                }
+                if (furn->class_id == OBJ_DININGTABLE &&
+                    obj_iou(obj, furn) >= iou_thresh) {
+                    animal_on_table = 1;
+                }
+            }
+        }
+    }
+
+    /* 활성 사람 수 집계 */
+    for (i = 0; i < tl->count; ++i) {
+        if (tl->items[i].active) active_persons++;
+    }
+
+    /* ── external_drink ── */
+    if (found_bottle) {
+        if (!s->overstay_latched) {
+            s->overstay_latched = 1;
+            snprintf(msg, sizeof(msg), "external_drink cups=%d", cup_count);
+            event_log_write(elog, LOG_WARN, "rules", msg);
+        }
+    } else {
+        s->overstay_latched = 0;
+    }
+
+    /* ── external_food ── */
+    if (found_food) {
+        if (!s->unordered_latched) {
+            s->unordered_latched = 1;
+            snprintf(msg, sizeof(msg), "external_food");
+            event_log_write(elog, LOG_WARN, "rules", msg);
+        }
+    } else {
+        s->unordered_latched = 0;
+    }
+
+    /* ── animal_on_chair ── (fall_latched 비트 재활용) */
+    if (animal_on_chair) {
+        if (!s->fall_latched) {
+            s->fall_latched = 1;
+            snprintf(msg, sizeof(msg), "animal_on_chair iou_thresh=%.2f",
+                     iou_thresh);
+            event_log_write(elog, LOG_WARN, "rules", msg);
+        }
+    } else {
+        s->fall_latched = 0;
+    }
+
+    /* ── animal_on_table ── (fall_start 비트 필드 재활용) */
+    if (animal_on_table) {
+        if (s->fall_start <= 0.0) {
+            s->fall_start = now;
+            snprintf(msg, sizeof(msg), "animal_on_table iou_thresh=%.2f",
+                     iou_thresh);
+            event_log_write(elog, LOG_WARN, "rules", msg);
+        }
+    } else {
+        s->fall_start = 0.0;
+    }
+
+    /* ── no_cup_seated ── (별도 latch 없음: 매 Tier 2 주기마다 재평가) */
+    {
+        int margin = re->config.no_cup_margin > 0 ? re->config.no_cup_margin : 1;
+        if (active_persons > cup_count + margin) {
+            snprintf(msg, sizeof(msg),
+                     "no_cup_seated persons=%d cups=%d margin=%d",
+                     active_persons, cup_count, margin);
+            event_log_write(elog, LOG_WARN, "rules", msg);
+        }
+    }
+
+    (void)now;
 }
 
 void rules_evaluate(RulesEngine *re, TrackList *tl, double now, EventLog *elog) {

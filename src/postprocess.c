@@ -300,7 +300,7 @@ static void append_candidate(DetectionList *list, const Detection *candidate) {
 
 /* letterbox 여백과 확대 비율을 반대로 적용하여 원본 이미지 좌표로 돌아갑니다. */
 static Detection map_box(float x1, float y1, float x2, float y2, float score,
-                         const Letterbox *t) {
+                         int class_id, const Letterbox *t) {
     Detection d;
     memset(&d, 0, sizeof(d));
     d.x1 = clampf((x1 - (float)t->pad_x) / t->scale, 0.0f,
@@ -311,7 +311,8 @@ static Detection map_box(float x1, float y1, float x2, float y2, float score,
                   (float)(t->image_width - 1));
     d.y2 = clampf((y2 - (float)t->pad_y) / t->scale, 0.0f,
                   (float)(t->image_height - 1));
-    d.score = score;
+    d.score    = score;
+    d.class_id = class_id;
     return d;
 }
 
@@ -385,14 +386,16 @@ int yolo11_decode(const float *output, const int64_t *shape, size_t rank,
         size_t kp_channels = channels > 5 ? channels - 5 : 0;
         int has_keypoints = (kp_channels == (size_t)(YOLO11_NUM_KEYPOINTS * 3));
 
-        /* 모든 후보 중 class 0(person)의 점수가 confidence 이상인 박스만 모읍니다. */
         for (size_t i = 0; i < predictions; ++i) {
             Detection d;
             if (embedded_nms) {
                 const float *row = output + i * channels;
-                /* embedded NMS pose: box4+score+class[+51 keypoints] */
-                if (row[4] < confidence || (int)row[5] != 0) continue;
-                d = map_box(row[0], row[1], row[2], row[3], row[4], transform);
+                /* embedded NMS: box4(xyxy)+score+class_id[+17*3 keypoints]
+                 * class_id 필터링은 호출자(rules 엔진)에 위임한다.
+                 * pose 모델은 class_id가 항상 0(person)이므로 동작 변화 없음. */
+                if (row[4] < confidence) continue;
+                d = map_box(row[0], row[1], row[2], row[3], row[4],
+                            (int)row[5], transform);
                 if (has_keypoints) {
                     int k;
                     d.keypoint_count = YOLO11_NUM_KEYPOINTS;
@@ -404,33 +407,58 @@ int yolo11_decode(const float *output, const int64_t *shape, size_t rank,
                     }
                 }
             } else {
-                float cx;
-                float cy;
-                float width;
-                float height;
-                float score;
+                float cx, cy, width, height, score;
+                int   class_id;
                 if (channel_first) {
                     /*
                      * 배열이 채널별 평면으로 저장되어 있으므로 같은 후보 i의 값도
                      * predictions만큼 떨어져 있습니다.
                      */
-                    cx = output[0 * predictions + i];
-                    cy = output[1 * predictions + i];
-                    width = output[2 * predictions + i];
+                    cx     = output[0 * predictions + i];
+                    cy     = output[1 * predictions + i];
+                    width  = output[2 * predictions + i];
                     height = output[3 * predictions + i];
-                    score = output[4 * predictions + i]; /* COCO의 class 0은 person입니다. */
+                    if (!has_keypoints && channels > 5) {
+                        /*
+                         * 멀티클래스 모델(예: Tier 2 16클래스): 채널 4 이후가
+                         * 각 클래스의 점수이므로 argmax로 승자를 고른다.
+                         * pose 모델(channels=56)은 has_keypoints=1이므로 이 경로에
+                         * 진입하지 않는다.
+                         */
+                        score    = 0.0f;
+                        class_id = -1;
+                        for (size_t c = 4; c < channels; ++c) {
+                            float s = output[c * predictions + i];
+                            if (s > score) { score = s; class_id = (int)(c - 4); }
+                        }
+                    } else {
+                        score    = output[4 * predictions + i];
+                        class_id = 0;
+                    }
                 } else {
                     const float *row = output + i * channels;
-                    cx = row[0];
-                    cy = row[1];
-                    width = row[2];
+                    cx     = row[0];
+                    cy     = row[1];
+                    width  = row[2];
                     height = row[3];
-                    score = row[4];
+                    if (!has_keypoints && channels > 5) {
+                        score    = 0.0f;
+                        class_id = -1;
+                        for (size_t c = 4; c < channels; ++c) {
+                            if (row[c] > score) {
+                                score    = row[c];
+                                class_id = (int)(c - 4);
+                            }
+                        }
+                    } else {
+                        score    = row[4];
+                        class_id = 0;
+                    }
                 }
                 if (score < confidence) continue;
                 d = map_box(cx - width * 0.5f, cy - height * 0.5f,
                             cx + width * 0.5f, cy + height * 0.5f,
-                            score, transform);
+                            score, class_id, transform);
                 if (has_keypoints) {
                     int k;
                     d.keypoint_count = YOLO11_NUM_KEYPOINTS;

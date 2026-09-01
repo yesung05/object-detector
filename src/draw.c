@@ -1,4 +1,5 @@
 #include "tracks.h"
+#include "rules.h"
 #include "yolo11.h"
 
 #include <stdio.h>
@@ -71,6 +72,10 @@ static const uint8_t *glyph(char c) {
     /* CPU / 트랙 ID 표기용 */
     static const uint8_t u_g[7] = {17, 17, 17, 17, 17, 17, 14};  /* U */
     static const uint8_t hash[7] = {10, 10, 31, 10, 31, 10, 10}; /* # */
+    /* Tier 2 물체 레이블용 추가 글리프 */
+    static const uint8_t d_g[7] = {28, 18, 17, 17, 17, 18, 28};  /* D */
+    static const uint8_t l_g[7] = {16, 16, 16, 16, 16, 16, 31};  /* L */
+    static const uint8_t t_g[7] = {31, 4, 4, 4, 4, 4, 4};        /* T */
     static const uint8_t digits[10][7] = {
         {14, 17, 19, 21, 25, 17, 14},
         {4, 12, 4, 4, 4, 4, 14},
@@ -100,6 +105,9 @@ static const uint8_t *glyph(char c) {
         case ':': return colon;
         case 'U': return u_g;
         case '#': return hash;
+        case 'D': return d_g;
+        case 'L': return l_g;
+        case 'T': return t_g;
         default: return blank;
     }
 }
@@ -398,5 +406,77 @@ void draw_tracks(uint8_t *rgb, int width, int height, int stride,
         /* 스켈레톤은 현재 감지된 트랙에만 그립니다. */
         if (t->misses == 0 && t->box.keypoint_count > 0)
             draw_skeleton(rgb, width, height, stride, &t->box);
+    }
+}
+
+/*
+ * Tier 2 물체 감지 결과를 클래스 카테고리별 색상으로 그립니다.
+ * draw_tracks()와 달리 1px 테두리를 사용하여 Tier 1 박스와 시각적으로 구분합니다.
+ *
+ * 색상:
+ *   ANIMAL (cat/dog)  — 빨강 (220, 50, 50)
+ *   FOOD              — 주황 (255, 140, 0)
+ *   DRINK (bottle)    — 보라 (160, 80, 220)
+ *   CUP               — 밝은보라 (180, 120, 240)
+ *   CHAIR             — 회청 (100, 160, 200)
+ *   TABLE             — 회청 (80, 140, 180)
+ */
+void draw_obj_detections(uint8_t *rgb, int width, int height, int stride,
+                         const DetectionList *detections) {
+    int font_scale;
+    size_t i;
+
+    if (!rgb || !detections || width <= 0 || height <= 0 ||
+        stride < width * 3) return;
+
+    font_scale = (width < height ? width : height) >= 600 ? 2 : 1;
+
+    for (i = 0; i < detections->count; ++i) {
+        const Detection *d = &detections->items[i];
+        const char *label;
+        uint8_t br, bg, bb;
+        int x1 = clampi((int)(d->x1 + 0.5f), 0, width - 1);
+        int y1 = clampi((int)(d->y1 + 0.5f), 0, height - 1);
+        int x2 = clampi((int)(d->x2 + 0.5f), 0, width - 1);
+        int y2 = clampi((int)(d->y2 + 0.5f), 0, height - 1);
+        int label_height = 7 * font_scale + 6;
+        int label_width, label_y;
+        int id = d->class_id;
+
+        /* 클래스별 색상과 레이블 결정 */
+        if (id == OBJ_CAT || id == OBJ_DOG) {
+            br = 220; bg = 50;  bb = 50;  label = "ANIMAL";
+        } else if (id >= OBJ_FOOD_FIRST && id <= OBJ_FOOD_LAST) {
+            br = 255; bg = 140; bb = 0;   label = "FOOD";
+        } else if (id == OBJ_BOTTLE) {
+            br = 160; bg = 80;  bb = 220; label = "DRINK";
+        } else if (id == OBJ_CUP) {
+            br = 180; bg = 120; bb = 240; label = "CUP";
+        } else if (id == OBJ_CHAIR) {
+            br = 100; bg = 160; bb = 200; label = "CHAIR";
+        } else if (id == OBJ_DININGTABLE) {
+            br = 80;  bg = 140; bb = 180; label = "TABLE";
+        } else {
+            /* 알 수 없는 class_id: 회색으로 표시 */
+            br = 128; bg = 128; bb = 128; label = "OBJ";
+        }
+
+        label_width = (int)strlen(label) * 6 * font_scale + 6;
+        if (label_width > width) label_width = width;
+        label_y = y1 >= label_height ? y1 - label_height : y1;
+
+        draw_rectangle(rgb, width, height, stride, x1, y1, x2, y2, 1,
+                       br, bg, bb);
+        fill_blended(rgb, width, height, stride, x1, label_y,
+                     x1 + label_width, label_y + label_height);
+        {
+            int bx;
+            for (bx = x1; bx < x1 + label_width && bx < width; ++bx) {
+                set_pixel(rgb, width, height, stride, bx, label_y,     br, bg, bb);
+                set_pixel(rgb, width, height, stride, bx, label_y + 1, br, bg, bb);
+            }
+        }
+        draw_text(rgb, width, height, stride, x1 + 3, label_y + 4,
+                  label, font_scale);
     }
 }

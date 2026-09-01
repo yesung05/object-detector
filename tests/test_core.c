@@ -616,19 +616,19 @@ static void test_tracks_id_stability(void) {
     DetectionList det;
     char error[128] = {0};
     int first_id;
-    ASSERT_INT_EQ(tracks_init(&tl, 16, 0.3f, 5, error, sizeof(error)), 0);
+    ASSERT_INT_EQ(tracks_init(&tl, 16, 0.3f, 5, 1800.0, 0.45f, error, sizeof(error)), 0);
     ASSERT_INT_EQ(detection_list_init(&det, 4), 0);
 
     det.count = 1;
     det.items[0] = (Detection){10, 10, 50, 50, 0.9f};
-    tracks_update(&tl, &det, 100.0);
+    tracks_update(&tl, &det, NULL, 0, 0, 0, 100.0);
     ASSERT_INT_EQ((int)tl.count, 1);
     EXPECT_TRUE(tl.items[0].active);
     first_id = tl.items[0].id;
 
     /* 거의 같은 위치 → 동일 트랙 ID */
     det.items[0] = (Detection){11, 11, 51, 51, 0.88f};
-    tracks_update(&tl, &det, 101.0);
+    tracks_update(&tl, &det, NULL, 0, 0, 0, 101.0);
     EXPECT_INT_EQ((int)tl.count, 1);
     EXPECT_INT_EQ(tl.items[0].id, first_id);
     EXPECT_TRUE(tl.items[0].dwell_seconds > 0.0);
@@ -642,20 +642,20 @@ static void test_tracks_eviction(void) {
     TrackList tl;
     DetectionList det;
     char error[128] = {0};
-    ASSERT_INT_EQ(tracks_init(&tl, 16, 0.3f, 2, error, sizeof(error)), 0);
+    ASSERT_INT_EQ(tracks_init(&tl, 16, 0.3f, 2, 1800.0, 0.45f, error, sizeof(error)), 0);
     ASSERT_INT_EQ(detection_list_init(&det, 4), 0);
 
     det.count = 1;
     det.items[0] = (Detection){10, 10, 50, 50, 0.9f};
-    tracks_update(&tl, &det, 100.0);
+    tracks_update(&tl, &det, NULL, 0, 0, 0, 100.0);
     EXPECT_TRUE(tl.items[0].active);
 
     det.count = 0;
-    tracks_update(&tl, &det, 101.0);  /* miss=1 */
+    tracks_update(&tl, &det, NULL, 0, 0, 0, 101.0);  /* miss=1 */
     EXPECT_TRUE(tl.items[0].active);
-    tracks_update(&tl, &det, 102.0);  /* miss=2, 아직 살아있음 */
+    tracks_update(&tl, &det, NULL, 0, 0, 0, 102.0);  /* miss=2, 아직 살아있음 */
     EXPECT_TRUE(tl.items[0].active);
-    tracks_update(&tl, &det, 103.0);  /* miss=3 > max_misses=2 → inactive */
+    tracks_update(&tl, &det, NULL, 0, 0, 0, 103.0);  /* miss=3 > max_misses=2 → inactive */
     EXPECT_TRUE(!tl.items[0].active);
 
     detection_list_destroy(&det);
@@ -673,7 +673,7 @@ static void test_rules_overstay_latches_once(void) {
     FILE *f = tmpfile();
     ASSERT_TRUE(f != NULL);
     event_log_init(&elog, f, LOG_INFO);
-    ASSERT_INT_EQ(tracks_init(&tl, 16, 0.3f, 5, error, sizeof(error)), 0);
+    ASSERT_INT_EQ(tracks_init(&tl, 16, 0.3f, 5, 1800.0, 0.45f, error, sizeof(error)), 0);
     ASSERT_INT_EQ(rules_init(&re, 16, &rcfg, error, sizeof(error)), 0);
 
     tl.count = 1;
@@ -708,7 +708,7 @@ static void test_rules_fall_geometry(void) {
     FILE *f = tmpfile();
     ASSERT_TRUE(f != NULL);
     event_log_init(&elog, f, LOG_INFO);
-    ASSERT_INT_EQ(tracks_init(&tl, 16, 0.3f, 5, error, sizeof(error)), 0);
+    ASSERT_INT_EQ(tracks_init(&tl, 16, 0.3f, 5, 1800.0, 0.45f, error, sizeof(error)), 0);
     ASSERT_INT_EQ(rules_init(&re, 16, &rcfg, error, sizeof(error)), 0);
 
     tl.count = 1;
@@ -739,7 +739,7 @@ static void test_rules_fall_requires_hold(void) {
     FILE *f = tmpfile();
     ASSERT_TRUE(f != NULL);
     event_log_init(&elog, f, LOG_INFO);
-    ASSERT_INT_EQ(tracks_init(&tl, 16, 0.3f, 5, error, sizeof(error)), 0);
+    ASSERT_INT_EQ(tracks_init(&tl, 16, 0.3f, 5, 1800.0, 0.45f, error, sizeof(error)), 0);
     ASSERT_INT_EQ(rules_init(&re, 16, &rcfg, error, sizeof(error)), 0);
 
     tl.count = 1;
@@ -774,7 +774,7 @@ static void test_rules_unordered_seated(void) {
     FILE *f = tmpfile();
     ASSERT_TRUE(f != NULL);
     event_log_init(&elog, f, LOG_INFO);
-    ASSERT_INT_EQ(tracks_init(&tl, 16, 0.3f, 5, error, sizeof(error)), 0);
+    ASSERT_INT_EQ(tracks_init(&tl, 16, 0.3f, 5, 1800.0, 0.45f, error, sizeof(error)), 0);
     ASSERT_INT_EQ(rules_init(&re, 16, &rcfg, error, sizeof(error)), 0);
 
     tl.count = 1;
@@ -1052,7 +1052,7 @@ static void test_rules_fall_no_hip_no_fire(void) {
     int i;
     ASSERT_TRUE(f != NULL);
     event_log_init(&elog, f, LOG_INFO);
-    ASSERT_INT_EQ(tracks_init(&tl, 16, 0.3f, 5, error, sizeof(error)), 0);
+    ASSERT_INT_EQ(tracks_init(&tl, 16, 0.3f, 5, 1800.0, 0.45f, error, sizeof(error)), 0);
     ASSERT_INT_EQ(rules_init(&re, 16, &rcfg, error, sizeof(error)), 0);
 
     tl.count = 1;
@@ -1095,7 +1095,7 @@ static void test_rules_fall_with_hip_fires(void) {
     int i;
     ASSERT_TRUE(f != NULL);
     event_log_init(&elog, f, LOG_INFO);
-    ASSERT_INT_EQ(tracks_init(&tl, 16, 0.3f, 5, error, sizeof(error)), 0);
+    ASSERT_INT_EQ(tracks_init(&tl, 16, 0.3f, 5, 1800.0, 0.45f, error, sizeof(error)), 0);
     ASSERT_INT_EQ(rules_init(&re, 16, &rcfg, error, sizeof(error)), 0);
 
     tl.count = 1;
@@ -1182,6 +1182,277 @@ static void test_gray_matches_reference(void) {
     gray_buf_destroy(&g);
 }
 
+/* ── Tier 2 class_id 전파 테스트 ─────────────────────────────────────────── */
+
+/* pose 모델([1,56,N])은 has_keypoints=1이므로 argmax 경로를 타지 않고
+ * class_id = 0(person)이 되어야 합니다. */
+static void test_decode_class_id_pose_is_zero(void) {
+    enum { N = 100, C = 56 };
+    float output[C * N];
+    int64_t shape[3] = {1, C, N};
+    Letterbox t = {416, 416, 416, 416, 1.0f, 0, 0};
+    DetectionList list;
+    memset(output, 0, sizeof(output));
+    ASSERT_INT_EQ(detection_list_init(&list, 8), 0);
+    output[0 * N + 0] = 200.0f;
+    output[1 * N + 0] = 200.0f;
+    output[2 * N + 0] = 80.0f;
+    output[3 * N + 0] = 120.0f;
+    output[4 * N + 0] = 0.9f;
+    ASSERT_INT_EQ(yolo11_decode(output, shape, 3, &t, 0.5f, 0.45f, &list, 8), 0);
+    ASSERT_INT_EQ((int)list.count, 1);
+    EXPECT_INT_EQ(list.items[0].class_id, 0);   /* pose 모델은 항상 person(0) */
+    EXPECT_INT_EQ(list.items[0].keypoint_count, YOLO11_NUM_KEYPOINTS);
+    detection_list_destroy(&list);
+}
+
+/* 16클래스 Tier 2 모델([1,20,N])은 has_keypoints=0, channels=20 이므로
+ * 채널 4-19 argmax로 class_id가 결정됩니다.
+ * 채널 7(=4+3)에 최고 점수 → class_id=3(CUP) */
+static void test_decode_class_id_multiclass_argmax(void) {
+    enum { N = 200, C = 20 };
+    float output[C * N];
+    int64_t shape[3] = {1, C, N};
+    Letterbox t = {320, 320, 320, 320, 1.0f, 0, 0};
+    DetectionList list;
+    memset(output, 0, sizeof(output));
+    ASSERT_INT_EQ(detection_list_init(&list, 8), 0);
+    output[0 * N + 0] = 160.0f;
+    output[1 * N + 0] = 160.0f;
+    output[2 * N + 0] = 60.0f;
+    output[3 * N + 0] = 60.0f;
+    /* 채널 4(=OBJ_CAT): 0.3,  채널 7(=OBJ_CUP): 0.85 → 최대 */
+    output[4 * N + 0] = 0.3f;   /* cat */
+    output[7 * N + 0] = 0.85f;  /* cup — argmax 승자 */
+    ASSERT_INT_EQ(yolo11_decode(output, shape, 3, &t, 0.5f, 0.45f, &list, 8), 0);
+    ASSERT_INT_EQ((int)list.count, 1);
+    EXPECT_INT_EQ(list.items[0].class_id, 3);   /* OBJ_CUP = 3 */
+    EXPECT_INT_EQ(list.items[0].keypoint_count, 0);
+    EXPECT_FLOAT_NEAR(list.items[0].score, 0.85f, 0.001f);
+    detection_list_destroy(&list);
+}
+
+/* ── rules_evaluate_objects 테스트 ──────────────────────────────────────── */
+
+static void make_obj_list(DetectionList *list, float x1, float y1,
+                           float x2, float y2, float score, int class_id) {
+    list->count = 1;
+    memset(&list->items[0], 0, sizeof(list->items[0]));
+    list->items[0].x1 = x1;
+    list->items[0].y1 = y1;
+    list->items[0].x2 = x2;
+    list->items[0].y2 = y2;
+    list->items[0].score = score;
+    list->items[0].class_id = class_id;
+}
+
+/* bottle(OBJ_BOTTLE=2) 감지 → external_drink 이벤트가 발화해야 합니다. */
+static void test_rules_obj_external_drink(void) {
+    TrackList tl;
+    RulesEngine re;
+    EventLog elog;
+    DetectionList objs;
+    RulesConfig rcfg = {3600.0, 300.0, 5.0, 0, 0, 0, 0, 0, 0.15f, 1};
+    char error[128] = {0};
+    FILE *f = tmpfile();
+    ASSERT_TRUE(f != NULL);
+    event_log_init(&elog, f, LOG_INFO);
+    ASSERT_INT_EQ(tracks_init(&tl, 16, 0.3f, 5, 1800.0, 0.45f, error, sizeof(error)), 0);
+    ASSERT_INT_EQ(rules_init(&re, 16, &rcfg, error, sizeof(error)), 0);
+    ASSERT_INT_EQ(detection_list_init(&objs, 8), 0);
+
+    make_obj_list(&objs, 100, 100, 150, 200, 0.8f, 2 /* OBJ_BOTTLE */);
+    rules_evaluate_objects(&re, &objs, &tl, 100.0, &elog);
+
+    /* track_id=-2 슬롯의 overstay_latched(drink latch)가 설정되어야 합니다. */
+    {
+        int i = 0;
+        while (i < (int)re.capacity && re.states[i].track_id != -2) i++;
+        ASSERT_TRUE(i < (int)re.capacity);
+        EXPECT_INT_EQ(re.states[i].overstay_latched, 1);
+    }
+
+    /* 감지 없어지면 latch 해제 */
+    objs.count = 0;
+    rules_evaluate_objects(&re, &objs, &tl, 101.0, &elog);
+    {
+        int i = 0;
+        while (i < (int)re.capacity && re.states[i].track_id != -2) i++;
+        if (i < (int)re.capacity)
+            EXPECT_INT_EQ(re.states[i].overstay_latched, 0);
+    }
+
+    rules_destroy(&re);
+    tracks_destroy(&tl);
+    detection_list_destroy(&objs);
+    fclose(f);
+}
+
+/* 음식 클래스(OBJ_FOOD_FIRST=4 ~ OBJ_FOOD_LAST=13) 감지 → external_food 이벤트 */
+static void test_rules_obj_external_food(void) {
+    TrackList tl;
+    RulesEngine re;
+    EventLog elog;
+    DetectionList objs;
+    RulesConfig rcfg = {3600.0, 300.0, 5.0, 0, 0, 0, 0, 0, 0.15f, 1};
+    char error[128] = {0};
+    FILE *f = tmpfile();
+    ASSERT_TRUE(f != NULL);
+    event_log_init(&elog, f, LOG_INFO);
+    ASSERT_INT_EQ(tracks_init(&tl, 16, 0.3f, 5, 1800.0, 0.45f, error, sizeof(error)), 0);
+    ASSERT_INT_EQ(rules_init(&re, 16, &rcfg, error, sizeof(error)), 0);
+    ASSERT_INT_EQ(detection_list_init(&objs, 8), 0);
+
+    make_obj_list(&objs, 50, 50, 100, 100, 0.75f, 11 /* pizza, OBJ_FOOD_FIRST+7 */);
+    rules_evaluate_objects(&re, &objs, &tl, 100.0, &elog);
+
+    {
+        int i = 0;
+        while (i < (int)re.capacity && re.states[i].track_id != -2) i++;
+        ASSERT_TRUE(i < (int)re.capacity);
+        EXPECT_INT_EQ(re.states[i].unordered_latched, 1);  /* food latch */
+    }
+
+    rules_destroy(&re);
+    tracks_destroy(&tl);
+    detection_list_destroy(&objs);
+    fclose(f);
+}
+
+/* 동물(cat=0)과 의자(OBJ_CHAIR=14) bbox가 충분히 겹치면 animal_on_chair 발화 */
+static void test_rules_obj_animal_on_chair(void) {
+    TrackList tl;
+    RulesEngine re;
+    EventLog elog;
+    DetectionList objs;
+    /* animal_iou_threshold=0.1: 동물/의자 IoU가 0.1 이상이면 발화 */
+    RulesConfig rcfg = {3600.0, 300.0, 5.0, 0, 0, 0, 0, 0, 0.10f, 1};
+    char error[128] = {0};
+    FILE *f = tmpfile();
+    int i;
+    ASSERT_TRUE(f != NULL);
+    event_log_init(&elog, f, LOG_INFO);
+    ASSERT_INT_EQ(tracks_init(&tl, 16, 0.3f, 5, 1800.0, 0.45f, error, sizeof(error)), 0);
+    ASSERT_INT_EQ(rules_init(&re, 16, &rcfg, error, sizeof(error)), 0);
+    ASSERT_INT_EQ(detection_list_init(&objs, 8), 0);
+
+    /* 의자(0,0)-(200,200)  동물(100,100)-(200,200) → 겹침 100x100=10000
+     * 합집합 = 200×200 - 10000 = 30000, IoU = 10000/30000 = 0.333 > 0.10 */
+    objs.count = 2;
+    memset(&objs.items[0], 0, sizeof(objs.items[0]));
+    objs.items[0].x1 = 0; objs.items[0].y1 = 0;
+    objs.items[0].x2 = 200; objs.items[0].y2 = 200;
+    objs.items[0].score = 0.9f;
+    objs.items[0].class_id = 14; /* OBJ_CHAIR */
+
+    memset(&objs.items[1], 0, sizeof(objs.items[1]));
+    objs.items[1].x1 = 100; objs.items[1].y1 = 100;
+    objs.items[1].x2 = 200; objs.items[1].y2 = 200;
+    objs.items[1].score = 0.85f;
+    objs.items[1].class_id = 0; /* OBJ_CAT */
+
+    rules_evaluate_objects(&re, &objs, &tl, 100.0, &elog);
+
+    i = 0;
+    while (i < (int)re.capacity && re.states[i].track_id != -2) i++;
+    ASSERT_TRUE(i < (int)re.capacity);
+    EXPECT_INT_EQ(re.states[i].fall_latched, 1);  /* animal_on_chair latch */
+
+    rules_destroy(&re);
+    tracks_destroy(&tl);
+    detection_list_destroy(&objs);
+    fclose(f);
+}
+
+/* 동물(dog=1)과 dining table(OBJ_DININGTABLE=15)이 겹치면 animal_on_table 발화 */
+static void test_rules_obj_animal_on_table(void) {
+    TrackList tl;
+    RulesEngine re;
+    EventLog elog;
+    DetectionList objs;
+    RulesConfig rcfg = {3600.0, 300.0, 5.0, 0, 0, 0, 0, 0, 0.10f, 1};
+    char error[128] = {0};
+    FILE *f = tmpfile();
+    int i;
+    ASSERT_TRUE(f != NULL);
+    event_log_init(&elog, f, LOG_INFO);
+    ASSERT_INT_EQ(tracks_init(&tl, 16, 0.3f, 5, 1800.0, 0.45f, error, sizeof(error)), 0);
+    ASSERT_INT_EQ(rules_init(&re, 16, &rcfg, error, sizeof(error)), 0);
+    ASSERT_INT_EQ(detection_list_init(&objs, 8), 0);
+
+    objs.count = 2;
+    memset(&objs.items[0], 0, sizeof(objs.items[0]));
+    objs.items[0].x1 = 0; objs.items[0].y1 = 0;
+    objs.items[0].x2 = 200; objs.items[0].y2 = 200;
+    objs.items[0].score = 0.9f;
+    objs.items[0].class_id = 15; /* OBJ_DININGTABLE */
+
+    memset(&objs.items[1], 0, sizeof(objs.items[1]));
+    objs.items[1].x1 = 50; objs.items[1].y1 = 50;
+    objs.items[1].x2 = 150; objs.items[1].y2 = 150;
+    objs.items[1].score = 0.8f;
+    objs.items[1].class_id = 1; /* OBJ_DOG */
+
+    rules_evaluate_objects(&re, &objs, &tl, 100.0, &elog);
+
+    i = 0;
+    while (i < (int)re.capacity && re.states[i].track_id != -2) i++;
+    ASSERT_TRUE(i < (int)re.capacity);
+    /* fall_start가 0이 아니면 animal_on_table latch가 설정된 것입니다. */
+    EXPECT_TRUE(re.states[i].fall_start != 0.0);
+
+    rules_destroy(&re);
+    tracks_destroy(&tl);
+    detection_list_destroy(&objs);
+    fclose(f);
+}
+
+/* 2명 착석 + 컵 0개, margin=1 → 2 > 0+1 → no_cup_seated 발화
+ * 2명 착석 + 컵 1개, margin=1 → 2 > 1+1 은 거짓 → 발화 없음 */
+static void test_rules_obj_no_cup_seated(void) {
+    TrackList tl;
+    RulesEngine re;
+    EventLog elog;
+    DetectionList objs;
+    RulesConfig rcfg = {3600.0, 300.0, 5.0, 0, 0, 0, 0, 0, 0.15f, 1 /* margin=1 */};
+    char error[128] = {0};
+    FILE *f = tmpfile();
+    ASSERT_TRUE(f != NULL);
+    event_log_init(&elog, f, LOG_INFO);
+    ASSERT_INT_EQ(tracks_init(&tl, 16, 0.3f, 5, 1800.0, 0.45f, error, sizeof(error)), 0);
+    ASSERT_INT_EQ(rules_init(&re, 16, &rcfg, error, sizeof(error)), 0);
+    ASSERT_INT_EQ(detection_list_init(&objs, 8), 0);
+
+    /* 활성 사람 2명 추가 */
+    tl.count = 2;
+    memset(tl.items, 0, sizeof(tl.items[0]) * 2);
+    tl.items[0].id = 1; tl.items[0].active = 1;
+    tl.items[1].id = 2; tl.items[1].active = 1;
+
+    /* 컵 없음 → 2 > 0+1 → no_cup_seated 발화해야 함 */
+    objs.count = 0;
+    {
+        long pos_before = ftell(f);
+        rules_evaluate_objects(&re, &objs, &tl, 100.0, &elog);
+        fflush(f);
+        EXPECT_TRUE(ftell(f) > pos_before);  /* 로그가 기록됐어야 함 */
+    }
+
+    /* 컵 1개 → 2 > 1+1 은 거짓 → 발화 없음 */
+    make_obj_list(&objs, 50, 50, 80, 100, 0.7f, 3 /* OBJ_CUP */);
+    {
+        long pos_before = ftell(f);
+        rules_evaluate_objects(&re, &objs, &tl, 101.0, &elog);
+        fflush(f);
+        EXPECT_TRUE(ftell(f) == pos_before);  /* 아무것도 기록되지 않아야 함 */
+    }
+
+    rules_destroy(&re);
+    tracks_destroy(&tl);
+    detection_list_destroy(&objs);
+    fclose(f);
+}
+
 int main(void) {
     TEST_SUITE_BEGIN(core_unit_tests);
     RUN_TEST(test_letterbox);
@@ -1231,5 +1502,13 @@ int main(void) {
     RUN_TEST(test_motion_gate_static_scene);
     RUN_TEST(test_door_state_debounce);
     RUN_TEST(test_gray_matches_reference);
+    /* Tier 2 class_id 전파 및 rules_evaluate_objects 테스트 */
+    RUN_TEST(test_decode_class_id_pose_is_zero);
+    RUN_TEST(test_decode_class_id_multiclass_argmax);
+    RUN_TEST(test_rules_obj_external_drink);
+    RUN_TEST(test_rules_obj_external_food);
+    RUN_TEST(test_rules_obj_animal_on_chair);
+    RUN_TEST(test_rules_obj_animal_on_table);
+    RUN_TEST(test_rules_obj_no_cup_seated);
     TEST_SUITE_END();
 }

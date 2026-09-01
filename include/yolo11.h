@@ -21,19 +21,21 @@ typedef struct {
 } Keypoint;
 
 /*
- * 한 사람을 둘러싸는 사각형과 신체 관절 정보입니다.
+ * 감지된 물체 하나를 둘러싸는 사각형, 클래스, 신체 관절 정보입니다.
  *
  * (x1, y1): 왼쪽 위 좌표
  * (x2, y2): 오른쪽 아래 좌표
- * score:     모델이 사람이라고 판단한 확률에 가까운 값(0.0~1.0)
+ * score:     모델이 해당 클래스라고 판단한 확률에 가까운 값(0.0~1.0)
+ * class_id:  리매핑된 클래스 인덱스. pose 모델은 항상 0(person).
+ *            Tier 2 파인튜닝 모델은 0=cat … 15=dining_table.
  *
  * 좌표는 YOLO 모델 입력 좌표가 아니라 원본 이미지 좌표입니다.
  *
  * keypoint_count == 0 이면 detection 전용 모델을 사용한 것이므로
  * kp 배열 내용은 의미가 없습니다.
  *
- * 메모리: Detection 하나가 약 224 바이트입니다. max_candidates=1024 기준
- * 후보 버퍼가 ~229 KB 이고, 시작 시 1회 할당되어 프레임 수와 무관합니다.
+ * 메모리: Detection 하나가 약 228 바이트입니다. max_candidates=1024 기준
+ * 후보 버퍼가 ~228 KB 이고, 시작 시 1회 할당되어 프레임 수와 무관합니다.
  */
 typedef struct {
     float x1;
@@ -41,7 +43,8 @@ typedef struct {
     float x2;
     float y2;
     float score;
-    int keypoint_count;
+    int   class_id;
+    int   keypoint_count;
     Keypoint kp[YOLO11_NUM_KEYPOINTS];
 } Detection;
 
@@ -143,6 +146,10 @@ int yolo11_decode(const float *output, const int64_t *shape, size_t rank,
 /* 별도 이미지 복사본을 만들지 않고 전달받은 RGB 메모리 위에 직접 그립니다. */
 void draw_detections(uint8_t *rgb, int width, int height, int stride,
                      const DetectionList *detections);
+
+/* Tier 2 물체 감지 결과를 클래스별 색상으로 그립니다. */
+void draw_obj_detections(uint8_t *rgb, int width, int height, int stride,
+                         const DetectionList *detections);
 
 /* 왼쪽 상단에 추론 FPS / 카메라 FPS / CPU 사용률 / 온도를 표시합니다.
  * cpu_percent < 0이면 CPU 줄을 건너뜁니다. temperature_celsius < 0이면 온도 줄을 건너뜁니다. */

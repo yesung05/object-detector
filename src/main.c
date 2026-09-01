@@ -65,6 +65,12 @@ typedef struct {
     double  stream_seconds;      /* stream_push (복사 + 주기 판정) */
     int64_t drawn_frames;        /* 실제로 그린 프레임 수 (관찰자가 있던 프레임) */
     DetectorRunStats detector_stats;
+    /* Tier 2 — 물체 감지 (고양이/강아지/음식/병/컵/의자/테이블) */
+    Detector        *obj_detector;      /* NULL 이면 Tier 2 비활성 */
+    DetectionList    obj_detections;    /* Tier 2 전용 결과 목록 — detections 와 별도 */
+    DetectorRunStats obj_detector_stats;
+    int              detect_every_obj;  /* Tier 2 실행 간격(프레임), 기본 90 */
+    int64_t          obj_inference_runs;
     /* 이상 탐지 모듈 */
     GrayBuf      gray;           /* 현재 프레임 그레이스케일 (지연 초기화) */
     uint8_t     *gray_prev;      /* AppContext 소유, 직전 프레임 gray (freeze 판정) */
@@ -164,6 +170,9 @@ typedef struct {
     int preview_fps;
     int camera;
     int motion_gate;   /* 1 = 활성 (기본), 0 = 비활성 */
+    /* Tier 2 물체 감지 */
+    const char *obj_model;     /* --obj-model PATH, NULL=비활성 */
+    int detect_every_obj;      /* --detect-every-obj N, 기본 90 */
 } Arguments;
 
 /* SIGINT/SIGTERM 처리기는 비동기 신호에 안전한 sig_atomic_t 값만 변경합니다. */
@@ -250,6 +259,8 @@ static void usage(const char *program) {
         "  --config PATH           store-specific config file (key=value)\n"
         "  --event-log PATH        structured anomaly event log (default: stderr)\n"
         "  --motion-gate 0|1       skip inference on static scenes (default: 1)\n"
+        "  --obj-model PATH        Tier 2 object detection model (ONNX); omit to disable\n"
+        "  --detect-every-obj N    run Tier 2 every N frames (default: 90, ~3s at 30fps)\n"
         "\n",
         program, program);
 }
@@ -340,6 +351,7 @@ static int parse_arguments(int argc, char **argv, Arguments *args) {
      * 원하는 해상도가 있으면 --camera-size/--camera-fps 로 명시합니다. */
     args->media.interrupt_callback = should_stop;
     args->detect_every = 1;
+    args->detect_every_obj = 90;   /* Tier 2 기본 실행 주기: 30fps 기준 약 3초 */
     args->detect_fps_limit = 10.0; /* 카메라 추론 기본 상한: 10 FPS */
     args->tracking = 0;
     args->preview_fps = 30;
@@ -481,6 +493,13 @@ static int parse_arguments(int argc, char **argv, Arguments *args) {
             if (require_value(argc, argv, &i, &value) != 0 ||
                 parse_long(value, 0, 1, &parsed) != 0) return -1;
             args->motion_gate = (int)parsed;
+        } else if (strcmp(argv[i], "--obj-model") == 0) {
+            if (require_value(argc, argv, &i, &args->obj_model) != 0)
+                return -1;
+        } else if (strcmp(argv[i], "--detect-every-obj") == 0) {
+            if (require_value(argc, argv, &i, &value) != 0 ||
+                parse_long(value, 1, 10000, &parsed) != 0) return -1;
+            args->detect_every_obj = (int)parsed;
         } else {
             fprintf(stderr, "unknown option: %s\n", argv[i]);
             return -1;
@@ -698,8 +717,18 @@ static void reload_config(AppContext *app) {
         (double)config_float(&cfg, "unordered_grace_seconds", 300.0f, 0.0f, 3600.0f);
     rules_cfg.fall_hold_seconds =
         (double)config_float(&cfg, "fall_hold_seconds", 5.0f, 1.0f, 60.0f);
+    /* Tier 2 물체 룰 임계값 */
+    rules_cfg.animal_iou_threshold =
+        config_float(&cfg, "animal_iou_threshold", 0.15f, 0.01f, 1.0f);
+    rules_cfg.no_cup_margin =
+        (int)config_long(&cfg, "no_cup_margin", 1, 0, 100);
     apply_roi_kiosk(&rules_cfg, &cfg);
     rules_update_config(&app->rules, &rules_cfg);
+
+    /* detect_every_obj 는 런타임 교체 가능 — 다음 프레임부터 바로 적용됩니다. */
+    app->detect_every_obj =
+        (int)config_long(&cfg, "detect_every_obj",
+                         (long)app->detect_every_obj, 1, 10000);
 
     config_destroy(&cfg);
     fprintf(stderr, "config: reloaded from %s\n", app->config_reload_path);
@@ -1079,8 +1108,27 @@ static int process_frame(RgbFrame *frame, void *opaque,
                    (size_t)app->gray.width * app->gray.height);
             app->gray_ref_ready = 1;
         }
-        tracks_update(&app->tracks, &app->detections, now);
+        tracks_update(&app->tracks, &app->detections,
+                      frame->data, frame->width, frame->height, frame->stride,
+                      now);
         rules_evaluate(&app->rules, &app->tracks, now, &app->event_log);
+
+        /* Tier 2: Tier 1과 다른 프레임에서 실행해 ORT 스레드 경합 방지.
+         * detect_every_obj/2 오프셋으로 Tier 1 실행 프레임과 겹치지 않도록 함. */
+        if (app->obj_detector) {
+            int run_obj = (frame->index + app->detect_every_obj / 2)
+                          % app->detect_every_obj == 0;
+            if (run_obj) {
+                int rc = detector_run(app->obj_detector,
+                                      frame->data, frame->width, frame->height,
+                                      frame->stride,
+                                      &app->obj_detections, error, error_size);
+                if (rc != 0) return -1;
+                app->obj_inference_runs++;
+                rules_evaluate_objects(&app->rules, &app->obj_detections,
+                                       &app->tracks, now, &app->event_log);
+            }
+        }
     } else if (!tracked) {
         app->reused_frames++;
     }
@@ -1162,6 +1210,10 @@ static int process_frame(RgbFrame *frame, void *opaque,
              * 프레임 밖 트랙(주황색 + #ID MISS)을 모두 표시합니다. */
             draw_tracks(frame->data, frame->width, frame->height,
                         frame->stride, &app->tracks);
+            /* Tier 2 물체 감지 결과를 Tier 1 트랙 위에 덧그립니다. */
+            if (app->obj_detector)
+                draw_obj_detections(frame->data, frame->width, frame->height,
+                                    frame->stride, &app->obj_detections);
             /* 실시간 EMA FPS / CPU 사용률 / 온도를 HUD에 표시합니다.
              * 시작 직후(EMA=0)에는 0이 표시되다가 몇 프레임 후 안정됩니다.
              * cached_temperature는 2초 주기로 갱신되며 -1이면 온도 줄을 생략합니다. */
@@ -1332,6 +1384,7 @@ int main(int argc, char **argv) {
     }
     memset(&app, 0, sizeof(app));
     app.detect_every = args.detect_every;
+    app.detect_every_obj = args.detect_every_obj;
     app.detect_fps_limit = args.detect_fps_limit;
     app.stream_port = args.stream_port;
     app.tracking = args.tracking;
@@ -1348,6 +1401,13 @@ int main(int argc, char **argv) {
     if (detection_list_init(&app.detections,
                             args.detector.max_candidates) != 0) {
         fprintf(stderr, "failed to allocate bounded detection buffer\n");
+        goto done;
+    }
+    /* Tier 2용 결과 목록은 Tier 1과 독립적으로 초기화합니다.
+     * 물체 클래스 수가 적으므로 최대 후보 수는 Tier 1과 동일하게 재사용합니다. */
+    if (detection_list_init(&app.obj_detections,
+                            args.detector.max_candidates) != 0) {
+        fprintf(stderr, "failed to allocate Tier 2 detection buffer\n");
         goto done;
     }
 
@@ -1383,6 +1443,23 @@ int main(int argc, char **argv) {
             fprintf(stderr, "failed to allocate lightweight tracker\n");
             goto done;
         }
+    }
+    /* Tier 2 물체 감지 모델 — --obj-model 미지정 시 obj_detector=NULL로 유지됩니다.
+     * NULL 상태에서는 process_frame 과 draw 섹션 모두 Tier 2 블록을 건너뜁니다. */
+    if (args.obj_model) {
+        /* Tier 2는 단독 추론 옵션으로 생성하되, 스레드 수는 Tier 1과 동일하게 공유합니다.
+         * 두 세션이 동시에 실행되지 않으므로 스레드 경합이 없습니다. */
+        DetectorOptions obj_opts = args.detector;  /* 스레드 수 등 공유 */
+        app.obj_detector = detector_create(args.obj_model, &obj_opts,
+                                           error, sizeof(error));
+        if (!app.obj_detector) {
+            fprintf(stderr, "Tier 2 detector initialization failed: %s\n", error);
+            goto done;
+        }
+        fprintf(stderr, "Tier 2 model loaded: %s  detect_every_obj=%d\n",
+                args.obj_model, app.detect_every_obj);
+    } else {
+        fprintf(stderr, "Tier 2 disabled (--obj-model not specified)\n");
     }
     if (args.detections_path) {
         app.detection_log = fopen(args.detections_path, "w");
@@ -1438,7 +1515,9 @@ int main(int argc, char **argv) {
         if (!args.stream_port_set)
             app.stream_port = (int)config_long(&cfg, "stream_port", 0, 1024, 65535);
         config_destroy(&cfg);
-        if (tracks_init(&app.tracks, 64, 0.4f, 5,
+        /* limbo_seconds=1800(30분), appear_threshold=0.45
+         * 카페 환경에서 의류 색이 다른 사람을 구별하기에 충분한 값입니다. */
+        if (tracks_init(&app.tracks, 64, 0.4f, 5, 1800.0, 0.45f,
                         error, sizeof(error)) != 0) {
             fprintf(stderr, "failed to init track list: %s\n", error);
             goto done;
@@ -1630,5 +1709,7 @@ done:
     tracker_destroy(app.tracker);
     detector_destroy(app.detector);
     detection_list_destroy(&app.detections);
+    detector_destroy(app.obj_detector);
+    detection_list_destroy(&app.obj_detections);
     return result;
 }
