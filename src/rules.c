@@ -281,18 +281,21 @@ void rules_evaluate_objects(RulesEngine *re, const DetectionList *objs,
         s->fall_start = 0.0;
     }
 
-    /* ── no_cup_seated ── (별도 latch 없음: 매 Tier 2 주기마다 재평가) */
+    /* ── no_cup_seated ── 조건 시작 시 1회만 발화, 조건 해소 시 latch 해제 */
     {
         int margin = re->config.no_cup_margin > 0 ? re->config.no_cup_margin : 1;
         if (active_persons > cup_count + margin) {
-            snprintf(msg, sizeof(msg),
-                     "no_cup_seated persons=%d cups=%d margin=%d",
-                     active_persons, cup_count, margin);
-            event_log_write(elog, LOG_WARN, "rules", msg);
+            if (!s->no_cup_latched) {
+                snprintf(msg, sizeof(msg),
+                         "no_cup_seated persons=%d cups=%d margin=%d",
+                         active_persons, cup_count, margin);
+                event_log_write(elog, LOG_WARN, "rules", msg);
+                s->no_cup_latched = 1;
+            }
+        } else {
+            s->no_cup_latched = 0;
         }
     }
-
-    (void)now;
 }
 
 void rules_evaluate(RulesEngine *re, TrackList *tl, double now, EventLog *elog) {

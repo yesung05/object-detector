@@ -73,9 +73,12 @@ static const uint8_t *glyph(char c) {
     static const uint8_t u_g[7] = {17, 17, 17, 17, 17, 17, 14};  /* U */
     static const uint8_t hash[7] = {10, 10, 31, 10, 31, 10, 10}; /* # */
     /* Tier 2 물체 레이블용 추가 글리프 */
-    static const uint8_t d_g[7] = {28, 18, 17, 17, 17, 18, 28};  /* D */
-    static const uint8_t l_g[7] = {16, 16, 16, 16, 16, 16, 31};  /* L */
-    static const uint8_t t_g[7] = {31, 4, 4, 4, 4, 4, 4};        /* T */
+    static const uint8_t d_g[7] = {28, 18, 17, 17, 17, 18, 28};  /* D — DRINK, FOOD */
+    static const uint8_t l_g[7] = {16, 16, 16, 16, 16, 16, 31};  /* L — ANIMAL */
+    static const uint8_t t_g[7] = {31, 4, 4, 4, 4, 4, 4};        /* T — TABLE */
+    static const uint8_t h_g[7] = {17, 17, 17, 31, 17, 17, 17};  /* H — CHAIR */
+    static const uint8_t b_g[7] = {30, 17, 17, 30, 17, 17, 30};  /* B — TABLE */
+    static const uint8_t k_g[7] = {17, 18, 20, 24, 20, 18, 17};  /* K — DRINK */
     static const uint8_t digits[10][7] = {
         {14, 17, 19, 21, 25, 17, 14},
         {4, 12, 4, 4, 4, 4, 14},
@@ -108,6 +111,9 @@ static const uint8_t *glyph(char c) {
         case 'D': return d_g;
         case 'L': return l_g;
         case 'T': return t_g;
+        case 'H': return h_g;
+        case 'B': return b_g;
+        case 'K': return k_g;
         default: return blank;
     }
 }

@@ -1114,10 +1114,12 @@ static int process_frame(RgbFrame *frame, void *opaque,
         rules_evaluate(&app->rules, &app->tracks, now, &app->event_log);
 
         /* Tier 2: Tier 1과 다른 프레임에서 실행해 ORT 스레드 경합 방지.
-         * detect_every_obj/2 오프셋으로 Tier 1 실행 프레임과 겹치지 않도록 함. */
+         * detect_every_obj/2 오프셋으로 Tier 1 실행 프레임을 피하되, 두 주기의
+         * LCM이 짧아 오프셋이 실제로 겹칠 때는 해당 프레임을 건너뛴다. */
         if (app->obj_detector) {
-            int run_obj = (frame->index + app->detect_every_obj / 2)
-                          % app->detect_every_obj == 0;
+            int run_obj = ((frame->index + app->detect_every_obj / 2)
+                           % app->detect_every_obj == 0)
+                          && (frame->index % app->detect_every != 0);
             if (run_obj) {
                 int rc = detector_run(app->obj_detector,
                                       frame->data, frame->width, frame->height,

@@ -45,7 +45,8 @@ typedef struct {
     int    overstay_latched;
     int    unordered_latched;
     int    fall_latched;
-    double fall_start;  /* 수평 자세가 시작된 시각 (0이면 미시작) */
+    double fall_start;    /* 수평 자세가 시작된 시각 (0이면 미시작) */
+    int    no_cup_latched; /* track_id==-2 슬롯에서 no_cup_seated 래치로 재활용 */
 } TrackRuleState;
 
 typedef struct {
