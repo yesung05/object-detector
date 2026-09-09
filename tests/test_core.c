@@ -1465,7 +1465,7 @@ static ResidueMonitor make_residue_monitor(void) {
     r.config.confirm_seconds          = 60.0;
     r.config.clear_seconds            = 10.0;
     r.config.baseline_refresh_seconds = 300.0;
-    r.config.global_change_ratio      = 0.5f;
+    r.config.global_change_ratio      = 1.1f; /* 기본 비활성 — 전용 테스트에서 명시적으로 설정 */
     return r;
 }
 
@@ -1527,7 +1527,8 @@ static void test_residue_confirms_after_hold(void) {
     EventLog elog;
     event_log_init(&elog, f, LOG_INFO);
 
-    /* 61초 경과 — 확정 */
+    /* 등록 (t=0) 후 61초 경과 — 확정 */
+    residue_evaluate(&r, &gray, NULL, 0, NULL, 0, 0.0, &elog);
     residue_evaluate(&r, &gray, NULL, 0, NULL, 0, 61.0, &elog);
     fflush(f);
     EXPECT_TRUE(ftell(f) > 0); /* 이벤트 발화 */
@@ -1628,7 +1629,8 @@ static void test_residue_clears_after_absence(void) {
     EventLog elog;
     event_log_init(&elog, f, LOG_INFO);
 
-    /* 확정 */
+    /* 등록 후 확정 (confirm_seconds=0.1이므로 1.0s 후 확정) */
+    residue_evaluate(&r, &gray, NULL, 0, NULL, 0, 0.0, &elog);
     residue_evaluate(&r, &gray, NULL, 0, NULL, 0, 1.0, &elog);
     fflush(f);
 
