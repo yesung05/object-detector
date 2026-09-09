@@ -10,6 +10,9 @@ __pycache__/
 *.onnx
 !yolo11n-pose-416.onnx
 !yolo11n-pose-416-int8.onnx
+!yolo11n-pose-416x224.onnx
+!yolo11n-pose-416x288.onnx
+!yolo11n-pose-416x416.onnx
 !yolo11n-416.onnx
 !models/*.onnx
 
