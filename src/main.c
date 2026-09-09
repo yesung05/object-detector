@@ -66,6 +66,9 @@ typedef struct {
     double  residue_seconds;     /* residue_evaluate 잔류 판정 */
     double  stream_seconds;      /* stream_push (복사 + 주기 판정) */
     int64_t drawn_frames;        /* 실제로 그린 프레임 수 (관찰자가 있던 프레임) */
+    double  cpu_log_last;        /* 마지막 CPU 사용률 로그 시각 (monotonic) */
+    double  cpu_log_interval;    /* CPU 로그 주기 (초), 기본 30 */
+    double  cpu_log_cpu_base;    /* 주기 시작 시점의 프로세스 CPU 시간 */
     DetectorRunStats detector_stats;
     /* Tier 2 — 물체 감지 (고양이/강아지/음식/병/컵/의자/테이블) */
     Detector        *obj_detector;      /* NULL 이면 Tier 2 비활성 */
@@ -1288,6 +1291,23 @@ static int process_frame(RgbFrame *frame, void *opaque,
         app->residue_seconds += platform_monotonic_seconds() - started;
     }
 
+    /* ─── CPU 사용률 주기 로깅 ────────────────────────────────────────────── */
+    if (app->cpu_log_interval > 0.0 &&
+        (now - app->cpu_log_last) >= app->cpu_log_interval) {
+        double wall  = now - app->cpu_log_last;
+        double cpu_t = platform_process_cpu_seconds() - app->cpu_log_cpu_base;
+        /* 논리 코어 수로 나눠 단일 코어 기준 점유율로 환산합니다.
+         * 배포 기기 4스레드 기준: cpu_t/wall*100 이 400%면 전 코어 포화 */
+        int pct = (int)((cpu_t / wall) * 100.0 + 0.5);
+        char msg[80];
+        snprintf(msg, sizeof(msg),
+                 "cpu_usage=%d%% wall=%.1fs cpu=%.3fs",
+                 pct, wall, cpu_t);
+        event_log_write(&app->event_log, LOG_INFO, "perf", msg);
+        app->cpu_log_last     = now;
+        app->cpu_log_cpu_base = platform_process_cpu_seconds();
+    }
+
     /*
      * 그리기는 볼 사람이 있을 때만 합니다.
      *
@@ -1483,7 +1503,6 @@ int main(int argc, char **argv) {
     MediaStats media_stats;
     int parse_result;
     int result = EXIT_FAILURE;
-    FILE *event_log_file = NULL;  /* NULL=미열림, stderr=기본값, 파일=직접 열었음 */
 
     /* 도움말은 정상 종료, 잘못된 옵션은 실패 종료로 구분합니다. */
     parse_result = parse_arguments(argc, argv, &args);
@@ -1509,6 +1528,7 @@ int main(int argc, char **argv) {
     }
 
     memset(&app, 0, sizeof(app));
+    app.cpu_log_interval = 30.0; /* 30초마다 CPU 사용률을 이벤트 로그에 기록 */
     app.detect_every = args.detect_every;
     app.detect_every_obj = args.detect_every_obj;
     app.detect_fps_limit = args.detect_fps_limit;
@@ -1654,16 +1674,17 @@ int main(int argc, char **argv) {
             goto done;
         }
     }
-    /* 이벤트 로그 파일 오픈 (미지정이면 stderr로 출력) */
-    event_log_file = args.event_log_path
-                         ? fopen(args.event_log_path, "a")
-                         : stderr;
-    if (args.event_log_path && !event_log_file) {
-        fprintf(stderr, "failed to open event log: %s\n",
-                args.event_log_path);
-        goto done;
+    /* 이벤트 로그 — SQLite DB. 미지정이면 인메모리(stderr echo만). */
+    {
+        const char *db_path = args.event_log_path
+                                  ? args.event_log_path : ":memory:";
+        if (event_log_open(&app.event_log, db_path, LOG_INFO, 1) != 0) {
+            fprintf(stderr, "failed to open event log: %s\n", db_path);
+            goto done;
+        }
     }
-    event_log_init(&app.event_log, event_log_file, LOG_INFO);
+    app.cpu_log_last     = platform_monotonic_seconds();
+    app.cpu_log_cpu_base = platform_process_cpu_seconds();
 
     /*
      * 조용히 꺼져 있는 기능을 기동 시 한 블록으로 알립니다.
@@ -1853,7 +1874,7 @@ done:
     if (app.detection_log) fclose(app.detection_log);
     if (app.keypoint_log)  fclose(app.keypoint_log);
     if (app.preview_pipe) pclose(app.preview_pipe);
-    if (event_log_file && event_log_file != stderr) fclose(event_log_file);
+    event_log_close(&app.event_log);
     door_destroy(&app.door);
     residue_destroy(&app.residue);
     rules_destroy(&app.rules);

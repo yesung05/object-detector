@@ -80,7 +80,8 @@ if(ORT_INCLUDE_DIR AND ORT_LIBRARY AND FFMPEG_INCLUDE_DIR AND FFMPEG_FOUND)
         src/stream.c
         src/door.c
         src/model_select.c
-        src/residue.c)
+        src/residue.c
+        third_party/sqlite/sqlite3.c)
     target_include_directories(yolo11-person PRIVATE
         include "${ORT_INCLUDE_DIR}" "${FFMPEG_INCLUDE_DIR}")
     target_link_libraries(yolo11-person PRIVATE "${ORT_LIBRARY}" ${FFMPEG_LIBRARIES} ws2_32)
@@ -127,7 +128,8 @@ add_executable(test_core
     src/tracks.c
     src/rules.c
     src/door.c
-    src/residue.c)
+    src/residue.c
+    third_party/sqlite/sqlite3.c)
 target_include_directories(test_core PRIVATE include tests)
 if(MSVC)
     target_compile_options(test_core PRIVATE /O1 /W4 /utf-8)

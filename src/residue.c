@@ -355,7 +355,7 @@ next_block:;
                              "residue_cleared kind=%s x=%.0f y=%.0f",
                              kind_str, (reg->x1 + reg->x2) * 0.5f,
                              (reg->y1 + reg->y2) * 0.5f);
-                    event_log_write(elog, LOG_INFO, "residue", msg);
+                    event_log_write(elog, LOG_WARN, "residue", msg);
                 }
                 memset(reg, 0, sizeof(*reg));
             }

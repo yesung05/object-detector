@@ -106,7 +106,7 @@ if (Test-Path "$ROOT\models\") {
 $logsDir = "$ROOT\logs"
 if (-not (Test-Path $logsDir)) { New-Item -ItemType Directory $logsDir | Out-Null }
 $stamp   = Get-Date -Format "yyyyMMdd_HHmmss"
-$logFile = "$logsDir\$stamp.log"
+$logFile = "$logsDir\$stamp.db"
 Write-Host "[log]   $logFile"
 
 # ── 대시보드 백그라운드 실행 ───────────────────────────────────────────────

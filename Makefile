@@ -44,7 +44,7 @@ SOURCES := src/main.c src/postprocess.c src/draw.c src/detector_ort.c \
            src/media_ffmpeg.c src/tracker.c src/platform.c \
            src/gray.c src/log.c src/config.c src/camera_health.c \
            src/tracks.c src/rules.c src/door.c src/model_select.c \
-           src/residue.c
+           src/residue.c third_party/sqlite/sqlite3.c
 OBJECTS := $(SOURCES:.c=.o)
 TARGET := yolo11-person
 
@@ -88,7 +88,7 @@ TEST_CORE_SRCS := tests/test_core.c src/postprocess.c src/draw.c \
                   src/tracker.c src/platform.c src/rules.c src/log.c \
                   src/config.c src/tracks.c src/camera_health.c \
                   src/gray.c src/door.c src/model_select.c \
-                  src/residue.c
+                  src/residue.c third_party/sqlite/sqlite3.c
 
 build/test_core: $(TEST_CORE_SRCS) tests/test_runner.h \
                  include/yolo11.h include/tracker.h include/platform.h \
