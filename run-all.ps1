@@ -1,4 +1,7 @@
-$ErrorActionPreference = 'Stop'
+# ffmpeg stderr 등 외부 exe 출력이 ErrorRecord로 잡혀 중단되지 않도록 Continue로 설정
+$ErrorActionPreference = 'Continue'
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$OutputEncoding          = [System.Text.Encoding]::UTF8
 $ROOT = Split-Path $MyInvocation.MyCommand.Path
 
 # ── EXE 탐색 ──────────────────────────────────────────────────────────────
@@ -50,7 +53,9 @@ $cameraDevice = $null
 
 if ($ffmpeg) {
     Write-Host "카메라 목록 확인 중..." -NoNewline
-    $raw   = & $ffmpeg -f dshow -list_devices true -i dummy 2>&1
+    # 2>&1 은 stderr를 ErrorRecord로 감싸므로 .ToString()으로 문자열 추출
+    $raw   = & $ffmpeg -f dshow -list_devices true -i dummy 2>&1 |
+             ForEach-Object { $_.ToString() }
     $cams  = $raw | Select-String '\(video\)' | ForEach-Object {
         if ($_ -match '"(.+?)" \(video\)') { $Matches[1] }
     } | Where-Object { $_ }
