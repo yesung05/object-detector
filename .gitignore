@@ -44,3 +44,9 @@ build-windows/
 
 # 문 감지 기준 이미지 — 매장별 캡처본, 로컬 전용
 *.raw
+
+# 논문 등 문서
+*.docx
+*.hwpx
+*.hwp
+*.doc
