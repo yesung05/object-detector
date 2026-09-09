@@ -1492,6 +1492,22 @@ int main(int argc, char **argv) {
         usage(argv[0]);
         return EXIT_FAILURE;
     }
+
+    /* 인스턴스 중복 실행 방지: 두 번째 프로세스는 즉시 종료합니다.
+     * 카메라 2대를 2프로세스로 운용할 때 스레드 예산(OS 예비 1개)을 보호하기 위해
+     * 하나의 감지 프로세스만 허용합니다. */
+    {
+        int lock = platform_single_instance_try_lock();
+        if (lock == 0) {
+            fprintf(stderr, "error: hunik-detector가 이미 실행 중입니다.\n");
+            return EXIT_FAILURE;
+        }
+        if (lock < 0) {
+            fprintf(stderr, "error: 단일 인스턴스 잠금 실패 (시스템 오류)\n");
+            return EXIT_FAILURE;
+        }
+    }
+
     memset(&app, 0, sizeof(app));
     app.detect_every = args.detect_every;
     app.detect_every_obj = args.detect_every_obj;
