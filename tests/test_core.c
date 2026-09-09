@@ -9,6 +9,7 @@
 #include "rules.h"
 #include "tracks.h"
 #include "door.h"
+#include "residue.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -1453,6 +1454,230 @@ static void test_rules_obj_no_cup_seated(void) {
     fclose(f);
 }
 
+/* ── 헬퍼: ResidueMonitor 기본 초기화 ──────────────────────────────────── */
+static ResidueMonitor make_residue_monitor(void) {
+    ResidueMonitor r;
+    memset(&r, 0, sizeof(r));
+    r.config.enabled                  = 1;
+    r.config.diff_threshold           = 18;
+    r.config.min_blocks               = 3;
+    r.config.person_margin_blocks     = 1;
+    r.config.confirm_seconds          = 60.0;
+    r.config.clear_seconds            = 10.0;
+    r.config.baseline_refresh_seconds = 300.0;
+    r.config.global_change_ratio      = 0.5f;
+    return r;
+}
+
+/* 헬퍼: 1×1 GrayBuf (블록 1개, 원본 8×8 = downsample 8) */
+static GrayBuf make_gray1(int value) {
+    GrayBuf g;
+    memset(&g, 0, sizeof(g));
+    g.data      = (uint8_t *)malloc(1);
+    g.width     = 1;
+    g.height    = 1;
+    g.downsample = 8;
+    if (g.data) g.data[0] = (uint8_t)value;
+    return g;
+}
+
+static void test_residue_no_event_before_confirm(void) {
+    /* confirm_seconds 경과 전에는 이벤트가 발화하지 않아야 합니다. */
+    ResidueMonitor r = make_residue_monitor();
+    r.config.confirm_seconds = 60.0;
+    r.config.min_blocks = 1; /* 1×1 테스트용 */
+
+    /* 기준: 픽셀 값 0 */
+    GrayBuf gray = make_gray1(0);
+    ASSERT_TRUE(gray.data != NULL);
+    residue_refresh_baseline(&r, &gray, 0.0);
+
+    /* 현재 프레임: 픽셀 값 100 (차이 100 > threshold 18) */
+    gray.data[0] = 100;
+
+    FILE *f = tmpfile();
+    ASSERT_TRUE(f != NULL);
+    EventLog elog;
+    event_log_init(&elog, f, LOG_INFO);
+
+    /* 59초 경과 — 확정 전 */
+    long pos_before = ftell(f);
+    residue_evaluate(&r, &gray, NULL, 0, NULL, 0, 59.0, &elog);
+    fflush(f);
+    EXPECT_TRUE(ftell(f) == pos_before); /* 이벤트 없음 */
+
+    free(gray.data);
+    residue_destroy(&r);
+    fclose(f);
+}
+
+static void test_residue_confirms_after_hold(void) {
+    /* confirm_seconds 경과 후 정확히 1회 이벤트가 발화해야 합니다. */
+    ResidueMonitor r = make_residue_monitor();
+    r.config.confirm_seconds = 60.0;
+    r.config.min_blocks = 1;
+
+    GrayBuf gray = make_gray1(0);
+    ASSERT_TRUE(gray.data != NULL);
+    residue_refresh_baseline(&r, &gray, 0.0);
+    gray.data[0] = 100;
+
+    FILE *f = tmpfile();
+    ASSERT_TRUE(f != NULL);
+    EventLog elog;
+    event_log_init(&elog, f, LOG_INFO);
+
+    /* 61초 경과 — 확정 */
+    residue_evaluate(&r, &gray, NULL, 0, NULL, 0, 61.0, &elog);
+    fflush(f);
+    EXPECT_TRUE(ftell(f) > 0); /* 이벤트 발화 */
+
+    /* 같은 조건 재호출 — 래치로 인해 중복 발화 없음 */
+    long pos_after = ftell(f);
+    residue_evaluate(&r, &gray, NULL, 0, NULL, 0, 62.0, &elog);
+    fflush(f);
+    EXPECT_TRUE(ftell(f) == pos_after);
+
+    free(gray.data);
+    residue_destroy(&r);
+    fclose(f);
+}
+
+static void test_residue_excludes_person_overlap(void) {
+    /* 사람 bbox와 겹치는 변화는 후보가 되지 않아야 합니다. */
+    ResidueMonitor r = make_residue_monitor();
+    r.config.confirm_seconds = 0.1; /* 즉시 확정 허용 */
+    r.config.min_blocks = 1;
+
+    GrayBuf gray = make_gray1(0);
+    ASSERT_TRUE(gray.data != NULL);
+    residue_refresh_baseline(&r, &gray, 0.0);
+    gray.data[0] = 100; /* 큰 차이 */
+
+    /* 사람 bbox: 블록 [0,0]을 완전히 포함 (원본 0~7px 범위) */
+    GrayRect person;
+    person.x1 = 0.0f; person.y1 = 0.0f;
+    person.x2 = 7.0f; person.y2 = 7.0f;
+
+    FILE *f = tmpfile();
+    ASSERT_TRUE(f != NULL);
+    EventLog elog;
+    event_log_init(&elog, f, LOG_INFO);
+
+    long pos_before = ftell(f);
+    residue_evaluate(&r, &gray, &person, 1, NULL, 0, 1.0, &elog);
+    fflush(f);
+    EXPECT_TRUE(ftell(f) == pos_before); /* 사람에 의해 배제 — 이벤트 없음 */
+
+    free(gray.data);
+    residue_destroy(&r);
+    fclose(f);
+}
+
+static void test_residue_global_change_resets(void) {
+    /* 전역 변화 비율 초과 시 영역 폐기 + 기준 갱신 이벤트가 발생해야 합니다. */
+    ResidueMonitor r = make_residue_monitor();
+    r.config.global_change_ratio = 0.5f;
+    r.config.min_blocks = 1;
+
+    /* 2×1 그레이 버퍼 (블록 2개) */
+    GrayBuf gray;
+    memset(&gray, 0, sizeof(gray));
+    gray.data      = (uint8_t *)malloc(2);
+    gray.width     = 2;
+    gray.height    = 1;
+    gray.downsample = 8;
+    ASSERT_TRUE(gray.data != NULL);
+
+    /* 기준: 두 픽셀 모두 0 */
+    gray.data[0] = 0; gray.data[1] = 0;
+    residue_refresh_baseline(&r, &gray, 0.0);
+
+    /* 현재: 두 픽셀 모두 100 — 전체 블록이 후보 (비율 1.0 > 0.5) */
+    gray.data[0] = 100; gray.data[1] = 100;
+
+    FILE *f = tmpfile();
+    ASSERT_TRUE(f != NULL);
+    EventLog elog;
+    event_log_init(&elog, f, LOG_INFO);
+
+    long pos_before = ftell(f);
+    residue_evaluate(&r, &gray, NULL, 0, NULL, 0, 1.0, &elog);
+    fflush(f);
+    EXPECT_TRUE(ftell(f) > pos_before); /* residue_baseline_reset 이벤트 */
+
+    free(gray.data);
+    residue_destroy(&r);
+    fclose(f);
+}
+
+static void test_residue_clears_after_absence(void) {
+    /* clear_seconds 경과 후 cleared 이벤트가 발생하고 래치가 해제되어야 합니다. */
+    ResidueMonitor r = make_residue_monitor();
+    r.config.confirm_seconds = 0.1;
+    r.config.clear_seconds   = 10.0;
+    r.config.min_blocks = 1;
+
+    GrayBuf gray = make_gray1(0);
+    ASSERT_TRUE(gray.data != NULL);
+    residue_refresh_baseline(&r, &gray, 0.0);
+    gray.data[0] = 100;
+
+    FILE *f = tmpfile();
+    ASSERT_TRUE(f != NULL);
+    EventLog elog;
+    event_log_init(&elog, f, LOG_INFO);
+
+    /* 확정 */
+    residue_evaluate(&r, &gray, NULL, 0, NULL, 0, 1.0, &elog);
+    fflush(f);
+
+    /* 잔류물 사라짐 — 기준과 동일한 값으로 */
+    gray.data[0] = 0;
+
+    /* clear_seconds 미경과 — 아직 cleared 없음 */
+    long pos_before = ftell(f);
+    residue_evaluate(&r, &gray, NULL, 0, NULL, 0, 5.0, &elog);
+    fflush(f);
+    EXPECT_TRUE(ftell(f) == pos_before);
+
+    /* clear_seconds 경과 — cleared 발화 */
+    residue_evaluate(&r, &gray, NULL, 0, NULL, 0, 20.0, &elog);
+    fflush(f);
+    EXPECT_TRUE(ftell(f) > pos_before);
+
+    free(gray.data);
+    residue_destroy(&r);
+    fclose(f);
+}
+
+static void test_residue_min_blocks_filter(void) {
+    /* min_blocks 미만 영역은 폐기되어야 합니다. */
+    ResidueMonitor r = make_residue_monitor();
+    r.config.confirm_seconds = 0.1;
+    r.config.min_blocks = 3; /* 3블록 이상만 유효 */
+
+    /* 1×1 그레이 버퍼 (1블록) */
+    GrayBuf gray = make_gray1(0);
+    ASSERT_TRUE(gray.data != NULL);
+    residue_refresh_baseline(&r, &gray, 0.0);
+    gray.data[0] = 100;
+
+    FILE *f = tmpfile();
+    ASSERT_TRUE(f != NULL);
+    EventLog elog;
+    event_log_init(&elog, f, LOG_INFO);
+
+    long pos_before = ftell(f);
+    residue_evaluate(&r, &gray, NULL, 0, NULL, 0, 1.0, &elog);
+    fflush(f);
+    EXPECT_TRUE(ftell(f) == pos_before); /* 1블록이므로 min_blocks=3에 의해 폐기 */
+
+    free(gray.data);
+    residue_destroy(&r);
+    fclose(f);
+}
+
 int main(void) {
     TEST_SUITE_BEGIN(core_unit_tests);
     RUN_TEST(test_letterbox);
@@ -1510,5 +1735,12 @@ int main(void) {
     RUN_TEST(test_rules_obj_animal_on_chair);
     RUN_TEST(test_rules_obj_animal_on_table);
     RUN_TEST(test_rules_obj_no_cup_seated);
+    /* 잔류물 감지 단위 테스트 */
+    RUN_TEST(test_residue_no_event_before_confirm);
+    RUN_TEST(test_residue_confirms_after_hold);
+    RUN_TEST(test_residue_excludes_person_overlap);
+    RUN_TEST(test_residue_global_change_resets);
+    RUN_TEST(test_residue_clears_after_absence);
+    RUN_TEST(test_residue_min_blocks_filter);
     TEST_SUITE_END();
 }

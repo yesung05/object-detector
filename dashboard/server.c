@@ -424,7 +424,15 @@ static const char *DEFAULT_CONFIG =
     "\"block_gate\":1,"
     "\"block_min_changed\":2,"
     "\"block_margin\":1,"
-    "\"track_refresh_seconds\":5.0"
+    "\"track_refresh_seconds\":5.0,"
+    "\"residue_enabled\":1,"
+    "\"residue_diff_threshold\":18,"
+    "\"residue_min_blocks\":3,"
+    "\"residue_person_margin_blocks\":1,"
+    "\"residue_confirm_seconds\":60,"
+    "\"residue_clear_seconds\":10,"
+    "\"residue_baseline_refresh_seconds\":300,"
+    "\"residue_global_change_ratio\":0.5"
     "}";
 
 /* GET /api/config → config.json 반환 (없으면 기본값)
