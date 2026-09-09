@@ -134,6 +134,9 @@ $args = @(
 )
 if ($cameraDevice) {
     $args += "--camera-format", "dshow", "--camera-device", $cameraDevice
+    # QHD 이상 카메라는 버퍼 넘침 방지를 위해 해상도·fps 상한을 설정합니다.
+    # 모델 입력이 416×224 수준이므로 1280×720 이상은 추론에 기여하지 않습니다.
+    $args += "--camera-size", "1280x720", "--camera-fps", "15"
 }
 $objModel = "$ROOT\models\yolo11n_tier2_fp32.onnx"
 if (Test-Path $objModel) {
