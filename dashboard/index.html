@@ -166,12 +166,15 @@
   .level-ERROR { background: #3d0000; color: var(--red); }
   .event-module { color: var(--muted); font-size: 11px; }
   .event-msg    { color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .ev-overstay    { border-left: 3px solid var(--red) !important; }
-  .ev-unordered   { border-left: 3px solid var(--yellow) !important; }
-  .ev-fallen      { border-left: 3px solid var(--red) !important; }
-  .ev-camera-warn { border-left: 3px solid var(--orange) !important; }
-  .ev-camera-ok   { border-left: 3px solid var(--green) !important; }
-  .ev-door-open   { border-left: 3px solid var(--blue) !important; }
+  .ev-overstay       { border-left: 3px solid var(--red) !important; }
+  .ev-unordered      { border-left: 3px solid var(--yellow) !important; }
+  .ev-fallen         { border-left: 3px solid var(--red) !important; }
+  .ev-camera-warn    { border-left: 3px solid var(--orange) !important; }
+  .ev-camera-ok      { border-left: 3px solid var(--green) !important; }
+  .ev-door-open      { border-left: 3px solid var(--blue) !important; }
+  .ev-residue-trash  { border-left: 3px solid var(--orange) !important; }
+  .ev-residue-spill  { border-left: 3px solid var(--red) !important; }
+  .ev-residue-cleared{ border-left: 3px solid var(--green) !important; }
 
   /* ── 설정 탭 ── */
   #settings-panel {
@@ -292,6 +295,11 @@
     <div class="stat-card">
       <div><div class="stat-label">문 장기 개방</div><div class="stat-label" style="font-size:10px">방치 횟수</div></div>
       <div class="stat-value blue" id="cnt-door">0</div>
+    </div>
+    <hr class="divider">
+    <div class="stat-card">
+      <div><div class="stat-label">잔류물 감지</div><div class="stat-label" style="font-size:10px">trash·spill</div></div>
+      <div class="stat-value orange" id="cnt-residue">0</div>
     </div>
     <hr class="divider">
     <div class="stat-card">
@@ -588,7 +596,7 @@ const CAMERA_OK   = new Set(["camera_ok"]);
 
 let currentFile = "";
 let eventSource = null;
-let counts = { overstay:0, unordered:0, fallen:0, camera:0, door:0, total:0 };
+let counts = { overstay:0, unordered:0, fallen:0, camera:0, door:0, residue:0, total:0 };
 let doorIsOpen = null; /* null=알 수 없음, true=열림, false=닫힘 */
 let newCount = 0;
 let userScrolled = false;
@@ -628,6 +636,7 @@ function updateCounts() {
   document.getElementById("cnt-fallen").textContent = counts.fallen;
   document.getElementById("cnt-camera").textContent = counts.camera;
   document.getElementById("cnt-door").textContent = counts.door;
+  document.getElementById("cnt-residue").textContent = counts.residue;
   document.getElementById("cnt-total").textContent = counts.total;
   footerCount.textContent = `총 ${counts.total}건`;
   const badge = document.getElementById("door-state-badge");
@@ -649,6 +658,7 @@ function countEvent(e) {
   else if (WARN_EVENTS.has(ev)) counts.camera++;
   else if (ev === "door_open")   { counts.door++; doorIsOpen = true; }
   else if (ev === "door_closed") { doorIsOpen = false; }
+  else if (ev === "residue_trash" || ev === "residue_spill" || ev === "residue_unknown") counts.residue++;
   updateCounts();
 }
 
@@ -660,6 +670,9 @@ function rowClass(e) {
   if (ev === "door_open") return "ev-door-open";
   if (WARN_EVENTS.has(ev)) return "ev-camera-warn";
   if (CAMERA_OK.has(ev)) return "ev-camera-ok";
+  if (ev === "residue_trash" || ev === "residue_unknown") return "ev-residue-trash";
+  if (ev === "residue_spill") return "ev-residue-spill";
+  if (ev === "residue_cleared") return "ev-residue-cleared";
   return "";
 }
 
