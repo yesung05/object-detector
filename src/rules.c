@@ -34,6 +34,8 @@ static const RulesConfig DEFAULT_RULES = {
     3600.0,  /* dwell_limit_seconds */
     300.0,   /* unordered_grace_seconds */
     5.0,     /* fall_hold_seconds */
+    1.8f,    /* fall_aspect_ratio_kp */
+    2.2f,    /* fall_aspect_ratio_nokp */
     0, 0, 0, 0, /* roi_kiosk_{x,y,w,h} */
     0,       /* roi_kiosk_set */
     0.15f,   /* animal_iou_threshold */
@@ -136,7 +138,8 @@ static void release_state(RulesEngine *re, int track_id) {
 static const int FALL_KP_IDX[] = {0, 5, 6, 11, 12};
 static const int FALL_KP_COUNT = 5;
 
-static int is_horizontal_pose(const Detection *box) {
+static int is_horizontal_pose(const Detection *box,
+                               float ratio_kp, float ratio_nokp) {
     float w = box->x2 - box->x1;
     float h = box->y2 - box->y1;
     int i, valid = 0;
@@ -147,7 +150,7 @@ static int is_horizontal_pose(const Detection *box) {
 
     /* keypoint 없거나 부족하면 더 엄격한 bbox 비율 기준 적용 */
     if (box->keypoint_count < YOLO11_NUM_KEYPOINTS) {
-        return w > h * FALL_RATIO_NOKP;
+        return w > h * ratio_nokp;
     }
 
     for (i = 0; i < FALL_KP_COUNT; ++i) {
@@ -166,10 +169,10 @@ static int is_horizontal_pose(const Detection *box) {
      * 엉덩이 없이 코+어깨만으로 y-std를 계산하면 해부학적으로 항상 작은
      * 값이 나와 조건을 거의 항상 통과하기 때문이다. */
     if (valid < 3 || hip_valid == 0) {
-        return w > h * FALL_RATIO_NOKP;
+        return w > h * ratio_nokp;
     }
 
-    if (w <= h * FALL_RATIO_KP) return 0;  /* bbox 비율 조건 미충족 */
+    if (w <= h * ratio_kp) return 0;  /* bbox 비율 조건 미충족 */
 
     y_mean   = y_sum / (float)valid;
     variance = y_sq / (float)valid - y_mean * y_mean;
@@ -359,7 +362,9 @@ void rules_evaluate(RulesEngine *re, TrackList *tl, double now, EventLog *elog) 
         }
 
         /* ── 쓰러짐 ── */
-        if (is_horizontal_pose(&t->box)) {
+        if (is_horizontal_pose(&t->box,
+                               re->config.fall_aspect_ratio_kp,
+                               re->config.fall_aspect_ratio_nokp)) {
             if (s->fall_start <= 0.0) s->fall_start = now;
             if (!s->fall_latched &&
                 (now - s->fall_start) >= re->config.fall_hold_seconds) {

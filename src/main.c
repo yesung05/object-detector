@@ -770,6 +770,10 @@ static void reload_config(AppContext *app) {
         (double)config_float(&cfg, "unordered_grace_seconds", 300.0f, 0.0f, 3600.0f);
     rules_cfg.fall_hold_seconds =
         (double)config_float(&cfg, "fall_hold_seconds", 5.0f, 1.0f, 60.0f);
+    rules_cfg.fall_aspect_ratio_kp =
+        config_float(&cfg, "fall_aspect_ratio_kp", 1.8f, 0.8f, 5.0f);
+    rules_cfg.fall_aspect_ratio_nokp =
+        config_float(&cfg, "fall_aspect_ratio_nokp", 2.2f, 0.8f, 5.0f);
     /* Tier 2 물체 룰 임계값 */
     rules_cfg.animal_iou_threshold =
         config_float(&cfg, "animal_iou_threshold", 0.15f, 0.01f, 1.0f);
@@ -1705,6 +1709,10 @@ int main(int argc, char **argv) {
             (double)config_float(&cfg, "unordered_grace_seconds", 300.0f, 0.0f, 3600.0f);
         rules_cfg.fall_hold_seconds =
             (double)config_float(&cfg, "fall_hold_seconds", 5.0f, 1.0f, 60.0f);
+        rules_cfg.fall_aspect_ratio_kp =
+            config_float(&cfg, "fall_aspect_ratio_kp", 1.8f, 0.8f, 5.0f);
+        rules_cfg.fall_aspect_ratio_nokp =
+            config_float(&cfg, "fall_aspect_ratio_nokp", 2.2f, 0.8f, 5.0f);
         app.motion_gate_enabled   =
             (int)config_long(&cfg, "motion_gate", args.motion_gate, 0, 1);
         app.motion_ratio_threshold =

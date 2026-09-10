@@ -670,7 +670,7 @@ static void test_rules_overstay_latches_once(void) {
     TrackList tl;
     RulesEngine re;
     EventLog elog;
-    RulesConfig rcfg = {60.0, 300.0, 5.0, 0, 0, 0, 0, 0};
+    RulesConfig rcfg = {60.0, 300.0, 5.0, 1.8f, 2.2f, 0, 0, 0, 0, 0};
     char error[128] = {0};
     event_log_open(&elog, ":memory:", LOG_INFO, 0);
     ASSERT_INT_EQ(tracks_init(&tl, 16, 0.3f, 5, 1800.0, 0.45f, error, sizeof(error)), 0);
@@ -703,7 +703,7 @@ static void test_rules_fall_geometry(void) {
     TrackList tl;
     RulesEngine re;
     EventLog elog;
-    RulesConfig rcfg = {3600.0, 300.0, 0.1, 0, 0, 0, 0, 0}; /* fall_hold=0.1초 */
+    RulesConfig rcfg = {3600.0, 300.0, 0.1, 1.8f, 2.2f, 0, 0, 0, 0, 0}; /* fall_hold=0.1초 */
     char error[128] = {0};
     event_log_open(&elog, ":memory:", LOG_INFO, 0);
     ASSERT_INT_EQ(tracks_init(&tl, 16, 0.3f, 5, 1800.0, 0.45f, error, sizeof(error)), 0);
@@ -732,7 +732,7 @@ static void test_rules_fall_requires_hold(void) {
     TrackList tl;
     RulesEngine re;
     EventLog elog;
-    RulesConfig rcfg = {3600.0, 300.0, 5.0, 0, 0, 0, 0, 0};
+    RulesConfig rcfg = {3600.0, 300.0, 5.0, 1.8f, 2.2f, 0, 0, 0, 0, 0};
     char error[128] = {0};
     event_log_open(&elog, ":memory:", LOG_INFO, 0);
     ASSERT_INT_EQ(tracks_init(&tl, 16, 0.3f, 5, 1800.0, 0.45f, error, sizeof(error)), 0);
@@ -765,7 +765,7 @@ static void test_rules_unordered_seated(void) {
     TrackList tl;
     RulesEngine re;
     EventLog elog;
-    RulesConfig rcfg = {3600.0, 30.0, 5.0, 0, 0, 0, 0, 0}; /* grace=30초 */
+    RulesConfig rcfg = {3600.0, 30.0, 5.0, 1.8f, 2.2f, 0, 0, 0, 0, 0}; /* grace=30초 */
     char error[128] = {0};
     event_log_open(&elog, ":memory:", LOG_INFO, 0);
     ASSERT_INT_EQ(tracks_init(&tl, 16, 0.3f, 5, 1800.0, 0.45f, error, sizeof(error)), 0);
@@ -1040,7 +1040,7 @@ static void test_rules_fall_no_hip_no_fire(void) {
     TrackList tl;
     RulesEngine re;
     EventLog elog;
-    RulesConfig rcfg = {3600.0, 300.0, 0.1, 0, 0, 0, 0, 0}; /* fall_hold=0.1s */
+    RulesConfig rcfg = {3600.0, 300.0, 0.1, 1.8f, 2.2f, 0, 0, 0, 0, 0}; /* fall_hold=0.1s */
     char error[128] = {0};
     int i;
     event_log_open(&elog, ":memory:", LOG_INFO, 0);
@@ -1081,7 +1081,7 @@ static void test_rules_fall_with_hip_fires(void) {
     TrackList tl;
     RulesEngine re;
     EventLog elog;
-    RulesConfig rcfg = {3600.0, 300.0, 0.1, 0, 0, 0, 0, 0}; /* fall_hold=0.1s */
+    RulesConfig rcfg = {3600.0, 300.0, 0.1, 1.8f, 2.2f, 0, 0, 0, 0, 0}; /* fall_hold=0.1s */
     char error[128] = {0};
     int i;
     event_log_open(&elog, ":memory:", LOG_INFO, 0);
@@ -1242,7 +1242,7 @@ static void test_rules_obj_external_drink(void) {
     RulesEngine re;
     EventLog elog;
     DetectionList objs;
-    RulesConfig rcfg = {3600.0, 300.0, 5.0, 0, 0, 0, 0, 0, 0.15f, 1};
+    RulesConfig rcfg = {3600.0, 300.0, 5.0, 1.8f, 2.2f, 0, 0, 0, 0, 0, 0.15f, 1};
     char error[128] = {0};
     event_log_open(&elog, ":memory:", LOG_INFO, 0);
     ASSERT_INT_EQ(tracks_init(&tl, 16, 0.3f, 5, 1800.0, 0.45f, error, sizeof(error)), 0);
@@ -1282,7 +1282,7 @@ static void test_rules_obj_external_food(void) {
     RulesEngine re;
     EventLog elog;
     DetectionList objs;
-    RulesConfig rcfg = {3600.0, 300.0, 5.0, 0, 0, 0, 0, 0, 0.15f, 1};
+    RulesConfig rcfg = {3600.0, 300.0, 5.0, 1.8f, 2.2f, 0, 0, 0, 0, 0, 0.15f, 1};
     char error[128] = {0};
     event_log_open(&elog, ":memory:", LOG_INFO, 0);
     ASSERT_INT_EQ(tracks_init(&tl, 16, 0.3f, 5, 1800.0, 0.45f, error, sizeof(error)), 0);
@@ -1312,7 +1312,7 @@ static void test_rules_obj_animal_on_chair(void) {
     EventLog elog;
     DetectionList objs;
     /* animal_iou_threshold=0.1: 동물/의자 IoU가 0.1 이상이면 발화 */
-    RulesConfig rcfg = {3600.0, 300.0, 5.0, 0, 0, 0, 0, 0, 0.10f, 1};
+    RulesConfig rcfg = {3600.0, 300.0, 5.0, 1.8f, 2.2f, 0, 0, 0, 0, 0, 0.10f, 1};
     char error[128] = {0};
     int i;
     event_log_open(&elog, ":memory:", LOG_INFO, 0);
@@ -1354,7 +1354,7 @@ static void test_rules_obj_animal_on_table(void) {
     RulesEngine re;
     EventLog elog;
     DetectionList objs;
-    RulesConfig rcfg = {3600.0, 300.0, 5.0, 0, 0, 0, 0, 0, 0.10f, 1};
+    RulesConfig rcfg = {3600.0, 300.0, 5.0, 1.8f, 2.2f, 0, 0, 0, 0, 0, 0.10f, 1};
     char error[128] = {0};
     int i;
     event_log_open(&elog, ":memory:", LOG_INFO, 0);
@@ -1396,7 +1396,7 @@ static void test_rules_obj_no_cup_seated(void) {
     RulesEngine re;
     EventLog elog;
     DetectionList objs;
-    RulesConfig rcfg = {3600.0, 300.0, 5.0, 0, 0, 0, 0, 0, 0.15f, 1 /* margin=1 */};
+    RulesConfig rcfg = {3600.0, 300.0, 5.0, 1.8f, 2.2f, 0, 0, 0, 0, 0, 0.15f, 1 /* margin=1 */};
     char error[128] = {0};
     event_log_open(&elog, ":memory:", LOG_INFO, 0);
     ASSERT_INT_EQ(tracks_init(&tl, 16, 0.3f, 5, 1800.0, 0.45f, error, sizeof(error)), 0);

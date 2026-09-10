@@ -389,9 +389,19 @@
             <span></span>
           </div>
           <div class="setting-row">
-            <div><div class="setting-label">쓰러짐 유지(초)</div><div class="setting-desc">fall_hold_seconds</div></div>
-            <input type="number" class="setting-input" id="cfg-fall_hold_seconds" min="1" max="60" step="0.5" value="5">
-            <span></span>
+            <div><div class="setting-label">쓰러짐 유지(초)</div><div class="setting-desc">fall_hold_seconds — 기본 5. 낮추면 민감해지나 청소·물건 줍기 오탐 증가</div></div>
+            <input type="range" class="setting-input" id="cfg-fall_hold_seconds" min="1" max="30" step="0.5" value="5" oninput="syncDisplay(this)">
+            <span class="setting-value-display" id="disp-fall_hold_seconds">5</span>
+          </div>
+          <div class="setting-row">
+            <div><div class="setting-label">bbox 가로세로 비 (keypoint)</div><div class="setting-desc">fall_aspect_ratio_kp — 기본 1.8. 낮은 CCTV 각도에서 1.3~1.5로 낮추면 감도 향상</div></div>
+            <input type="range" class="setting-input" id="cfg-fall_aspect_ratio_kp" min="1.0" max="3.0" step="0.1" value="1.8" oninput="syncDisplay(this)">
+            <span class="setting-value-display" id="disp-fall_aspect_ratio_kp">1.8</span>
+          </div>
+          <div class="setting-row">
+            <div><div class="setting-label">bbox 가로세로 비 (keypoint 없음)</div><div class="setting-desc">fall_aspect_ratio_nokp — 기본 2.2. keypoint 미탐지 시 더 엄격한 비율 적용</div></div>
+            <input type="range" class="setting-input" id="cfg-fall_aspect_ratio_nokp" min="1.2" max="4.0" step="0.1" value="2.2" oninput="syncDisplay(this)">
+            <span class="setting-value-display" id="disp-fall_aspect_ratio_nokp">2.2</span>
           </div>
         </div>
 
@@ -559,6 +569,46 @@
               </div>
             </div>
             <div class="door-status" id="residue-status" style="margin-top:6px;">detector 스트림 포트로 캡처합니다.</div>
+          </div>
+        </div>
+
+        <!-- 슬롯 모니터 -->
+        <div class="settings-section">
+          <h3>슬롯 모니터 (테이블·의자 청결)</h3>
+          <div class="setting-row">
+            <div><div class="setting-label">경고 시간 (초)</div><div class="setting-desc">slot_warn_seconds — 기본 60. 물건 방치 경고까지 대기 시간</div></div>
+            <input type="range" class="setting-input" id="cfg-slot_warn_seconds" min="10" max="600" step="5" value="60" oninput="syncDisplay(this)">
+            <span class="setting-value-display" id="disp-slot_warn_seconds">60</span>
+          </div>
+          <div class="setting-row">
+            <div><div class="setting-label">긴급 시간 (초)</div><div class="setting-desc">slot_urgent_seconds — 기본 300. 이 시간 초과 시 긴급 이벤트 발화</div></div>
+            <input type="range" class="setting-input" id="cfg-slot_urgent_seconds" min="60" max="3600" step="30" value="300" oninput="syncDisplay(this)">
+            <span class="setting-value-display" id="disp-slot_urgent_seconds">300</span>
+          </div>
+          <div class="setting-row">
+            <div><div class="setting-label">슬롯 유지 시간 (초)</div><div class="setting-desc">slot_ttl_seconds — Tier 2 미탐지 후 슬롯 만료까지 대기</div></div>
+            <input type="number" class="setting-input" id="cfg-slot_ttl_seconds" min="10" max="3600" value="120">
+            <span></span>
+          </div>
+          <div class="setting-row">
+            <div><div class="setting-label">블록 휘도 차 임계값</div><div class="setting-desc">slot_dirty_threshold — 기본 20. 낮추면 민감, 높이면 둔감</div></div>
+            <input type="range" class="setting-input" id="cfg-slot_dirty_threshold" min="5" max="80" step="1" value="20" oninput="syncDisplay(this)">
+            <span class="setting-value-display" id="disp-slot_dirty_threshold">20</span>
+          </div>
+          <div class="setting-row">
+            <div><div class="setting-label">최소 오염 블록 수</div><div class="setting-desc">slot_min_dirty_blocks — 기본 2. 1블록=8×8px. 노이즈 필터</div></div>
+            <input type="number" class="setting-input" id="cfg-slot_min_dirty_blocks" min="1" max="32" value="2">
+            <span></span>
+          </div>
+        </div>
+
+        <!-- 성능 로그 -->
+        <div class="settings-section">
+          <h3>성능 모니터링</h3>
+          <div class="setting-row">
+            <div><div class="setting-label">성능 로그 주기 (초)</div><div class="setting-desc">perf_log_interval_seconds — 기본 60. CPU·메모리·FPS를 별도 DB에 기록</div></div>
+            <input type="range" class="setting-input" id="cfg-perf_log_interval_seconds" min="10" max="600" step="10" value="60" oninput="syncDisplay(this)">
+            <span class="setting-value-display" id="disp-perf_log_interval_seconds">60</span>
           </div>
         </div>
 
@@ -864,7 +914,10 @@ async function loadSettings() {
       "luma_black_threshold","luma_white_threshold","frozen_frames_threshold",
       "door_enabled","door_diff_threshold","door_confirm_frames","door_open_seconds","door_roi_x","door_roi_y","door_roi_w","door_roi_h",
       "residue_enabled","residue_diff_threshold","residue_min_blocks","residue_person_margin_blocks",
-      "residue_confirm_seconds","residue_clear_seconds","residue_baseline_refresh_seconds","residue_global_change_ratio"
+      "residue_confirm_seconds","residue_clear_seconds","residue_baseline_refresh_seconds","residue_global_change_ratio",
+      "fall_aspect_ratio_kp","fall_aspect_ratio_nokp",
+      "slot_warn_seconds","slot_urgent_seconds","slot_ttl_seconds","slot_dirty_threshold","slot_min_dirty_blocks",
+      "perf_log_interval_seconds"
     ];
     keys.forEach(k => { if (cfg[k] !== undefined) setCfgVal(k, cfg[k]); });
     updateRoiSummary();
@@ -909,6 +962,14 @@ async function saveSettings() {
     residue_clear_seconds:              cfgVal("residue_clear_seconds"),
     residue_baseline_refresh_seconds:   cfgVal("residue_baseline_refresh_seconds"),
     residue_global_change_ratio:        cfgVal("residue_global_change_ratio"),
+    fall_aspect_ratio_kp:               cfgVal("fall_aspect_ratio_kp"),
+    fall_aspect_ratio_nokp:             cfgVal("fall_aspect_ratio_nokp"),
+    slot_warn_seconds:                  cfgVal("slot_warn_seconds"),
+    slot_urgent_seconds:                cfgVal("slot_urgent_seconds"),
+    slot_ttl_seconds:                   cfgVal("slot_ttl_seconds"),
+    slot_dirty_threshold:               cfgVal("slot_dirty_threshold"),
+    slot_min_dirty_blocks:              cfgVal("slot_min_dirty_blocks"),
+    perf_log_interval_seconds:          cfgVal("perf_log_interval_seconds"),
   };
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 5000);

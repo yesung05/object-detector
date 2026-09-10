@@ -28,6 +28,11 @@ typedef struct {
     double dwell_limit_seconds;       /* 기본 3600 — 초과 체류 판정 기준 */
     double unordered_grace_seconds;   /* 기본 300  — 미주문 착석 유예 시간 */
     double fall_hold_seconds;         /* 기본 5.0  — 쓰러짐으로 확정하는 최소 지속 시간 */
+    /* 쓰러짐 bbox 가로/세로 비 임계값.
+     * CCTV 각도(높이·기울기)에 따라 최적값이 달라지므로 설정으로 노출합니다.
+     * 낮은 CCTV 각도에서는 1.3~1.5, 하향 각도에서는 기본값(1.8/2.2)이 적합합니다. */
+    float  fall_aspect_ratio_kp;      /* 기본 1.8 — keypoint 있을 때 */
+    float  fall_aspect_ratio_nokp;    /* 기본 2.2 — keypoint 없을 때 */
     /* 키오스크 ROI: 박스 중심이 이 영역 안에 있으면 ORDERED 로 전환 (결제 프록시) */
     float  roi_kiosk_x, roi_kiosk_y, roi_kiosk_w, roi_kiosk_h;
     int    roi_kiosk_set;

@@ -441,7 +441,15 @@ static const char *DEFAULT_CONFIG =
     "\"residue_confirm_seconds\":60,"
     "\"residue_clear_seconds\":10,"
     "\"residue_baseline_refresh_seconds\":300,"
-    "\"residue_global_change_ratio\":0.5"
+    "\"residue_global_change_ratio\":0.5,"
+    "\"fall_aspect_ratio_kp\":1.8,"
+    "\"fall_aspect_ratio_nokp\":2.2,"
+    "\"slot_warn_seconds\":60,"
+    "\"slot_urgent_seconds\":300,"
+    "\"slot_ttl_seconds\":120,"
+    "\"slot_dirty_threshold\":20,"
+    "\"slot_min_dirty_blocks\":2,"
+    "\"perf_log_interval_seconds\":60"
     "}";
 
 /* GET /api/config → config.json 반환 (없으면 기본값)
@@ -718,7 +726,9 @@ int main(int argc, char **argv) {
     struct sockaddr_in addr = {0};
     addr.sin_family      = AF_INET;
     addr.sin_port        = htons((u_short)g_port);
-    inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr); /* 로컬호스트 전용 */
+    /* 0.0.0.0 바인딩: 같은 WiFi 망의 다른 기기(점주 폰·태블릿)에서도 접속 가능합니다.
+     * 포트를 방화벽에서 외부 노출하지 않으면 로컬 네트워크 이내로 제한됩니다. */
+    addr.sin_addr.s_addr = INADDR_ANY;
 
     if (bind(srv, (struct sockaddr *)&addr, sizeof(addr)) != 0 ||
         listen(srv, 16) != 0) {
@@ -728,7 +738,23 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    printf("HUNIK Dashboard: http://localhost:%d\n", g_port);
+    /* 접속 가능한 로컬 IP를 출력합니다 (WiFi 연결 기기에서 이 주소로 접속). */
+    {
+        char local_ip[64] = "0.0.0.0";
+        char hostname[256];
+        if (gethostname(hostname, sizeof(hostname)) == 0) {
+            struct addrinfo hints = {0}, *res = NULL;
+            hints.ai_family = AF_INET;
+            hints.ai_socktype = SOCK_STREAM;
+            if (getaddrinfo(hostname, NULL, &hints, &res) == 0 && res) {
+                struct sockaddr_in *sin = (struct sockaddr_in *)res->ai_addr;
+                inet_ntop(AF_INET, &sin->sin_addr, local_ip, sizeof(local_ip));
+                freeaddrinfo(res);
+            }
+        }
+        printf("HUNIK Dashboard: http://localhost:%d  (같은 WiFi: http://%s:%d)\n",
+               g_port, local_ip, g_port);
+    }
     printf("Root : %s\n", g_root);
     printf("Logs : %s\n", g_logs);
     printf("Press Ctrl+C to stop.\n\n");
