@@ -81,6 +81,7 @@ if(ORT_INCLUDE_DIR AND ORT_LIBRARY AND FFMPEG_INCLUDE_DIR AND FFMPEG_FOUND)
         src/door.c
         src/model_select.c
         src/residue.c
+        src/slot_monitor.c
         third_party/sqlite/sqlite3.c)
     target_include_directories(yolo11-person PRIVATE
         include "${ORT_INCLUDE_DIR}" "${FFMPEG_INCLUDE_DIR}")
@@ -129,6 +130,7 @@ add_executable(test_core
     src/rules.c
     src/door.c
     src/residue.c
+    src/slot_monitor.c
     third_party/sqlite/sqlite3.c)
 target_include_directories(test_core PRIVATE include tests)
 if(MSVC)

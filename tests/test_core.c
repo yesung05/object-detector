@@ -10,6 +10,7 @@
 #include "tracks.h"
 #include "door.h"
 #include "residue.h"
+#include "slot_monitor.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -1635,6 +1636,199 @@ static void test_residue_min_blocks_filter(void) {
     event_log_close(&elog);
 }
 
+/* ── 슬롯 모니터 단위 테스트 ─────────────────────────────────────────────── */
+
+/* 테스트용 80×80 RGB 프레임 (전부 같은 luma 값으로 채움) */
+#define SM_W 80
+#define SM_H 80
+
+static uint8_t *make_rgb_frame(uint8_t luma) {
+    uint8_t *rgb = (uint8_t *)malloc(SM_W * SM_H * 3);
+    if (!rgb) return NULL;
+    memset(rgb, luma, (size_t)(SM_W * SM_H * 3));
+    return rgb;
+}
+
+/* 의자 bbox: (0,0)~(79,79) — 프레임 전체를 덮는 슬롯 */
+static GrayRect make_chair_bbox(void) {
+    GrayRect r;
+    r.x1 = 0.0f; r.y1 = 0.0f;
+    r.x2 = (float)SM_W; r.y2 = (float)SM_H;
+    return r;
+}
+
+static void test_slot_monitor_init(void) {
+    /* init 후 count=0, destroy는 free를 호출하지 않아야 합니다. */
+    SlotMonitor sm;
+    slot_monitor_init(&sm);
+    EXPECT_TRUE(sm.count == 0);
+    EXPECT_TRUE(sm.warn_seconds == 60);
+    EXPECT_TRUE(sm.urgent_seconds == 300);
+    slot_monitor_destroy(&sm);
+    EXPECT_TRUE(sm.count == 0);
+}
+
+static void test_slot_monitor_add_slot(void) {
+    /* furniture bbox 1개 → 슬롯 1개 생성 */
+    SlotMonitor sm;
+    slot_monitor_init(&sm);
+
+    uint8_t *rgb = make_rgb_frame(50);
+    ASSERT_TRUE(rgb != NULL);
+
+    GrayRect chair = make_chair_bbox();
+    EventLog elog;
+    event_log_open(&elog, ":memory:", LOG_INFO, 0);
+
+    slot_monitor_update(&sm, rgb, SM_W, SM_H, &chair, 1, NULL, 0, 1.0, &elog);
+    EXPECT_TRUE(sm.count == 1);
+
+    free(rgb);
+    event_log_close(&elog);
+    slot_monitor_destroy(&sm);
+}
+
+static void test_slot_monitor_ttl_expire(void) {
+    /* TTL 이후에 슬롯이 제거되어야 합니다. */
+    SlotMonitor sm;
+    slot_monitor_init(&sm);
+    sm.ttl_seconds = 10;
+
+    uint8_t *rgb = make_rgb_frame(50);
+    ASSERT_TRUE(rgb != NULL);
+
+    GrayRect chair = make_chair_bbox();
+    EventLog elog;
+    event_log_open(&elog, ":memory:", LOG_INFO, 0);
+
+    /* t=0에 슬롯 추가 */
+    slot_monitor_update(&sm, rgb, SM_W, SM_H, &chair, 1, NULL, 0, 0.0, &elog);
+    EXPECT_TRUE(sm.count == 1);
+
+    /* t=20, furniture 없음 — TTL(10) 초과 → 슬롯 만료 */
+    slot_monitor_update(&sm, rgb, SM_W, SM_H, NULL, 0, NULL, 0, 20.0, &elog);
+    EXPECT_TRUE(sm.count == 0);
+
+    free(rgb);
+    event_log_close(&elog);
+    slot_monitor_destroy(&sm);
+}
+
+static void test_slot_monitor_dirty_warn(void) {
+    /* dirty 누적 → warn_seconds 경과 후 warn_fired = 1 + WARN 이벤트 발화 */
+    SlotMonitor sm;
+    slot_monitor_init(&sm);
+    sm.warn_seconds     = 60;
+    sm.dirty_threshold  = 20;
+    sm.min_dirty_blocks = 1;
+
+    /* 기준 프레임: luma=50 */
+    uint8_t *rgb_clean = make_rgb_frame(50);
+    ASSERT_TRUE(rgb_clean != NULL);
+
+    GrayRect chair = make_chair_bbox();
+    EventLog elog;
+    event_log_open(&elog, ":memory:", LOG_INFO, 0);
+
+    /* t=0: 슬롯 추가 + 기준 캡처 (사람 없음) */
+    slot_monitor_update(&sm, rgb_clean, SM_W, SM_H, &chair, 1, NULL, 0, 0.0, &elog);
+    ASSERT_TRUE(sm.count == 1);
+    EXPECT_TRUE(sm.slots[0].has_baseline == 1);
+
+    /* luma=100인 "오염" 프레임: diff=50 > threshold=20 */
+    uint8_t *rgb_dirty = make_rgb_frame(100);
+    ASSERT_TRUE(rgb_dirty != NULL);
+
+    /* t=1: dirty 감지, 아직 warn_seconds 미경과 */
+    slot_monitor_update(&sm, rgb_dirty, SM_W, SM_H, &chair, 1, NULL, 0, 1.0, &elog);
+    EXPECT_TRUE(sm.slots[0].dirty == 1);
+    EXPECT_TRUE(sm.slots[0].warn_fired == 0);
+
+    /* t=70: warn_seconds=60 경과 → warn_fired */
+    int cnt_before = event_log_count(&elog, LOG_WARN);
+    slot_monitor_update(&sm, rgb_dirty, SM_W, SM_H, &chair, 1, NULL, 0, 70.0, &elog);
+    EXPECT_TRUE(sm.slots[0].warn_fired == 1);
+    EXPECT_TRUE(event_log_count(&elog, LOG_WARN) > cnt_before);
+
+    free(rgb_clean);
+    free(rgb_dirty);
+    event_log_close(&elog);
+    slot_monitor_destroy(&sm);
+}
+
+static void test_slot_monitor_person_skip(void) {
+    /* 사람 bbox가 슬롯과 충분히 겹치면 dirty 판정을 건너뜁니다. */
+    SlotMonitor sm;
+    slot_monitor_init(&sm);
+    sm.dirty_threshold  = 20;
+    sm.min_dirty_blocks = 1;
+    sm.person_iou_skip  = 0.10f;
+
+    uint8_t *rgb_clean = make_rgb_frame(50);
+    ASSERT_TRUE(rgb_clean != NULL);
+
+    GrayRect chair = make_chair_bbox();
+    EventLog elog;
+    event_log_open(&elog, ":memory:", LOG_INFO, 0);
+
+    /* t=0: 기준 캡처 */
+    slot_monitor_update(&sm, rgb_clean, SM_W, SM_H, &chair, 1, NULL, 0, 0.0, &elog);
+    ASSERT_TRUE(sm.slots[0].has_baseline == 1);
+
+    /* 사람 bbox = 슬롯과 동일 (IoU=1.0 > 0.10) */
+    GrayRect person = make_chair_bbox();
+    uint8_t *rgb_dirty = make_rgb_frame(100);
+    ASSERT_TRUE(rgb_dirty != NULL);
+
+    /* t=1: 오염 프레임이지만 사람이 겹쳐서 스킵 → dirty 안 됨 */
+    slot_monitor_update(&sm, rgb_dirty, SM_W, SM_H, &chair, 1, &person, 1, 1.0, &elog);
+    EXPECT_TRUE(sm.slots[0].dirty == 0);
+
+    free(rgb_clean);
+    free(rgb_dirty);
+    event_log_close(&elog);
+    slot_monitor_destroy(&sm);
+}
+
+static void test_slot_monitor_cleared(void) {
+    /* dirty → clean 복구 시 slot_cleared 이벤트 발화 */
+    SlotMonitor sm;
+    slot_monitor_init(&sm);
+    sm.warn_seconds     = 1;
+    sm.dirty_threshold  = 20;
+    sm.min_dirty_blocks = 1;
+
+    uint8_t *rgb_clean = make_rgb_frame(50);
+    ASSERT_TRUE(rgb_clean != NULL);
+
+    GrayRect chair = make_chair_bbox();
+    EventLog elog;
+    event_log_open(&elog, ":memory:", LOG_INFO, 0);
+
+    /* t=0: 기준 캡처 */
+    slot_monitor_update(&sm, rgb_clean, SM_W, SM_H, &chair, 1, NULL, 0, 0.0, &elog);
+    ASSERT_TRUE(sm.slots[0].has_baseline == 1);
+
+    /* t=1~2: dirty 누적 + warn 발화 */
+    uint8_t *rgb_dirty = make_rgb_frame(100);
+    ASSERT_TRUE(rgb_dirty != NULL);
+    slot_monitor_update(&sm, rgb_dirty, SM_W, SM_H, &chair, 1, NULL, 0, 1.0, &elog);
+    slot_monitor_update(&sm, rgb_dirty, SM_W, SM_H, &chair, 1, NULL, 0, 2.0, &elog);
+    EXPECT_TRUE(sm.slots[0].dirty == 1);
+
+    /* t=3: clean 프레임으로 복구 → slot_cleared */
+    int cnt_before = event_log_count(&elog, LOG_INFO);
+    slot_monitor_update(&sm, rgb_clean, SM_W, SM_H, &chair, 1, NULL, 0, 3.0, &elog);
+    EXPECT_TRUE(sm.slots[0].dirty == 0);
+    EXPECT_TRUE(sm.slots[0].warn_fired == 0); /* latch 해제 */
+    EXPECT_TRUE(event_log_count(&elog, LOG_INFO) > cnt_before);
+
+    free(rgb_clean);
+    free(rgb_dirty);
+    event_log_close(&elog);
+    slot_monitor_destroy(&sm);
+}
+
 int main(void) {
     TEST_SUITE_BEGIN(core_unit_tests);
     RUN_TEST(test_letterbox);
@@ -1699,5 +1893,12 @@ int main(void) {
     RUN_TEST(test_residue_global_change_resets);
     RUN_TEST(test_residue_clears_after_absence);
     RUN_TEST(test_residue_min_blocks_filter);
+    /* 슬롯 기반 모니터 단위 테스트 */
+    RUN_TEST(test_slot_monitor_init);
+    RUN_TEST(test_slot_monitor_add_slot);
+    RUN_TEST(test_slot_monitor_ttl_expire);
+    RUN_TEST(test_slot_monitor_dirty_warn);
+    RUN_TEST(test_slot_monitor_person_skip);
+    RUN_TEST(test_slot_monitor_cleared);
     TEST_SUITE_END();
 }

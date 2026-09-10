@@ -1,4 +1,5 @@
 #include "camera_health.h"
+#include "slot_monitor.h"
 #include "stream.h"
 #include "door.h"
 #include "residue.h"
@@ -141,6 +142,7 @@ typedef struct {
     int          stream_port;     /* MJPEG 스트림 포트, 0이면 비활성 */
     DoorMonitor    door;           /* 문 여닫이 감지 (door_reference.raw 필요) */
     ResidueMonitor residue;        /* 잔류물 감지 (residue_clean_reference.raw 필요) */
+    SlotMonitor    slot_mon;       /* 슬롯 기반 테이블·의자 청결 감지 */
 
     /* config.json hot-reload — 2초마다 mtime을 확인하고 변경 시 재로드합니다. */
     char   config_reload_path[512]; /* 재로드할 config 파일 경로 */
@@ -684,6 +686,10 @@ static void apply_residue_config(AppContext *app, const Config *cfg) {
         config_float(cfg, "residue_global_change_ratio", 0.5f, 0.1f, 1.0f);
 }
 
+static void apply_slot_config(AppContext *app, const Config *cfg) {
+    slot_monitor_apply_config(&app->slot_mon, cfg);
+}
+
 /* 키오스크 ROI 를 rules 설정에 채웁니다. 미설정이면 roi_kiosk_set = 0 이 되어
  * 주문 상태 전환 자체가 비활성화됩니다(호출자가 로그로 알립니다). */
 static void apply_roi_kiosk(RulesConfig *rc, const Config *cfg) {
@@ -759,6 +765,7 @@ static void reload_config(AppContext *app) {
                          (long)app->detect_every_obj, 1, 10000);
 
     apply_residue_config(app, &cfg);
+    apply_slot_config(app, &cfg);
 
     config_destroy(&cfg);
     fprintf(stderr, "config: reloaded from %s\n", app->config_reload_path);
@@ -1289,6 +1296,15 @@ static int process_frame(RgbFrame *frame, void *opaque,
                          fcount > 0 ? furn_rects : NULL, fcount,
                          now, &app->event_log);
         app->residue_seconds += platform_monotonic_seconds() - started;
+
+        /* 슬롯 기반 감지: residue와 같은 person_rects/furn_rects를 재사용합니다.
+         * residue 블록 안에서 실행하므로 그리기보다 먼저 실행됨이 보장됩니다. */
+        if (fcount > 0)
+            slot_monitor_update(&app->slot_mon,
+                                frame->data, frame->width, frame->height,
+                                furn_rects, fcount,
+                                person_rects, pcount,
+                                now, &app->event_log);
     }
 
     /* ─── CPU 사용률 주기 로깅 ────────────────────────────────────────────── */
@@ -1528,6 +1544,7 @@ int main(int argc, char **argv) {
     }
 
     memset(&app, 0, sizeof(app));
+    slot_monitor_init(&app.slot_mon);
     app.cpu_log_interval = 30.0; /* 30초마다 CPU 사용률을 이벤트 로그에 기록 */
     app.detect_every = args.detect_every;
     app.detect_every_obj = args.detect_every_obj;
@@ -1659,6 +1676,7 @@ int main(int argc, char **argv) {
         app.door.roi_w          = (int)config_long (&cfg, "door_roi_w",         0,    0, 9999);
         app.door.roi_h          = (int)config_long (&cfg, "door_roi_h",         0,    0, 9999);
         apply_residue_config(&app, &cfg);
+        apply_slot_config(&app, &cfg);
         if (!args.stream_port_set)
             app.stream_port = (int)config_long(&cfg, "stream_port", 0, 1024, 65535);
         config_destroy(&cfg);
@@ -1877,6 +1895,7 @@ done:
     event_log_close(&app.event_log);
     door_destroy(&app.door);
     residue_destroy(&app.residue);
+    slot_monitor_destroy(&app.slot_mon);
     rules_destroy(&app.rules);
     tracks_destroy(&app.tracks);
     camera_health_destroy(&app.cam_health);
