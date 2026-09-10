@@ -279,8 +279,13 @@ static void serve_history(SOCKET s, const char *filename) {
     }
 
     sqlite3_stmt *stmt = NULL;
+    /* module='perf' 항목은 이벤트 피드에서 제외합니다.
+     * 구형 DB에는 CPU 사용률이 이 module로 기록되어 있고, 신형 DB는
+     * 별도 *_perf.db에 기록하므로 events 테이블에 perf 항목이 없습니다.
+     * 어느 경우든 이벤트 피드에는 이상 감지 이벤트만 표시합니다. */
     const char *sql =
-        "SELECT ts_iso, level, module, message FROM events ORDER BY id";
+        "SELECT ts_iso, level, module, message FROM events"
+        " WHERE module != 'perf' ORDER BY id";
     if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) {
         sqlite3_close(db);
         send_header(s, 200, "application/json", 2);
@@ -374,7 +379,7 @@ static void serve_stream(SOCKET s, const char *filename) {
             sqlite3_stmt *stmt = NULL;
             const char *sql =
                 "SELECT id, ts_iso, level, module, message "
-                "FROM events WHERE id > ? ORDER BY id";
+                "FROM events WHERE id > ? AND module != 'perf' ORDER BY id";
             if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) == SQLITE_OK) {
                 sqlite3_bind_int64(stmt, 1, last_id);
                 while (sqlite3_step(stmt) == SQLITE_ROW) {
