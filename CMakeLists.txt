@@ -82,10 +82,11 @@ if(ORT_INCLUDE_DIR AND ORT_LIBRARY AND FFMPEG_INCLUDE_DIR AND FFMPEG_FOUND)
         src/model_select.c
         src/residue.c
         src/slot_monitor.c
+        src/perf_log.c
         third_party/sqlite/sqlite3.c)
     target_include_directories(yolo11-person PRIVATE
         include "${ORT_INCLUDE_DIR}" "${FFMPEG_INCLUDE_DIR}")
-    target_link_libraries(yolo11-person PRIVATE "${ORT_LIBRARY}" ${FFMPEG_LIBRARIES} ws2_32)
+    target_link_libraries(yolo11-person PRIVATE "${ORT_LIBRARY}" ${FFMPEG_LIBRARIES} ws2_32 psapi)
 
     if(MSVC)
         target_compile_definitions(yolo11-person PRIVATE
@@ -137,6 +138,7 @@ if(MSVC)
     target_compile_options(test_core PRIVATE /O1 /W4 /utf-8)
     target_compile_definitions(test_core PRIVATE
         WIN32_LEAN_AND_MEAN _WIN32_WINNT=0x0601 _CRT_SECURE_NO_WARNINGS)
+    target_link_libraries(test_core PRIVATE psapi)
 else()
     target_compile_options(test_core PRIVATE
         -O1 -g -Wall -Wextra -Wpedantic -Wconversion -Wshadow)

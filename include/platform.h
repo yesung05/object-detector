@@ -15,6 +15,12 @@ void platform_sleep_milliseconds(unsigned int milliseconds);
  * Windows/macOS: 미지원, -1 반환. */
 int platform_cpu_temperature_celsius(void);
 
+/* 현재 프로세스 RSS(Resident Set Size)를 KB 단위로 반환합니다.
+ * Windows: GetProcessMemoryInfo WorkingSetSize
+ * Linux:   /proc/self/status VmRSS
+ * 측정 불가 시 -1 반환. */
+long platform_process_memory_kb(void);
+
 /* 단일 인스턴스 잠금.
  * Windows: 이름 있는 뮤텍스 "Global\hunik-detector"
  * Linux/macOS: /tmp/hunik-detector.lock + flock(LOCK_NB)

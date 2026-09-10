@@ -1,4 +1,5 @@
 #include "camera_health.h"
+#include "perf_log.h"
 #include "slot_monitor.h"
 #include "stream.h"
 #include "door.h"
@@ -67,9 +68,24 @@ typedef struct {
     double  residue_seconds;     /* residue_evaluate 잔류 판정 */
     double  stream_seconds;      /* stream_push (복사 + 주기 판정) */
     int64_t drawn_frames;        /* 실제로 그린 프레임 수 (관찰자가 있던 프레임) */
-    double  cpu_log_last;        /* 마지막 CPU 사용률 로그 시각 (monotonic) */
-    double  cpu_log_interval;    /* CPU 로그 주기 (초), 기본 30 */
-    double  cpu_log_cpu_base;    /* 주기 시작 시점의 프로세스 CPU 시간 */
+    /* 성능 지표 로그 — 이벤트 로그와 별도 DB 파일(*_perf.db).
+     * 1분마다 CPU%, 온도, 메모리, FPS, 모듈별 타이밍을 기록합니다. */
+    PerfLog perf_log;
+    double  perf_log_last;       /* 마지막 성능 로그 시각 (monotonic) */
+    double  perf_log_interval;   /* 성능 로그 주기 (초), 기본 60 */
+    double  perf_cpu_base;       /* 주기 시작 시점의 프로세스 CPU 시간 */
+    /* 주기 내 누적값 스냅샷 — 주기 시작 시점 값과 차이를 로그에 기록 */
+    double  perf_gray_base;
+    double  perf_door_base;
+    double  perf_residue_base;
+    double  perf_stream_base;
+    double  perf_draw_base;
+    int64_t perf_gate_l0_base;
+    int64_t perf_gate_l1_base;
+    int64_t perf_gate_l2_base;
+    int64_t perf_gate_l3_base;
+    int64_t perf_inf_runs_base;
+    int64_t perf_obj_runs_base;
     DetectorRunStats detector_stats;
     /* Tier 2 — 물체 감지 (고양이/강아지/음식/병/컵/의자/테이블) */
     Detector        *obj_detector;      /* NULL 이면 Tier 2 비활성 */
@@ -688,6 +704,9 @@ static void apply_residue_config(AppContext *app, const Config *cfg) {
 
 static void apply_slot_config(AppContext *app, const Config *cfg) {
     slot_monitor_apply_config(&app->slot_mon, cfg);
+    app->perf_log_interval =
+        (double)config_long(cfg, "perf_log_interval_seconds",
+                            (long)app->perf_log_interval, 10, 3600);
 }
 
 /* 키오스크 ROI 를 rules 설정에 채웁니다. 미설정이면 roi_kiosk_set = 0 이 되어
@@ -1307,21 +1326,49 @@ static int process_frame(RgbFrame *frame, void *opaque,
                                 now, &app->event_log);
     }
 
-    /* ─── CPU 사용률 주기 로깅 ────────────────────────────────────────────── */
-    if (app->cpu_log_interval > 0.0 &&
-        (now - app->cpu_log_last) >= app->cpu_log_interval) {
-        double wall  = now - app->cpu_log_last;
-        double cpu_t = platform_process_cpu_seconds() - app->cpu_log_cpu_base;
-        /* 논리 코어 수로 나눠 단일 코어 기준 점유율로 환산합니다.
-         * 배포 기기 4스레드 기준: cpu_t/wall*100 이 400%면 전 코어 포화 */
-        int pct = (int)((cpu_t / wall) * 100.0 + 0.5);
-        char msg[80];
-        snprintf(msg, sizeof(msg),
-                 "cpu_usage=%d%% wall=%.1fs cpu=%.3fs",
-                 pct, wall, cpu_t);
-        event_log_write(&app->event_log, LOG_INFO, "perf", msg);
-        app->cpu_log_last     = now;
-        app->cpu_log_cpu_base = platform_process_cpu_seconds();
+    /* ─── 성능 지표 주기 로깅 (별도 perf DB) ────────────────────────────── */
+    if (app->perf_log_interval > 0.0 &&
+        (now - app->perf_log_last) >= app->perf_log_interval) {
+        double wall  = now - app->perf_log_last;
+        double cpu_t = platform_process_cpu_seconds() - app->perf_cpu_base;
+        double s2ms  = 1000.0;  /* 초 → 밀리초 */
+
+        PerfMetrics pm;
+        /* CPU 사용률: 프로세스 CPU 시간 / 경과 시간. 단일 코어 기준 % */
+        pm.cpu_pct    = (wall > 0.0) ? (int)(cpu_t / wall * 100.0 + 0.5) : 0;
+        pm.cpu_temp   = app->cached_temperature;  /* 2초마다 갱신되는 캐시값 재사용 */
+        pm.cam_fps    = app->realtime_cam_fps;
+        pm.inf_fps    = app->realtime_inf_fps;
+        pm.mem_kb     = platform_process_memory_kb();
+        /* 주기 내 누적 타이밍: 현재 누적값 - 주기 시작 시점 스냅샷 */
+        pm.gray_ms    = (app->gray_seconds    - app->perf_gray_base)    * s2ms;
+        pm.door_ms    = (app->door_seconds    - app->perf_door_base)    * s2ms;
+        pm.residue_ms = (app->residue_seconds - app->perf_residue_base) * s2ms;
+        pm.stream_ms  = (app->stream_seconds  - app->perf_stream_base)  * s2ms;
+        pm.draw_ms    = (app->drawing_seconds - app->perf_draw_base)    * s2ms;
+        pm.gate_l0    = (long)(app->gate_l0_hits         - app->perf_gate_l0_base);
+        pm.gate_l1    = (long)(app->gate_l1_hits         - app->perf_gate_l1_base);
+        pm.gate_l2    = (long)(app->gate_l2_hits         - app->perf_gate_l2_base);
+        pm.gate_l3    = (long)(app->gate_l3_hits         - app->perf_gate_l3_base);
+        pm.inf_runs   = (long)(app->inference_runs       - app->perf_inf_runs_base);
+        pm.obj_runs   = (long)(app->obj_inference_runs   - app->perf_obj_runs_base);
+
+        perf_log_write(&app->perf_log, &pm);
+
+        /* 스냅샷 갱신 */
+        app->perf_log_last      = now;
+        app->perf_cpu_base      = platform_process_cpu_seconds();
+        app->perf_gray_base     = app->gray_seconds;
+        app->perf_door_base     = app->door_seconds;
+        app->perf_residue_base  = app->residue_seconds;
+        app->perf_stream_base   = app->stream_seconds;
+        app->perf_draw_base     = app->drawing_seconds;
+        app->perf_gate_l0_base  = app->gate_l0_hits;
+        app->perf_gate_l1_base  = app->gate_l1_hits;
+        app->perf_gate_l2_base  = app->gate_l2_hits;
+        app->perf_gate_l3_base  = app->gate_l3_hits;
+        app->perf_inf_runs_base = app->inference_runs;
+        app->perf_obj_runs_base = app->obj_inference_runs;
     }
 
     /*
@@ -1545,7 +1592,7 @@ int main(int argc, char **argv) {
 
     memset(&app, 0, sizeof(app));
     slot_monitor_init(&app.slot_mon);
-    app.cpu_log_interval = 30.0; /* 30초마다 CPU 사용률을 이벤트 로그에 기록 */
+    app.perf_log_interval = 60.0; /* 60초마다 성능 지표를 별도 perf DB에 기록 */
     app.detect_every = args.detect_every;
     app.detect_every_obj = args.detect_every_obj;
     app.detect_fps_limit = args.detect_fps_limit;
@@ -1701,8 +1748,34 @@ int main(int argc, char **argv) {
             goto done;
         }
     }
-    app.cpu_log_last     = platform_monotonic_seconds();
-    app.cpu_log_cpu_base = platform_process_cpu_seconds();
+    /* 성능 로그 — 이벤트 로그와 별도 파일 (*_perf.db).
+     * 이벤트 로그 경로에서 확장자 앞에 _perf를 삽입합니다.
+     * 예: logs/20260910_134822.db → logs/20260910_134822_perf.db */
+    {
+        char perf_path[700];
+        if (args.event_log_path) {
+            const char *dot = strrchr(args.event_log_path, '.');
+            if (dot) {
+                int prefix_len = (int)(dot - args.event_log_path);
+                snprintf(perf_path, sizeof(perf_path),
+                         "%.*s_perf%s", prefix_len,
+                         args.event_log_path, dot);
+            } else {
+                snprintf(perf_path, sizeof(perf_path),
+                         "%s_perf.db", args.event_log_path);
+            }
+        } else {
+            /* 이벤트 로그 미지정이면 perf도 인메모리 */
+            snprintf(perf_path, sizeof(perf_path), ":memory:");
+        }
+        if (perf_log_open(&app.perf_log, perf_path) != 0) {
+            fprintf(stderr, "failed to open perf log: %s\n", perf_path);
+            goto done;
+        }
+        fprintf(stderr, "[perf] %s\n", perf_path);
+    }
+    app.perf_log_last     = platform_monotonic_seconds();
+    app.perf_cpu_base     = platform_process_cpu_seconds();
 
     /*
      * 조용히 꺼져 있는 기능을 기동 시 한 블록으로 알립니다.
@@ -1893,6 +1966,7 @@ done:
     if (app.keypoint_log)  fclose(app.keypoint_log);
     if (app.preview_pipe) pclose(app.preview_pipe);
     event_log_close(&app.event_log);
+    perf_log_close(&app.perf_log);
     door_destroy(&app.door);
     residue_destroy(&app.residue);
     slot_monitor_destroy(&app.slot_mon);

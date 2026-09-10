@@ -6,6 +6,7 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+#include <psapi.h>
 #include <stdio.h>
 
 static double filetime_seconds(const FILETIME *time) {
@@ -46,6 +47,16 @@ void platform_sleep_milliseconds(unsigned int milliseconds) {
  * WMI(MSAcpi_ThermalZoneTemperature)로 구현 가능하지만 COM 초기화가 필요합니다. */
 int platform_cpu_temperature_celsius(void) {
     return -1;
+}
+
+/* WorkingSetSize: 물리 메모리에 실제로 올라와 있는 페이지 크기입니다.
+ * PROCESS_MEMORY_COUNTERS는 psapi.h에 있으며 ws2_32 없이 psapi/kernel32로 링크됩니다.
+ * Windows 7 이상에서 GetProcessMemoryInfo가 kernel32에 포함되어 별도 라이브러리가 불필요합니다. */
+long platform_process_memory_kb(void) {
+    PROCESS_MEMORY_COUNTERS pmc;
+    if (!GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof(pmc)))
+        return -1L;
+    return (long)(pmc.WorkingSetSize / 1024UL);
 }
 
 /* 이름 있는 뮤텍스로 단일 인스턴스를 보장합니다.
@@ -127,6 +138,20 @@ void platform_single_instance_unlock(void) {
         close(g_lock_fd);
         g_lock_fd = -1;
     }
+}
+
+/* /proc/self/status의 VmRSS 줄을 파싱합니다.
+ * VmRSS는 물리 메모리에 올라온 페이지 크기이며 kB 단위로 기록됩니다. */
+long platform_process_memory_kb(void) {
+    FILE *f = fopen("/proc/self/status", "r");
+    if (!f) return -1L;
+    char line[128];
+    long kb = -1L;
+    while (fgets(line, sizeof(line), f)) {
+        if (sscanf(line, "VmRSS: %ld kB", &kb) == 1) break;
+    }
+    fclose(f);
+    return kb;
 }
 
 #if defined(__linux__)
