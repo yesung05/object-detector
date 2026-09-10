@@ -231,6 +231,8 @@ static void serve_log_list(SOCKET s) {
     if (hFind != INVALID_HANDLE_VALUE) {
         do {
             if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+            /* 성능 로그(_perf.db)는 이벤트 로그 목록에서 제외합니다. */
+            if (strstr(fd.cFileName, "_perf.db")) continue;
             if (count >= MAX_LOG_FILES) break;
             names[count] = _strdup(fd.cFileName);
             if (names[count]) count++;
