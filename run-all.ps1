@@ -85,13 +85,19 @@ if ($ffmpeg) {
     Write-Host "[warn] ffmpeg.exe 없음 — 기본 카메라 사용" -ForegroundColor Yellow
 }
 
-# ── 모델 경로 ──────────────────────────────────────────────────────────────
+# ── Tier 1 모델 (pose) — INT8 우선, 없으면 models\ 자동 화면비 선택 ──────
 $model = $null
-if (Test-Path "$ROOT\models\") {
+# 루트의 INT8 pose 모델이 있으면 가장 먼저 사용 (크기 3x 절감)
+foreach ($f in @("$ROOT\yolo11n-pose-416-int8.onnx")) {
+    if (Test-Path $f) { $model = $f; break }
+}
+if ($model) {
+    Write-Host "[model] $model (INT8)"
+} elseif (Test-Path "$ROOT\models\") {
     $model = "$ROOT\models"
-    Write-Host "[model] models\ (자동 화면비 선택)"
+    Write-Host "[model] models\ (FP32, 자동 화면비 선택)"
 } else {
-    foreach ($f in @("$ROOT\yolo11n-416.onnx", "$ROOT\yolo11n.onnx")) {
+    foreach ($f in @("$ROOT\yolo11n-pose-416.onnx", "$ROOT\yolo11n-416.onnx", "$ROOT\yolo11n.onnx")) {
         if (Test-Path $f) { $model = $f; break }
     }
     if (-not $model) {
@@ -138,9 +144,17 @@ if ($cameraDevice) {
     # 모델 입력이 416×224 수준이므로 1280×720 이상은 추론에 기여하지 않습니다.
     $args += "--camera-size", "1280x720", "--camera-fps", "15"
 }
-$objModel = "$ROOT\models\yolo11n_tier2_fp32.onnx"
-if (Test-Path $objModel) {
+# INT8 우선, 없으면 FP32 폴백
+$objModel = $null
+foreach ($f in @("$ROOT\models\yolo11n_tier2_int8.onnx",
+                  "$ROOT\models\yolo11n_tier2_fp32.onnx")) {
+    if (Test-Path $f) { $objModel = $f; break }
+}
+if ($objModel) {
+    Write-Host "[tier2] $objModel"
     $args += "--obj-model", $objModel
+} else {
+    Write-Host "[tier2] 모델 없음 — 의자/테이블/동물 감지 비활성" -ForegroundColor Yellow
 }
 
 # ── 실행 ──────────────────────────────────────────────────────────────────
