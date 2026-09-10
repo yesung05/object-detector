@@ -11,7 +11,7 @@
  *   hunik-dashboard.exe --root C:\hunik    -- 프로젝트 루트 지정
  *
  * detector exe 없이 단독 실행 가능합니다. logs\ 폴더가 없으면 파일 목록이
- * 비어 있는 채로 대기하다가 파일이 생기면 자동으로 반영합니다.
+ * 비어 있는 채로 대기하다가 파일이 생기면 자동으로 반영됩니다.
  *
  * 보안: 127.0.0.1 전용 바인딩 — 외부 네트워크에 노출되지 않습니다.
  *       로그 파일 경로는 logs\ 하위인지 검증하여 디렉터리 탈출을 막습니다.
@@ -22,6 +22,9 @@
 #include <ws2tcpip.h>
 #include <windows.h>
 #include "../include/config.h"
+/* SQLite amalgamation — 이벤트 로그(.db) 파일을 직접 쿼리합니다.
+ * WAL 모드로 열린 DB는 detector가 쓰는 도중에도 읽기 가능합니다. */
+#include "../third_party/sqlite/sqlite3.h"
 
 #include <ctype.h>
 #include <stdio.h>
@@ -57,7 +60,7 @@ static void parse_request(const char *buf,
     path[511] = '\0';
 }
 
-/* 쿼리스트링에서 key 의 값을 꺼냅니다. "file=abc.log&foo=1" → "abc.log" */
+/* 쿼리스트링에서 key 의 값을 꺼냅니다. "file=abc.db&foo=1" → "abc.db" */
 static void query_get(const char *query, const char *key, char *out, int outsz) {
     char needle[64];
     snprintf(needle, sizeof(needle), "%s=", key);
@@ -107,51 +110,7 @@ static int send_all(SOCKET s, const char *buf, int len) {
     return 0;
 }
 
-/* ── 로그 파싱 ────────────────────────────────────────────────────────────── */
-
-/*
- * 포맷: "2026-08-29T16:21:02 WARN  camera   state=whiteout\n"
- * ts(19) + 공백 + level(4~5) + 공백+ + module + 공백+ + message
- */
-static int parse_log_line(const char *line, char ts[20], char level[8],
-                           char module[32], char event[64], char message[256]) {
-    char buf[512];
-    int i = 0;
-    /* ts: "YYYY-MM-DDTHH:MM:SS" */
-    while (i < 19 && line[i] && line[i] != ' ')
-        buf[i] = line[i++];
-    if (i != 19 || line[i] != ' ') return -1;
-    buf[i] = '\0';
-    strncpy(ts, buf, 19); ts[19] = '\0';
-    /* 공백 건너뜀 */
-    const char *p = line + 20;
-    while (*p == ' ') p++;
-    /* level */
-    i = 0;
-    while (*p && *p != ' ' && i < 7) level[i++] = *p++;
-    level[i] = '\0';
-    if (!*p) return -1;
-    /* 공백 건너뜀 */
-    while (*p == ' ') p++;
-    /* module */
-    i = 0;
-    while (*p && *p != ' ' && i < 31) module[i++] = *p++;
-    module[i] = '\0';
-    if (!*p) return -1;
-    /* 공백 건너뜀 */
-    while (*p == ' ') p++;
-    /* message */
-    strncpy(message, p, 255); message[255] = '\0';
-    /* 개행 제거 */
-    char *nl = strpbrk(message, "\r\n");
-    if (nl) *nl = '\0';
-    /* event: 메시지 첫 토큰 */
-    i = 0;
-    const char *m = message;
-    while (*m && *m != ' ' && i < 63) event[i++] = *m++;
-    event[i] = '\0';
-    return 0;
-}
+/* ── JSON 문자열 이스케이프 ───────────────────────────────────────────────── */
 
 /* JSON 문자열 이스케이프 (간단: 따옴표, 백슬래시, 개행만) */
 static void json_str(const char *in, char *out, int outsz) {
@@ -167,6 +126,30 @@ static void json_str(const char *in, char *out, int outsz) {
     }
     out[o++] = '"';
     out[o] = '\0';
+}
+
+/* SQLite 행 하나를 JSON 오브젝트 문자열로 변환합니다.
+ * message 열의 첫 공백 이전 토큰을 event 로 추출합니다.
+ * 반환: 기록된 문자 수 (0이면 건너뜀) */
+static int db_row_to_json(const char *ts, const char *level,
+                          const char *module, const char *message,
+                          char *out, int outsz) {
+    char event[64] = {0};
+    int i = 0;
+    const char *m = message;
+    while (*m && *m != ' ' && i < 63) event[i++] = *m++;
+
+    char ts_j[48], lv_j[24], mo_j[64], ev_j[96], msg_j[320];
+    json_str(ts,      ts_j,  sizeof(ts_j));
+    json_str(level,   lv_j,  sizeof(lv_j));
+    json_str(module,  mo_j,  sizeof(mo_j));
+    json_str(event,   ev_j,  sizeof(ev_j));
+    json_str(message, msg_j, sizeof(msg_j));
+
+    int n = snprintf(out, outsz,
+        "{\"ts\":%s,\"level\":%s,\"module\":%s,\"event\":%s,\"message\":%s}",
+        ts_j, lv_j, mo_j, ev_j, msg_j);
+    return (n > 0 && n < outsz) ? n : 0;
 }
 
 /* ── 경로 검증 ────────────────────────────────────────────────────────────── */
@@ -186,6 +169,12 @@ static int safe_filename(const char *filename) {
         return 0;
     }
     return 1;
+}
+
+/* .db 확장자인지 확인합니다 (SQLite 로그만 허용). */
+static int is_db_file(const char *filename) {
+    size_t n = strlen(filename);
+    return n >= 3 && strcmp(filename + n - 3, ".db") == 0;
 }
 
 /* ── 라우트 핸들러 ────────────────────────────────────────────────────────── */
@@ -215,15 +204,15 @@ static void serve_index(SOCKET s) {
 }
 
 /* qsort 비교 함수: 내림차순(최신 파일명이 앞으로)
- * 파일명이 YYYYMMDD_HHMMSS.log 형식이면 역알파벳 순 = 최신순이 됩니다. */
+ * 파일명이 YYYYMMDD_HHMMSS.db 형식이면 역알파벳 순 = 최신순이 됩니다. */
 static int cmp_str_desc(const void *a, const void *b) {
     return strcmp(*(const char *const *)b, *(const char *const *)a);
 }
 
-/* GET /api/logs → JSON 배열 ["20260829_162958.log", ...] (최신순) */
+/* GET /api/logs → JSON 배열 ["20260829_162958.db", ...] (최신순) */
 static void serve_log_list(SOCKET s) {
     char pattern[MAX_PATH];
-    snprintf(pattern, sizeof(pattern), "%s\\*.log", g_logs);
+    snprintf(pattern, sizeof(pattern), "%s\\*.db", g_logs);
 
     /* 파일명을 먼저 수집한 후 역순 정렬합니다.
      * FindFirstFile 반환 순서는 NTFS에서도 보장되지 않으므로
@@ -269,25 +258,9 @@ static void serve_log_list(SOCKET s) {
     send(s, body, pos, 0);
 }
 
-/* 로그 파일 한 줄을 JSON 오브젝트로 변환해서 버퍼에 씁니다. */
-static int line_to_json(const char *line, char *out, int outsz) {
-    char ts[20], level[8], module[32], event[64], message[256];
-    char ts_j[48], level_j[24], module_j[64], event_j[96], msg_j[320];
-    if (parse_log_line(line, ts, level, module, event, message) != 0) return 0;
-    json_str(ts,      ts_j,     sizeof(ts_j));
-    json_str(level,   level_j,  sizeof(level_j));
-    json_str(module,  module_j, sizeof(module_j));
-    json_str(event,   event_j,  sizeof(event_j));
-    json_str(message, msg_j,    sizeof(msg_j));
-    int n = snprintf(out, outsz,
-        "{\"ts\":%s,\"level\":%s,\"module\":%s,\"event\":%s,\"message\":%s}",
-        ts_j, level_j, module_j, event_j, msg_j);
-    return (n > 0 && n < outsz) ? n : 0;
-}
-
-/* GET /api/events/history?file=xxx → JSON 배열 */
+/* GET /api/events/history?file=xxx → JSON 배열 (SQLite DB에서 전체 읽기) */
 static void serve_history(SOCKET s, const char *filename) {
-    if (!safe_filename(filename)) {
+    if (!safe_filename(filename) || !is_db_file(filename)) {
         send_header(s, 400, "application/json", 2);
         send(s, "[]", 2, 0);
         return;
@@ -295,25 +268,41 @@ static void serve_history(SOCKET s, const char *filename) {
     char path[MAX_PATH];
     snprintf(path, sizeof(path), "%s\\%s", g_logs, filename);
 
-    FILE *f = fopen(path, "r");
-    if (!f) {
+    sqlite3 *db = NULL;
+    if (sqlite3_open_v2(path, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK) {
+        send_header(s, 200, "application/json", 2);
+        send(s, "[]", 2, 0);
+        if (db) sqlite3_close(db);
+        return;
+    }
+
+    sqlite3_stmt *stmt = NULL;
+    const char *sql =
+        "SELECT ts_iso, level, module, message FROM events ORDER BY id";
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) {
+        sqlite3_close(db);
         send_header(s, 200, "application/json", 2);
         send(s, "[]", 2, 0);
         return;
     }
 
-    /* 먼저 전체 크기를 계산하기 어려우므로 동적 버퍼로 구성합니다. */
     size_t cap = 65536, pos = 0;
     char *body = (char *)malloc(cap);
-    if (!body) { fclose(f); return; }
+    if (!body) { sqlite3_finalize(stmt); sqlite3_close(db); return; }
     body[pos++] = '[';
     int first = 1;
-    char line[512];
-    while (fgets(line, sizeof(line), f)) {
-        char obj[768];
-        int n = line_to_json(line, obj, sizeof(obj));
+
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        const char *ts      = (const char *)sqlite3_column_text(stmt, 0);
+        const char *level   = (const char *)sqlite3_column_text(stmt, 1);
+        const char *module  = (const char *)sqlite3_column_text(stmt, 2);
+        const char *message = (const char *)sqlite3_column_text(stmt, 3);
+        if (!ts || !level || !module || !message) continue;
+
+        char obj[800];
+        int n = db_row_to_json(ts, level, module, message, obj, sizeof(obj));
         if (!n) continue;
-        /* 버퍼 확장 */
+
         if (pos + n + 4 > cap) {
             cap *= 2;
             char *nb = (char *)realloc(body, cap);
@@ -321,11 +310,13 @@ static void serve_history(SOCKET s, const char *filename) {
             body = nb;
         }
         if (!first) body[pos++] = ',';
-        memcpy(body + pos, obj, n);
-        pos += n;
+        memcpy(body + pos, obj, (size_t)n);
+        pos += (size_t)n;
         first = 0;
     }
-    fclose(f);
+
+    sqlite3_finalize(stmt);
+    sqlite3_close(db);
     body[pos++] = ']';
     body[pos]   = '\0';
     send_header(s, 200, "application/json", (int64_t)pos);
@@ -333,9 +324,12 @@ static void serve_history(SOCKET s, const char *filename) {
     free(body);
 }
 
-/* GET /api/events/stream?file=xxx → SSE (블로킹, 연결이 끊길 때까지 유지) */
+/* GET /api/events/stream?file=xxx → SSE (블로킹, 연결이 끊길 때까지 유지)
+ *
+ * SQLite DB를 400ms 간격으로 폴링해 새 행을 SSE로 전송합니다.
+ * 매 폴링마다 DB를 새로 열어 WAL 체크포인트 이후 행이 즉시 보이게 합니다. */
 static void serve_stream(SOCKET s, const char *filename) {
-    if (!safe_filename(filename)) {
+    if (!safe_filename(filename) || !is_db_file(filename)) {
         send_header(s, 400, "text/plain", 0);
         return;
     }
@@ -344,58 +338,73 @@ static void serve_stream(SOCKET s, const char *filename) {
 
     send_header(s, 200, "text/event-stream; charset=utf-8", -1);
 
-    HANDLE hFile = INVALID_HANDLE_VALUE;
-    /* 파일이 아직 없으면 생길 때까지 heartbeat를 보내며 기다립니다. */
+    /* DB 파일이 아직 없으면 생길 때까지 heartbeat를 보내며 기다립니다. */
     int waited = 0;
-    while (hFile == INVALID_HANDLE_VALUE) {
-        hFile = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
-                            NULL, OPEN_EXISTING, 0, NULL);
-        if (hFile == INVALID_HANDLE_VALUE) {
-            if (send_all(s, "event: heartbeat\ndata: {}\n\n", 27) != 0) return;
-            Sleep(3000);
-            waited++;
-            if (waited > 200) return; /* 10분 대기 후 종료 */
-        }
+    while (GetFileAttributesA(path) == INVALID_FILE_ATTRIBUTES) {
+        if (send_all(s, "event: heartbeat\ndata: {}\n\n", 27) != 0) return;
+        Sleep(3000);
+        if (++waited > 200) return; /* 10분 대기 후 종료 */
     }
 
-    /* 파일 끝으로 이동 (새로 추가될 줄만 스트리밍) */
-    SetFilePointer(hFile, 0, NULL, FILE_END);
-
-    char rbuf[1024];
-    char linebuf[1024];
-    int linelen = 0;
+    /* 현재 max id를 구해 이후 추가되는 행만 스트리밍합니다. */
+    sqlite3_int64 last_id = 0;
+    {
+        sqlite3 *db = NULL;
+        if (sqlite3_open_v2(path, &db, SQLITE_OPEN_READONLY, NULL) == SQLITE_OK) {
+            sqlite3_stmt *st = NULL;
+            if (sqlite3_prepare_v2(db, "SELECT MAX(id) FROM events",
+                                   -1, &st, NULL) == SQLITE_OK) {
+                if (sqlite3_step(st) == SQLITE_ROW)
+                    last_id = sqlite3_column_int64(st, 0);
+                sqlite3_finalize(st);
+            }
+            sqlite3_close(db);
+        }
+    }
 
     for (;;) {
-        DWORD read = 0;
-        ReadFile(hFile, rbuf, sizeof(rbuf) - 1, &read, NULL);
-        if (read == 0) {
-            /* 새 데이터 없음 — heartbeat */
-            if (send_all(s, "event: heartbeat\ndata: {}\n\n", 27) != 0) break;
-            Sleep(400);
-            continue;
-        }
-        /* 읽은 데이터를 줄 단위로 조립해서 파싱합니다. */
-        for (DWORD i = 0; i < read; i++) {
-            char c = rbuf[i];
-            if (c == '\n' || c == '\r') {
-                if (linelen > 0) {
-                    linebuf[linelen] = '\0';
-                    char obj[768];
-                    int n = line_to_json(linebuf, obj, sizeof(obj));
+        int has_row  = 0;
+        int send_err = 0;
+
+        /* 매번 새로 열어야 다른 프로세스가 WAL에 쓴 행이 보입니다. */
+        sqlite3 *db = NULL;
+        if (sqlite3_open_v2(path, &db, SQLITE_OPEN_READONLY, NULL) == SQLITE_OK) {
+            sqlite3_stmt *stmt = NULL;
+            const char *sql =
+                "SELECT id, ts_iso, level, module, message "
+                "FROM events WHERE id > ? ORDER BY id";
+            if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) == SQLITE_OK) {
+                sqlite3_bind_int64(stmt, 1, last_id);
+                while (sqlite3_step(stmt) == SQLITE_ROW) {
+                    sqlite3_int64  row_id  = sqlite3_column_int64(stmt, 0);
+                    const char    *ts      = (const char *)sqlite3_column_text(stmt, 1);
+                    const char    *level   = (const char *)sqlite3_column_text(stmt, 2);
+                    const char    *module  = (const char *)sqlite3_column_text(stmt, 3);
+                    const char    *message = (const char *)sqlite3_column_text(stmt, 4);
+                    last_id = row_id;
+                    if (!ts || !level || !module || !message) continue;
+
+                    char obj[800];
+                    int n = db_row_to_json(ts, level, module, message,
+                                          obj, sizeof(obj));
                     if (n > 0) {
-                        char sse[800];
+                        char sse[832];
                         int sn = snprintf(sse, sizeof(sse), "data: %.*s\n\n", n, obj);
-                        if (send_all(s, sse, sn) != 0) goto done;
+                        if (send_all(s, sse, sn) != 0) { send_err = 1; break; }
+                        has_row = 1;
                     }
-                    linelen = 0;
                 }
-            } else if (linelen < (int)sizeof(linebuf) - 1) {
-                linebuf[linelen++] = c;
+                sqlite3_finalize(stmt);
             }
+            sqlite3_close(db);
         }
+
+        if (send_err) break;
+        if (!has_row) {
+            if (send_all(s, "event: heartbeat\ndata: {}\n\n", 27) != 0) break;
+        }
+        Sleep(400);
     }
-done:
-    CloseHandle(hFile);
 }
 
 /* ── 설정 API ─────────────────────────────────────────────────────────────── */
@@ -424,7 +433,15 @@ static const char *DEFAULT_CONFIG =
     "\"block_gate\":1,"
     "\"block_min_changed\":2,"
     "\"block_margin\":1,"
-    "\"track_refresh_seconds\":5.0"
+    "\"track_refresh_seconds\":5.0,"
+    "\"residue_enabled\":1,"
+    "\"residue_diff_threshold\":18,"
+    "\"residue_min_blocks\":3,"
+    "\"residue_person_margin_blocks\":1,"
+    "\"residue_confirm_seconds\":60,"
+    "\"residue_clear_seconds\":10,"
+    "\"residue_baseline_refresh_seconds\":300,"
+    "\"residue_global_change_ratio\":0.5"
     "}";
 
 /* GET /api/config → config.json 반환 (없으면 기본값)
@@ -547,7 +564,6 @@ static void serve_config_post(SOCKET s, const char *body, int body_len) {
                                            existing.keys[i], existing.values[i]);
                 }
                 if ((size_t)(merged_len + 2) < cap) {
-                    /* fwrite 는 merged_len 을 쓰므로 끝 문자가 필요 없습니다. */
                     merged[merged_len++] = '}';
                 } else {
                     free(merged);

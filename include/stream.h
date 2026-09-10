@@ -7,10 +7,11 @@
  * MJPEG HTTP 스트리밍 서버 + 문 여닫이 기준 이미지 관리입니다.
  *
  * 엔드포인트:
- *   GET  /stream        — MJPEG 스트림 (브라우저 <img src="">)
- *   GET  /snapshot      — 현재 프레임 JPEG 1장
- *   POST /door/save     — 현재 프레임을 door_reference.raw로 저장
- *   GET  /door/preview  — 저장된 기준 이미지를 JPEG로 반환
+ *   GET  /stream          — MJPEG 스트림 (브라우저 <img src="">)
+ *   GET  /snapshot        — 현재 프레임 JPEG 1장
+ *   POST /door/save       — 현재 프레임을 door_reference.raw로 저장
+ *   GET  /door/preview    — 저장된 기준 이미지를 JPEG로 반환
+ *   POST /residue/save    — 현재 프레임을 residue_clean_reference.raw로 저장
  *
  * 사용 순서:
  *   stream_start(8081, "C:\\project")  -- 서버 시작 (백그라운드 스레드)

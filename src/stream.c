@@ -218,16 +218,18 @@ static void handle_snapshot(SOCKET s) {
     free(jpg);
 }
 
-/* POST /door/save?state=closed|open → 현재 RGB 프레임을 raw 파일로 저장
+/* 현재 RGB 프레임을 raw 파일로 저장합니다.
  *
  * 파일 형식: [int32 width][int32 height][w*h*3 RGB bytes]
  * JPEG 인코딩 없이 raw RGB를 저장하는 이유:
- * - door.c의 픽셀 비교가 RGB 공간에서 직접 이루어지므로
+ * - 픽셀 비교가 RGB/luma 공간에서 직접 이루어지므로
  *   JPEG 재압축으로 인한 양자화 오차를 피할 수 있습니다.
- * - /door/preview는 이 raw 파일을 JPEG로 변환해서 반환합니다.
  *
- * is_open: 0=닫힌 기준(door_closed_reference.raw), 1=열린 기준(door_open_reference.raw) */
-static void handle_door_save(SOCKET s, int is_open) {
+ * filename: 저장할 파일명 (g_data_dir 아래에 저장됩니다)
+ * ok_json:  성공 시 반환할 JSON 문자열 */
+static void handle_save_raw(SOCKET s,
+                             const char *filename,
+                             const char *ok_json) {
     EnterCriticalSection(&g_lock);
     if (!g_rgb || g_width <= 0 || g_height <= 0) {
         LeaveCriticalSection(&g_lock);
@@ -242,8 +244,7 @@ static void handle_door_save(SOCKET s, int is_open) {
     if (!copy) { send_json(s, 500, "{\"ok\":false}"); return; }
 
     char path[MAX_PATH];
-    snprintf(path, sizeof(path), "%s\\%s", g_data_dir,
-             is_open ? "door_open_reference.raw" : "door_closed_reference.raw");
+    snprintf(path, sizeof(path), "%s\\%s", g_data_dir, filename);
     FILE *f = fopen(path, "wb");
     if (!f) { free(copy); send_json(s, 500, "{\"ok\":false,\"error\":\"write failed\"}"); return; }
     fwrite(&w, sizeof(int), 1, f);
@@ -252,12 +253,16 @@ static void handle_door_save(SOCKET s, int is_open) {
     fclose(f);
     free(copy);
 
-    fprintf(stderr, "door: %s reference saved %dx%d -> %s\n",
-            is_open ? "open" : "closed", w, h, path);
-    if (is_open)
-        send_json(s, 200, "{\"ok\":true,\"state\":\"open\"}");
-    else
-        send_json(s, 200, "{\"ok\":true,\"state\":\"closed\"}");
+    fprintf(stderr, "stream: saved %dx%d -> %s\n", w, h, path);
+    send_json(s, 200, ok_json);
+}
+
+/* POST /door/save?state=closed|open → 문 기준 이미지 저장 */
+static void handle_door_save(SOCKET s, int is_open) {
+    handle_save_raw(s,
+        is_open ? "door_open_reference.raw" : "door_closed_reference.raw",
+        is_open ? "{\"ok\":true,\"state\":\"open\"}"
+                : "{\"ok\":true,\"state\":\"closed\"}");
 }
 
 /* GET /door/preview?state=closed|open → 해당 raw 파일을 JPEG로 반환 */
@@ -409,6 +414,11 @@ static DWORD WINAPI client_thread(LPVOID arg) {
     } else if (strcmp(url, "/door/save") == 0) {
         int is_open = (strstr(qs, "state=open") != NULL);
         handle_door_save(s, is_open);
+
+    } else if (strcmp(url, "/residue/save") == 0) {
+        handle_save_raw(s,
+            "residue_clean_reference.raw",
+            "{\"ok\":true,\"kind\":\"residue_clean\"}");
 
     } else if (strcmp(url, "/door/preview") == 0) {
         int is_open = (strstr(qs, "state=open") != NULL);

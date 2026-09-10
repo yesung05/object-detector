@@ -1,5 +1,6 @@
 #include "tracks.h"
 #include "rules.h"
+#include "residue.h"
 #include "yolo11.h"
 
 #include <stdio.h>
@@ -484,5 +485,45 @@ void draw_obj_detections(uint8_t *rgb, int width, int height, int stride,
         }
         draw_text(rgb, width, height, stride, x1 + 3, label_y + 4,
                   label, font_scale);
+    }
+}
+
+/*
+ * 잔류 영역을 프레임에 시각화합니다.
+ *
+ * ResidueMonitor* 를 받지 않는 이유: draw.c 는 test_detector 타겟에도 포함되지만
+ * residue.c 는 링크되지 않습니다. 구조체 의존 없이 좌표와 상태만 받으면
+ * 링크 에러 없이 두 빌드에 모두 사용할 수 있습니다.
+ *
+ * 색상 선택: 기존 draw_tracks 녹색(0,224,96)/주황(255,140,0)과
+ * draw_obj_detections 클래스 색 모두를 피해 보라(180,0,220)를 사용합니다.
+ * alert=0(후보): 1px 테두리, alert=1(확정): 2px 테두리 + 레이블.
+ */
+void draw_residue_roi(uint8_t *rgb, int w, int h, int stride,
+                      int x, int y, int rw, int rh, int alert) {
+    if (!rgb || w <= 0 || h <= 0 || stride < w * 3) return;
+    if (rw <= 0 || rh <= 0) return;
+
+    uint8_t br = 180, bg = 0, bb = 220;
+    int x2 = x + rw - 1, y2 = y + rh - 1;
+
+    if (x  < 0) x  = 0;
+    if (y  < 0) y  = 0;
+    if (x2 >= w) x2 = w - 1;
+    if (y2 >= h) y2 = h - 1;
+    if (x2 <= x || y2 <= y) return;
+
+    if (alert) {
+        draw_rectangle(rgb, w, h, stride, x, y, x2, y2, 2, br, bg, bb);
+        {
+            static const char *label = "RESIDUE";
+            int lw = 7 * 6 + 6;
+            int lh = 7 + 6;
+            int label_y = (y >= lh) ? y - lh : y;
+            fill_blended(rgb, w, h, stride, x, label_y, x + lw, label_y + lh);
+            draw_text(rgb, w, h, stride, x + 3, label_y + 4, label, 1);
+        }
+    } else {
+        draw_rectangle(rgb, w, h, stride, x, y, x2, y2, 1, br, bg, bb);
     }
 }

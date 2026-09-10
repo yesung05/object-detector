@@ -1,6 +1,7 @@
 #include "camera_health.h"
 #include "stream.h"
 #include "door.h"
+#include "residue.h"
 #include "config.h"
 #include "gray.h"
 #include "log.h"
@@ -62,8 +63,12 @@ typedef struct {
     int64_t track_refresh_runs;  /* L3 상태에서 안전 밸브로 강제 추론한 횟수 */
     double  gray_seconds;        /* 그레이 변환 + 모션 게이트 + 카메라 헬스 */
     double  door_seconds;        /* door_check 픽셀 비교 */
+    double  residue_seconds;     /* residue_evaluate 잔류 판정 */
     double  stream_seconds;      /* stream_push (복사 + 주기 판정) */
     int64_t drawn_frames;        /* 실제로 그린 프레임 수 (관찰자가 있던 프레임) */
+    double  cpu_log_last;        /* 마지막 CPU 사용률 로그 시각 (monotonic) */
+    double  cpu_log_interval;    /* CPU 로그 주기 (초), 기본 30 */
+    double  cpu_log_cpu_base;    /* 주기 시작 시점의 프로세스 CPU 시간 */
     DetectorRunStats detector_stats;
     /* Tier 2 — 물체 감지 (고양이/강아지/음식/병/컵/의자/테이블) */
     Detector        *obj_detector;      /* NULL 이면 Tier 2 비활성 */
@@ -134,7 +139,8 @@ typedef struct {
     double       detect_fps_limit;
     double       hud_start_time;  /* 첫 프레임 시각 (HUD FPS 분모) */
     int          stream_port;     /* MJPEG 스트림 포트, 0이면 비활성 */
-    DoorMonitor  door;            /* 문 여닫이 감지 (door_reference.raw 필요) */
+    DoorMonitor    door;           /* 문 여닫이 감지 (door_reference.raw 필요) */
+    ResidueMonitor residue;        /* 잔류물 감지 (residue_clean_reference.raw 필요) */
 
     /* config.json hot-reload — 2초마다 mtime을 확인하고 변경 시 재로드합니다. */
     char   config_reload_path[512]; /* 재로드할 config 파일 경로 */
@@ -145,6 +151,9 @@ typedef struct {
     time_t door_closed_mtime;
     time_t door_open_mtime;
     double door_refs_check_time;
+    char   residue_ref_path[600];
+    time_t residue_ref_mtime;
+    double residue_ref_check_time;
 } AppContext;
 
 /* 명령줄에서 읽은 경로와 프로그램 내부 기본 설정을 한곳에 모읍니다. */
@@ -656,6 +665,25 @@ static void apply_gate_config(AppContext *app, const Config *cfg) {
                           &app->active_start_min, &app->active_end_min);
 }
 
+static void apply_residue_config(AppContext *app, const Config *cfg) {
+    app->residue.config.enabled =
+        (int)config_long(cfg, "residue_enabled", 1, 0, 1);
+    app->residue.config.diff_threshold =
+        (int)config_long(cfg, "residue_diff_threshold", 18, 1, 255);
+    app->residue.config.min_blocks =
+        (int)config_long(cfg, "residue_min_blocks", 3, 1, 256);
+    app->residue.config.person_margin_blocks =
+        (int)config_long(cfg, "residue_person_margin_blocks", 1, 0, 16);
+    app->residue.config.confirm_seconds =
+        (double)config_float(cfg, "residue_confirm_seconds", 60.0f, 1.0f, 3600.0f);
+    app->residue.config.clear_seconds =
+        (double)config_float(cfg, "residue_clear_seconds", 10.0f, 1.0f, 300.0f);
+    app->residue.config.baseline_refresh_seconds =
+        (double)config_float(cfg, "residue_baseline_refresh_seconds", 300.0f, 30.0f, 86400.0f);
+    app->residue.config.global_change_ratio =
+        config_float(cfg, "residue_global_change_ratio", 0.5f, 0.1f, 1.0f);
+}
+
 /* 키오스크 ROI 를 rules 설정에 채웁니다. 미설정이면 roi_kiosk_set = 0 이 되어
  * 주문 상태 전환 자체가 비활성화됩니다(호출자가 로그로 알립니다). */
 static void apply_roi_kiosk(RulesConfig *rc, const Config *cfg) {
@@ -730,6 +758,8 @@ static void reload_config(AppContext *app) {
         (int)config_long(&cfg, "detect_every_obj",
                          (long)app->detect_every_obj, 1, 10000);
 
+    apply_residue_config(app, &cfg);
+
     config_destroy(&cfg);
     fprintf(stderr, "config: reloaded from %s\n", app->config_reload_path);
 }
@@ -743,6 +773,26 @@ static time_t door_ref_mtime(const char *path) {
     struct stat st;
     return stat(path, &st) == 0 ? (time_t)st.st_mtime : 0;
 #endif
+}
+
+static void reload_residue_reference(AppContext *app) {
+    time_t mtime;
+#if defined(_WIN32)
+    struct _stat st;
+    mtime = (_stat(app->residue_ref_path, &st) == 0) ? st.st_mtime : 0;
+#else
+    struct stat st;
+    mtime = (stat(app->residue_ref_path, &st) == 0) ? (time_t)st.st_mtime : 0;
+#endif
+    if (mtime == app->residue_ref_mtime) return;
+    if (residue_load(&app->residue, app->residue_ref_path) != 0) {
+        fprintf(stderr, "residue: failed to reload reference\n");
+        return;
+    }
+    app->residue_ref_mtime = mtime;
+    if (app->residue.baseline_ready)
+        fprintf(stderr, "residue: reference reloaded %dx%d\n",
+                app->residue.baseline_w, app->residue.baseline_h);
 }
 
 static void reload_door_references(AppContext *app) {
@@ -802,6 +852,11 @@ static int process_frame(RgbFrame *frame, void *opaque,
         (now - app->door_refs_check_time) >= 2.0) {
         app->door_refs_check_time = now;
         reload_door_references(app);
+    }
+    if (app->residue_ref_path[0] &&
+        (now - app->residue_ref_check_time) >= 2.0) {
+        app->residue_ref_check_time = now;
+        reload_residue_reference(app);
     }
 
     /* 첫 프레임에서 HUD FPS 계산 기준 시각을 기록합니다. */
@@ -1196,6 +1251,63 @@ static int process_frame(RgbFrame *frame, void *opaque,
         }
     }
 
+    /* 잔류물 감지: 기준 이미지 대비 지속적 픽셀 변화를 판정합니다.
+     *
+     * 그리기보다 먼저 실행하는 이유: door_check()와 같습니다 — 박스·HUD 픽셀이
+     * 기준 이미지 비교에 섞이면 없던 변화가 생겨납니다 (설계 문서 "반드시 지킬 3가지" #1). */
+    if (app->residue.config.enabled && app->residue.baseline_ready) {
+        /* 사람 bbox 배열 구성 */
+        GrayRect person_rects[64];
+        int pcount = 0;
+        for (size_t pi = 0;
+             pi < app->tracks.count && pcount < 64; ++pi) {
+            if (!app->tracks.items[pi].active) continue;
+            person_rects[pcount].x1 = app->tracks.items[pi].box.x1;
+            person_rects[pcount].y1 = app->tracks.items[pi].box.y1;
+            person_rects[pcount].x2 = app->tracks.items[pi].box.x2;
+            person_rects[pcount].y2 = app->tracks.items[pi].box.y2;
+            pcount++;
+        }
+        /* 가구 bbox 배열 구성 (Tier 2 결과에서 chair/dining_table만 수집) */
+        GrayRect furn_rects[16];
+        int fcount = 0;
+        if (app->obj_detector) {
+            for (size_t fi = 0;
+                 fi < app->obj_detections.count && fcount < 16; ++fi) {
+                int cid = app->obj_detections.items[fi].class_id;
+                if (cid != OBJ_CHAIR && cid != OBJ_DININGTABLE) continue;
+                furn_rects[fcount].x1 = app->obj_detections.items[fi].x1;
+                furn_rects[fcount].y1 = app->obj_detections.items[fi].y1;
+                furn_rects[fcount].x2 = app->obj_detections.items[fi].x2;
+                furn_rects[fcount].y2 = app->obj_detections.items[fi].y2;
+                fcount++;
+            }
+        }
+        started = platform_monotonic_seconds();
+        residue_evaluate(&app->residue, &app->gray,
+                         person_rects, pcount,
+                         fcount > 0 ? furn_rects : NULL, fcount,
+                         now, &app->event_log);
+        app->residue_seconds += platform_monotonic_seconds() - started;
+    }
+
+    /* ─── CPU 사용률 주기 로깅 ────────────────────────────────────────────── */
+    if (app->cpu_log_interval > 0.0 &&
+        (now - app->cpu_log_last) >= app->cpu_log_interval) {
+        double wall  = now - app->cpu_log_last;
+        double cpu_t = platform_process_cpu_seconds() - app->cpu_log_cpu_base;
+        /* 논리 코어 수로 나눠 단일 코어 기준 점유율로 환산합니다.
+         * 배포 기기 4스레드 기준: cpu_t/wall*100 이 400%면 전 코어 포화 */
+        int pct = (int)((cpu_t / wall) * 100.0 + 0.5);
+        char msg[80];
+        snprintf(msg, sizeof(msg),
+                 "cpu_usage=%d%% wall=%.1fs cpu=%.3fs",
+                 pct, wall, cpu_t);
+        event_log_write(&app->event_log, LOG_INFO, "perf", msg);
+        app->cpu_log_last     = now;
+        app->cpu_log_cpu_base = platform_process_cpu_seconds();
+    }
+
     /*
      * 그리기는 볼 사람이 있을 때만 합니다.
      *
@@ -1216,6 +1328,20 @@ static int process_frame(RgbFrame *frame, void *opaque,
             if (app->obj_detector)
                 draw_obj_detections(frame->data, frame->width, frame->height,
                                     frame->stride, &app->obj_detections);
+            /* 잔류 영역 시각화 */
+            {
+                int ri;
+                for (ri = 0; ri < RESIDUE_MAX_REGIONS; ++ri) {
+                    const ResidueRegion *reg = &app->residue.regions[ri];
+                    if (!reg->in_use) continue;
+                    draw_residue_roi(frame->data, frame->width, frame->height,
+                                     frame->stride,
+                                     (int)reg->x1, (int)reg->y1,
+                                     (int)(reg->x2 - reg->x1),
+                                     (int)(reg->y2 - reg->y1),
+                                     reg->confirmed);
+                }
+            }
             /* 실시간 EMA FPS / CPU 사용률 / 온도를 HUD에 표시합니다.
              * 시작 직후(EMA=0)에는 0이 표시되다가 몇 프레임 후 안정됩니다.
              * cached_temperature는 2초 주기로 갱신되며 -1이면 온도 줄을 생략합니다. */
@@ -1290,6 +1416,7 @@ static int write_metrics(const char *path, const Arguments *args,
             "  \"drawing_seconds\": %.6f,\n"
             "  \"gray_seconds\": %.6f,\n"
             "  \"door_seconds\": %.6f,\n"
+            "  \"residue_seconds\": %.6f,\n"
             "  \"stream_seconds\": %.6f,\n"
             "  \"drawn_frames\": %lld,\n"
             "  \"output_seconds\": %.6f,\n"
@@ -1331,7 +1458,8 @@ static int write_metrics(const char *path, const Arguments *args,
             app->detector_stats.inference_seconds,
             app->detector_stats.postprocess_seconds,
             app->tracking_seconds, app->drawing_seconds,
-            app->gray_seconds, app->door_seconds, app->stream_seconds,
+            app->gray_seconds, app->door_seconds, app->residue_seconds,
+            app->stream_seconds,
             (long long)app->drawn_frames,
             media->output_seconds,
             app->detector_stats.inference_p50_ms,
@@ -1375,7 +1503,6 @@ int main(int argc, char **argv) {
     MediaStats media_stats;
     int parse_result;
     int result = EXIT_FAILURE;
-    FILE *event_log_file = NULL;  /* NULL=미열림, stderr=기본값, 파일=직접 열었음 */
 
     /* 도움말은 정상 종료, 잘못된 옵션은 실패 종료로 구분합니다. */
     parse_result = parse_arguments(argc, argv, &args);
@@ -1384,7 +1511,24 @@ int main(int argc, char **argv) {
         usage(argv[0]);
         return EXIT_FAILURE;
     }
+
+    /* 인스턴스 중복 실행 방지: 두 번째 프로세스는 즉시 종료합니다.
+     * 카메라 2대를 2프로세스로 운용할 때 스레드 예산(OS 예비 1개)을 보호하기 위해
+     * 하나의 감지 프로세스만 허용합니다. */
+    {
+        int lock = platform_single_instance_try_lock();
+        if (lock == 0) {
+            fprintf(stderr, "error: hunik-detector가 이미 실행 중입니다.\n");
+            return EXIT_FAILURE;
+        }
+        if (lock < 0) {
+            fprintf(stderr, "error: 단일 인스턴스 잠금 실패 (시스템 오류)\n");
+            return EXIT_FAILURE;
+        }
+    }
+
     memset(&app, 0, sizeof(app));
+    app.cpu_log_interval = 30.0; /* 30초마다 CPU 사용률을 이벤트 로그에 기록 */
     app.detect_every = args.detect_every;
     app.detect_every_obj = args.detect_every_obj;
     app.detect_fps_limit = args.detect_fps_limit;
@@ -1514,6 +1658,7 @@ int main(int argc, char **argv) {
         app.door.roi_y          = (int)config_long (&cfg, "door_roi_y",         0,    0, 9999);
         app.door.roi_w          = (int)config_long (&cfg, "door_roi_w",         0,    0, 9999);
         app.door.roi_h          = (int)config_long (&cfg, "door_roi_h",         0,    0, 9999);
+        apply_residue_config(&app, &cfg);
         if (!args.stream_port_set)
             app.stream_port = (int)config_long(&cfg, "stream_port", 0, 1024, 65535);
         config_destroy(&cfg);
@@ -1529,16 +1674,17 @@ int main(int argc, char **argv) {
             goto done;
         }
     }
-    /* 이벤트 로그 파일 오픈 (미지정이면 stderr로 출력) */
-    event_log_file = args.event_log_path
-                         ? fopen(args.event_log_path, "a")
-                         : stderr;
-    if (args.event_log_path && !event_log_file) {
-        fprintf(stderr, "failed to open event log: %s\n",
-                args.event_log_path);
-        goto done;
+    /* 이벤트 로그 — SQLite DB. 미지정이면 인메모리(stderr echo만). */
+    {
+        const char *db_path = args.event_log_path
+                                  ? args.event_log_path : ":memory:";
+        if (event_log_open(&app.event_log, db_path, LOG_INFO, 1) != 0) {
+            fprintf(stderr, "failed to open event log: %s\n", db_path);
+            goto done;
+        }
     }
-    event_log_init(&app.event_log, event_log_file, LOG_INFO);
+    app.cpu_log_last     = platform_monotonic_seconds();
+    app.cpu_log_cpu_base = platform_process_cpu_seconds();
 
     /*
      * 조용히 꺼져 있는 기능을 기동 시 한 블록으로 알립니다.
@@ -1581,6 +1727,10 @@ int main(int argc, char **argv) {
         if (!app.door.enabled)
             event_log_write(&app.event_log, LOG_INFO, "startup",
                             "door_enabled=0 — 문 개방 감지 비활성");
+
+        if (!app.residue.config.enabled)
+            event_log_write(&app.event_log, LOG_INFO, "startup",
+                            "residue_enabled=0 — 잔류물 감지 비활성");
     }
 
     fprintf(stderr,
@@ -1657,6 +1807,30 @@ int main(int argc, char **argv) {
         }
         app.door_closed_mtime = door_ref_mtime(app.door_closed_path);
         app.door_open_mtime = door_ref_mtime(app.door_open_path);
+
+        /* 잔류물 기준 이미지 로드 */
+        snprintf(app.residue_ref_path, sizeof(app.residue_ref_path),
+                 "%s\\residue_clean_reference.raw", data_dir);
+        if (residue_load(&app.residue, app.residue_ref_path) != 0)
+            fprintf(stderr, "residue: failed to load reference\n");
+        else if (app.residue.baseline_ready)
+            fprintf(stderr, "residue: clean reference loaded %dx%d\n",
+                    app.residue.baseline_w, app.residue.baseline_h);
+        else
+            event_log_write(&app.event_log, LOG_WARN, "residue",
+                            "residue_baseline_missing — 기준 이미지 없음. "
+                            "대시보드에서 청결 상태를 캡처하세요.");
+        {
+#if defined(_WIN32)
+            struct _stat rst;
+            app.residue_ref_mtime =
+                (_stat(app.residue_ref_path, &rst) == 0) ? rst.st_mtime : 0;
+#else
+            struct stat rst;
+            app.residue_ref_mtime =
+                (stat(app.residue_ref_path, &rst) == 0) ? (time_t)rst.st_mtime : 0;
+#endif
+        }
     }
     start = platform_monotonic_seconds();
     cpu_start = platform_process_cpu_seconds();
@@ -1700,8 +1874,9 @@ done:
     if (app.detection_log) fclose(app.detection_log);
     if (app.keypoint_log)  fclose(app.keypoint_log);
     if (app.preview_pipe) pclose(app.preview_pipe);
-    if (event_log_file && event_log_file != stderr) fclose(event_log_file);
+    event_log_close(&app.event_log);
     door_destroy(&app.door);
+    residue_destroy(&app.residue);
     rules_destroy(&app.rules);
     tracks_destroy(&app.tracks);
     camera_health_destroy(&app.cam_health);

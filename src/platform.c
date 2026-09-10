@@ -48,6 +48,31 @@ int platform_cpu_temperature_celsius(void) {
     return -1;
 }
 
+/* 이름 있는 뮤텍스로 단일 인스턴스를 보장합니다.
+ * CreateMutex는 이미 존재해도 핸들을 반환하므로 ERROR_ALREADY_EXISTS로 구분합니다. */
+static HANDLE g_instance_mutex = NULL;
+
+int platform_single_instance_try_lock(void) {
+    /* "Global\\" 접두사는 관리자 권한이 필요하므로 세션 로컬 이름을 씁니다.
+     * 같은 사용자 세션 내 중복 실행만 막으면 충분합니다. */
+    g_instance_mutex = CreateMutexW(NULL, TRUE, L"hunik-detector-lock");
+    if (!g_instance_mutex) return -1;
+    if (GetLastError() == ERROR_ALREADY_EXISTS) {
+        CloseHandle(g_instance_mutex);
+        g_instance_mutex = NULL;
+        return 0;
+    }
+    return 1;
+}
+
+void platform_single_instance_unlock(void) {
+    if (g_instance_mutex) {
+        ReleaseMutex(g_instance_mutex);
+        CloseHandle(g_instance_mutex);
+        g_instance_mutex = NULL;
+    }
+}
+
 #else
 
 #include <stdio.h>
@@ -76,6 +101,32 @@ void platform_sleep_milliseconds(unsigned int milliseconds) {
     delay.tv_sec = (time_t)(milliseconds / 1000U);
     delay.tv_nsec = (long)(milliseconds % 1000U) * 1000000L;
     nanosleep(&delay, NULL);
+}
+
+/* lock file + flock(LOCK_EX|LOCK_NB) 로 단일 인스턴스를 보장합니다.
+ * 프로세스가 죽으면 커널이 flock을 자동 해제하므로 stale lock 문제가 없습니다. */
+#include <fcntl.h>
+#include <sys/file.h>
+
+static int g_lock_fd = -1;
+
+int platform_single_instance_try_lock(void) {
+    g_lock_fd = open("/tmp/hunik-detector.lock", O_CREAT | O_RDWR, 0666);
+    if (g_lock_fd < 0) return -1;
+    if (flock(g_lock_fd, LOCK_EX | LOCK_NB) != 0) {
+        close(g_lock_fd);
+        g_lock_fd = -1;
+        return 0;
+    }
+    return 1;
+}
+
+void platform_single_instance_unlock(void) {
+    if (g_lock_fd >= 0) {
+        flock(g_lock_fd, LOCK_UN);
+        close(g_lock_fd);
+        g_lock_fd = -1;
+    }
 }
 
 #if defined(__linux__)

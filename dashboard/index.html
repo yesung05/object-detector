@@ -166,12 +166,15 @@
   .level-ERROR { background: #3d0000; color: var(--red); }
   .event-module { color: var(--muted); font-size: 11px; }
   .event-msg    { color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .ev-overstay    { border-left: 3px solid var(--red) !important; }
-  .ev-unordered   { border-left: 3px solid var(--yellow) !important; }
-  .ev-fallen      { border-left: 3px solid var(--red) !important; }
-  .ev-camera-warn { border-left: 3px solid var(--orange) !important; }
-  .ev-camera-ok   { border-left: 3px solid var(--green) !important; }
-  .ev-door-open   { border-left: 3px solid var(--blue) !important; }
+  .ev-overstay       { border-left: 3px solid var(--red) !important; }
+  .ev-unordered      { border-left: 3px solid var(--yellow) !important; }
+  .ev-fallen         { border-left: 3px solid var(--red) !important; }
+  .ev-camera-warn    { border-left: 3px solid var(--orange) !important; }
+  .ev-camera-ok      { border-left: 3px solid var(--green) !important; }
+  .ev-door-open      { border-left: 3px solid var(--blue) !important; }
+  .ev-residue-trash  { border-left: 3px solid var(--orange) !important; }
+  .ev-residue-spill  { border-left: 3px solid var(--red) !important; }
+  .ev-residue-cleared{ border-left: 3px solid var(--green) !important; }
 
   /* ── 설정 탭 ── */
   #settings-panel {
@@ -292,6 +295,11 @@
     <div class="stat-card">
       <div><div class="stat-label">문 장기 개방</div><div class="stat-label" style="font-size:10px">방치 횟수</div></div>
       <div class="stat-value blue" id="cnt-door">0</div>
+    </div>
+    <hr class="divider">
+    <div class="stat-card">
+      <div><div class="stat-label">잔류물 감지</div><div class="stat-label" style="font-size:10px">trash·spill</div></div>
+      <div class="stat-value orange" id="cnt-residue">0</div>
     </div>
     <hr class="divider">
     <div class="stat-card">
@@ -490,6 +498,70 @@
           </div>
         </div>
 
+        <!-- 잔류물 감지 -->
+        <div class="settings-section">
+          <h3>잔류물 감지 (바닥 흘림 · 방치된 쓰레기)</h3>
+          <div class="setting-row">
+            <div><div class="setting-label">잔류물 감지 활성화</div><div class="setting-desc">residue_enabled</div></div>
+            <label class="toggle"><input type="checkbox" id="cfg-residue_enabled" checked><span class="toggle-slider"></span></label>
+            <span></span>
+          </div>
+          <div class="setting-row">
+            <div><div class="setting-label">블록 평균 휘도 차 임계값</div><div class="setting-desc">residue_diff_threshold — 기본 18. 낮추면 민감해지고 조명 노이즈에 취약</div></div>
+            <input type="range" class="setting-input" id="cfg-residue_diff_threshold" min="5" max="60" step="1" value="18" oninput="syncDisplay(this)">
+            <span class="setting-value-display" id="disp-residue_diff_threshold">18</span>
+          </div>
+          <div class="setting-row">
+            <div><div class="setting-label">최소 블록 수</div><div class="setting-desc">residue_min_blocks — 1블록=64×64px. 이 미만 영역 폐기</div></div>
+            <input type="number" class="setting-input" id="cfg-residue_min_blocks" min="1" max="64" value="3">
+            <span></span>
+          </div>
+          <div class="setting-row">
+            <div><div class="setting-label">사람 여유 블록</div><div class="setting-desc">residue_person_margin_blocks — bbox 경계 흔들림 흡수</div></div>
+            <input type="number" class="setting-input" id="cfg-residue_person_margin_blocks" min="0" max="8" value="1">
+            <span></span>
+          </div>
+          <div class="setting-row">
+            <div><div class="setting-label">이벤트 확정 시간 (초)</div><div class="setting-desc">residue_confirm_seconds — 기본 60. 손님이 물건을 잠시 놓는 정상 행동과 구분</div></div>
+            <input type="range" class="setting-input" id="cfg-residue_confirm_seconds" min="10" max="300" step="5" value="60" oninput="syncDisplay(this)">
+            <span class="setting-value-display" id="disp-residue_confirm_seconds">60</span>
+          </div>
+          <div class="setting-row">
+            <div><div class="setting-label">해소 확정 시간 (초)</div><div class="setting-desc">residue_clear_seconds — 이 시간 미관측 시 잔류 해소로 판정</div></div>
+            <input type="range" class="setting-input" id="cfg-residue_clear_seconds" min="5" max="60" step="1" value="10" oninput="syncDisplay(this)">
+            <span class="setting-value-display" id="disp-residue_clear_seconds">10</span>
+          </div>
+          <div class="setting-row">
+            <div><div class="setting-label">기준 자동 갱신 주기 (초)</div><div class="setting-desc">residue_baseline_refresh_seconds — 안전 시점(사람 없음+후보 없음)에만 갱신</div></div>
+            <input type="range" class="setting-input" id="cfg-residue_baseline_refresh_seconds" min="60" max="1800" step="30" value="300" oninput="syncDisplay(this)">
+            <span class="setting-value-display" id="disp-residue_baseline_refresh_seconds">300</span>
+          </div>
+          <div class="setting-row">
+            <div><div class="setting-label">전역 변화 가드 비율</div><div class="setting-desc">residue_global_change_ratio — 이 비율 초과 시 조명 변화로 해석, 기준 강제 갱신</div></div>
+            <input type="range" class="setting-input" id="cfg-residue_global_change_ratio" min="0.2" max="0.9" step="0.05" value="0.5" oninput="syncDisplay(this)">
+            <span class="setting-value-display" id="disp-residue_global_change_ratio">0.50</span>
+          </div>
+          <!-- 청결 기준 이미지 캡처 -->
+          <div style="margin-top:8px;">
+            <div class="setting-label" style="margin-bottom:8px;">청결 상태 기준 이미지</div>
+            <div class="door-status" style="margin-bottom:6px; line-height:1.5;">
+              설치 후 매장이 청결한 상태에서 한 번 캡처하세요. 사람이 없는 상태에서 캡처하면 정확도가 높아집니다.
+              저장 후 detector가 최대 2초 내 반영합니다.
+            </div>
+            <div class="door-preview-area">
+              <div>
+                <img id="residue-preview-img" class="door-preview-img" src="" alt="" style="display:none">
+                <div class="door-preview-placeholder" id="residue-preview-ph">캡처 없음</div>
+              </div>
+              <div class="door-actions">
+                <button class="btn primary" onclick="captureResidueRef()">청결 상태 캡처</button>
+                <button class="btn" onclick="refreshResiduePreview()">미리보기 갱신</button>
+              </div>
+            </div>
+            <div class="door-status" id="residue-status" style="margin-top:6px;">detector 스트림 포트로 캡처합니다.</div>
+          </div>
+        </div>
+
         <!-- 스트림 -->
         <div class="settings-section">
           <h3>스트림</h3>
@@ -524,7 +596,7 @@ const CAMERA_OK   = new Set(["camera_ok"]);
 
 let currentFile = "";
 let eventSource = null;
-let counts = { overstay:0, unordered:0, fallen:0, camera:0, door:0, total:0 };
+let counts = { overstay:0, unordered:0, fallen:0, camera:0, door:0, residue:0, total:0 };
 let doorIsOpen = null; /* null=알 수 없음, true=열림, false=닫힘 */
 let newCount = 0;
 let userScrolled = false;
@@ -564,6 +636,7 @@ function updateCounts() {
   document.getElementById("cnt-fallen").textContent = counts.fallen;
   document.getElementById("cnt-camera").textContent = counts.camera;
   document.getElementById("cnt-door").textContent = counts.door;
+  document.getElementById("cnt-residue").textContent = counts.residue;
   document.getElementById("cnt-total").textContent = counts.total;
   footerCount.textContent = `총 ${counts.total}건`;
   const badge = document.getElementById("door-state-badge");
@@ -585,6 +658,7 @@ function countEvent(e) {
   else if (WARN_EVENTS.has(ev)) counts.camera++;
   else if (ev === "door_open")   { counts.door++; doorIsOpen = true; }
   else if (ev === "door_closed") { doorIsOpen = false; }
+  else if (ev === "residue_trash" || ev === "residue_spill" || ev === "residue_unknown") counts.residue++;
   updateCounts();
 }
 
@@ -596,6 +670,9 @@ function rowClass(e) {
   if (ev === "door_open") return "ev-door-open";
   if (WARN_EVENTS.has(ev)) return "ev-camera-warn";
   if (CAMERA_OK.has(ev)) return "ev-camera-ok";
+  if (ev === "residue_trash" || ev === "residue_unknown") return "ev-residue-trash";
+  if (ev === "residue_spill") return "ev-residue-spill";
+  if (ev === "residue_cleared") return "ev-residue-cleared";
   return "";
 }
 
@@ -785,7 +862,9 @@ async function loadSettings() {
       "stream_port","motion_gate","motion_ratio_threshold","idle_refresh_seconds",
       "dwell_limit_seconds","unordered_grace_seconds","fall_hold_seconds",
       "luma_black_threshold","luma_white_threshold","frozen_frames_threshold",
-      "door_enabled","door_diff_threshold","door_confirm_frames","door_open_seconds","door_roi_x","door_roi_y","door_roi_w","door_roi_h"
+      "door_enabled","door_diff_threshold","door_confirm_frames","door_open_seconds","door_roi_x","door_roi_y","door_roi_w","door_roi_h",
+      "residue_enabled","residue_diff_threshold","residue_min_blocks","residue_person_margin_blocks",
+      "residue_confirm_seconds","residue_clear_seconds","residue_baseline_refresh_seconds","residue_global_change_ratio"
     ];
     keys.forEach(k => { if (cfg[k] !== undefined) setCfgVal(k, cfg[k]); });
     updateRoiSummary();
@@ -822,6 +901,14 @@ async function saveSettings() {
     door_roi_y:               cfgVal("door_roi_y"),
     door_roi_w:               cfgVal("door_roi_w"),
     door_roi_h:               cfgVal("door_roi_h"),
+    residue_enabled:                    cfgVal("residue_enabled"),
+    residue_diff_threshold:             cfgVal("residue_diff_threshold"),
+    residue_min_blocks:                 cfgVal("residue_min_blocks"),
+    residue_person_margin_blocks:       cfgVal("residue_person_margin_blocks"),
+    residue_confirm_seconds:            cfgVal("residue_confirm_seconds"),
+    residue_clear_seconds:              cfgVal("residue_clear_seconds"),
+    residue_baseline_refresh_seconds:   cfgVal("residue_baseline_refresh_seconds"),
+    residue_global_change_ratio:        cfgVal("residue_global_change_ratio"),
   };
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 5000);
@@ -885,6 +972,37 @@ function refreshDoorPreview(state) {
   const ph    = document.getElementById(phId);
   const src   = `http://localhost:${port}/door/preview?state=${state}&t=${Date.now()}`;
   const tmp   = new Image();
+  tmp.onload  = () => { img.src = src; img.style.display = ""; ph.style.display = "none"; };
+  tmp.onerror = () => { img.style.display = "none"; ph.style.display = ""; };
+  tmp.src = src;
+}
+
+// ── 잔류물 기준 이미지 ──────────────────────────────────────────────────────
+async function captureResidueRef() {
+  const port = getStreamPort();
+  const st = document.getElementById("residue-status");
+  st.textContent = "청결 기준 캡처 중...";
+  try {
+    const res = await fetch(`http://localhost:${port}/residue/save`, { method: "POST" });
+    const json = await res.json();
+    if (json.ok) {
+      st.textContent = "청결 기준 이미지 저장됨 — detector가 최대 2초 내 다시 읽습니다.";
+      refreshResiduePreview();
+    } else {
+      st.textContent = json.error || "캡처 실패";
+    }
+  } catch (_) {
+    st.textContent = "detector 미실행 또는 포트 오류";
+  }
+}
+
+function refreshResiduePreview() {
+  const port = getStreamPort();
+  const img  = document.getElementById("residue-preview-img");
+  const ph   = document.getElementById("residue-preview-ph");
+  /* 별도 /residue/preview 엔드포인트 미구현 — 현재 스냅샷으로 대체 */
+  const src  = `http://localhost:${port}/snapshot?t=${Date.now()}`;
+  const tmp  = new Image();
   tmp.onload  = () => { img.src = src; img.style.display = ""; ph.style.display = "none"; };
   tmp.onerror = () => { img.style.display = "none"; ph.style.display = ""; };
   tmp.src = src;

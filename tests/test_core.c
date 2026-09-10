@@ -9,6 +9,7 @@
 #include "rules.h"
 #include "tracks.h"
 #include "door.h"
+#include "residue.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -670,9 +671,7 @@ static void test_rules_overstay_latches_once(void) {
     EventLog elog;
     RulesConfig rcfg = {60.0, 300.0, 5.0, 0, 0, 0, 0, 0};
     char error[128] = {0};
-    FILE *f = tmpfile();
-    ASSERT_TRUE(f != NULL);
-    event_log_init(&elog, f, LOG_INFO);
+    event_log_open(&elog, ":memory:", LOG_INFO, 0);
     ASSERT_INT_EQ(tracks_init(&tl, 16, 0.3f, 5, 1800.0, 0.45f, error, sizeof(error)), 0);
     ASSERT_INT_EQ(rules_init(&re, 16, &rcfg, error, sizeof(error)), 0);
 
@@ -695,7 +694,7 @@ static void test_rules_overstay_latches_once(void) {
 
     rules_destroy(&re);
     tracks_destroy(&tl);
-    fclose(f);
+    event_log_close(&elog);
 }
 
 static void test_rules_fall_geometry(void) {
@@ -705,9 +704,7 @@ static void test_rules_fall_geometry(void) {
     EventLog elog;
     RulesConfig rcfg = {3600.0, 300.0, 0.1, 0, 0, 0, 0, 0}; /* fall_hold=0.1초 */
     char error[128] = {0};
-    FILE *f = tmpfile();
-    ASSERT_TRUE(f != NULL);
-    event_log_init(&elog, f, LOG_INFO);
+    event_log_open(&elog, ":memory:", LOG_INFO, 0);
     ASSERT_INT_EQ(tracks_init(&tl, 16, 0.3f, 5, 1800.0, 0.45f, error, sizeof(error)), 0);
     ASSERT_INT_EQ(rules_init(&re, 16, &rcfg, error, sizeof(error)), 0);
 
@@ -726,7 +723,7 @@ static void test_rules_fall_geometry(void) {
 
     rules_destroy(&re);
     tracks_destroy(&tl);
-    fclose(f);
+    event_log_close(&elog);
 }
 
 static void test_rules_fall_requires_hold(void) {
@@ -736,9 +733,7 @@ static void test_rules_fall_requires_hold(void) {
     EventLog elog;
     RulesConfig rcfg = {3600.0, 300.0, 5.0, 0, 0, 0, 0, 0};
     char error[128] = {0};
-    FILE *f = tmpfile();
-    ASSERT_TRUE(f != NULL);
-    event_log_init(&elog, f, LOG_INFO);
+    event_log_open(&elog, ":memory:", LOG_INFO, 0);
     ASSERT_INT_EQ(tracks_init(&tl, 16, 0.3f, 5, 1800.0, 0.45f, error, sizeof(error)), 0);
     ASSERT_INT_EQ(rules_init(&re, 16, &rcfg, error, sizeof(error)), 0);
 
@@ -762,7 +757,7 @@ static void test_rules_fall_requires_hold(void) {
 
     rules_destroy(&re);
     tracks_destroy(&tl);
-    fclose(f);
+    event_log_close(&elog);
 }
 
 static void test_rules_unordered_seated(void) {
@@ -771,9 +766,7 @@ static void test_rules_unordered_seated(void) {
     EventLog elog;
     RulesConfig rcfg = {3600.0, 30.0, 5.0, 0, 0, 0, 0, 0}; /* grace=30초 */
     char error[128] = {0};
-    FILE *f = tmpfile();
-    ASSERT_TRUE(f != NULL);
-    event_log_init(&elog, f, LOG_INFO);
+    event_log_open(&elog, ":memory:", LOG_INFO, 0);
     ASSERT_INT_EQ(tracks_init(&tl, 16, 0.3f, 5, 1800.0, 0.45f, error, sizeof(error)), 0);
     ASSERT_INT_EQ(rules_init(&re, 16, &rcfg, error, sizeof(error)), 0);
 
@@ -792,7 +785,7 @@ static void test_rules_unordered_seated(void) {
 
     rules_destroy(&re);
     tracks_destroy(&tl);
-    fclose(f);
+    event_log_close(&elog);
 }
 
 /* ── CameraHealth 테스트 ─────────────────────────────────────────────────── */
@@ -1048,10 +1041,8 @@ static void test_rules_fall_no_hip_no_fire(void) {
     EventLog elog;
     RulesConfig rcfg = {3600.0, 300.0, 0.1, 0, 0, 0, 0, 0}; /* fall_hold=0.1s */
     char error[128] = {0};
-    FILE *f = tmpfile();
     int i;
-    ASSERT_TRUE(f != NULL);
-    event_log_init(&elog, f, LOG_INFO);
+    event_log_open(&elog, ":memory:", LOG_INFO, 0);
     ASSERT_INT_EQ(tracks_init(&tl, 16, 0.3f, 5, 1800.0, 0.45f, error, sizeof(error)), 0);
     ASSERT_INT_EQ(rules_init(&re, 16, &rcfg, error, sizeof(error)), 0);
 
@@ -1081,7 +1072,7 @@ static void test_rules_fall_no_hip_no_fire(void) {
 
     rules_destroy(&re);
     tracks_destroy(&tl);
-    fclose(f);
+    event_log_close(&elog);
 }
 
 /* 정상 감지: 코+어깨+엉덩이 모두 수평 → 발화해야 함 */
@@ -1091,10 +1082,8 @@ static void test_rules_fall_with_hip_fires(void) {
     EventLog elog;
     RulesConfig rcfg = {3600.0, 300.0, 0.1, 0, 0, 0, 0, 0}; /* fall_hold=0.1s */
     char error[128] = {0};
-    FILE *f = tmpfile();
     int i;
-    ASSERT_TRUE(f != NULL);
-    event_log_init(&elog, f, LOG_INFO);
+    event_log_open(&elog, ":memory:", LOG_INFO, 0);
     ASSERT_INT_EQ(tracks_init(&tl, 16, 0.3f, 5, 1800.0, 0.45f, error, sizeof(error)), 0);
     ASSERT_INT_EQ(rules_init(&re, 16, &rcfg, error, sizeof(error)), 0);
 
@@ -1122,7 +1111,7 @@ static void test_rules_fall_with_hip_fires(void) {
 
     rules_destroy(&re);
     tracks_destroy(&tl);
-    fclose(f);
+    event_log_close(&elog);
 }
 
 static void test_door_state_debounce(void) {
@@ -1254,9 +1243,7 @@ static void test_rules_obj_external_drink(void) {
     DetectionList objs;
     RulesConfig rcfg = {3600.0, 300.0, 5.0, 0, 0, 0, 0, 0, 0.15f, 1};
     char error[128] = {0};
-    FILE *f = tmpfile();
-    ASSERT_TRUE(f != NULL);
-    event_log_init(&elog, f, LOG_INFO);
+    event_log_open(&elog, ":memory:", LOG_INFO, 0);
     ASSERT_INT_EQ(tracks_init(&tl, 16, 0.3f, 5, 1800.0, 0.45f, error, sizeof(error)), 0);
     ASSERT_INT_EQ(rules_init(&re, 16, &rcfg, error, sizeof(error)), 0);
     ASSERT_INT_EQ(detection_list_init(&objs, 8), 0);
@@ -1285,7 +1272,7 @@ static void test_rules_obj_external_drink(void) {
     rules_destroy(&re);
     tracks_destroy(&tl);
     detection_list_destroy(&objs);
-    fclose(f);
+    event_log_close(&elog);
 }
 
 /* 음식 클래스(OBJ_FOOD_FIRST=4 ~ OBJ_FOOD_LAST=13) 감지 → external_food 이벤트 */
@@ -1296,9 +1283,7 @@ static void test_rules_obj_external_food(void) {
     DetectionList objs;
     RulesConfig rcfg = {3600.0, 300.0, 5.0, 0, 0, 0, 0, 0, 0.15f, 1};
     char error[128] = {0};
-    FILE *f = tmpfile();
-    ASSERT_TRUE(f != NULL);
-    event_log_init(&elog, f, LOG_INFO);
+    event_log_open(&elog, ":memory:", LOG_INFO, 0);
     ASSERT_INT_EQ(tracks_init(&tl, 16, 0.3f, 5, 1800.0, 0.45f, error, sizeof(error)), 0);
     ASSERT_INT_EQ(rules_init(&re, 16, &rcfg, error, sizeof(error)), 0);
     ASSERT_INT_EQ(detection_list_init(&objs, 8), 0);
@@ -1316,7 +1301,7 @@ static void test_rules_obj_external_food(void) {
     rules_destroy(&re);
     tracks_destroy(&tl);
     detection_list_destroy(&objs);
-    fclose(f);
+    event_log_close(&elog);
 }
 
 /* 동물(cat=0)과 의자(OBJ_CHAIR=14) bbox가 충분히 겹치면 animal_on_chair 발화 */
@@ -1328,10 +1313,8 @@ static void test_rules_obj_animal_on_chair(void) {
     /* animal_iou_threshold=0.1: 동물/의자 IoU가 0.1 이상이면 발화 */
     RulesConfig rcfg = {3600.0, 300.0, 5.0, 0, 0, 0, 0, 0, 0.10f, 1};
     char error[128] = {0};
-    FILE *f = tmpfile();
     int i;
-    ASSERT_TRUE(f != NULL);
-    event_log_init(&elog, f, LOG_INFO);
+    event_log_open(&elog, ":memory:", LOG_INFO, 0);
     ASSERT_INT_EQ(tracks_init(&tl, 16, 0.3f, 5, 1800.0, 0.45f, error, sizeof(error)), 0);
     ASSERT_INT_EQ(rules_init(&re, 16, &rcfg, error, sizeof(error)), 0);
     ASSERT_INT_EQ(detection_list_init(&objs, 8), 0);
@@ -1361,7 +1344,7 @@ static void test_rules_obj_animal_on_chair(void) {
     rules_destroy(&re);
     tracks_destroy(&tl);
     detection_list_destroy(&objs);
-    fclose(f);
+    event_log_close(&elog);
 }
 
 /* 동물(dog=1)과 dining table(OBJ_DININGTABLE=15)이 겹치면 animal_on_table 발화 */
@@ -1372,10 +1355,8 @@ static void test_rules_obj_animal_on_table(void) {
     DetectionList objs;
     RulesConfig rcfg = {3600.0, 300.0, 5.0, 0, 0, 0, 0, 0, 0.10f, 1};
     char error[128] = {0};
-    FILE *f = tmpfile();
     int i;
-    ASSERT_TRUE(f != NULL);
-    event_log_init(&elog, f, LOG_INFO);
+    event_log_open(&elog, ":memory:", LOG_INFO, 0);
     ASSERT_INT_EQ(tracks_init(&tl, 16, 0.3f, 5, 1800.0, 0.45f, error, sizeof(error)), 0);
     ASSERT_INT_EQ(rules_init(&re, 16, &rcfg, error, sizeof(error)), 0);
     ASSERT_INT_EQ(detection_list_init(&objs, 8), 0);
@@ -1404,7 +1385,7 @@ static void test_rules_obj_animal_on_table(void) {
     rules_destroy(&re);
     tracks_destroy(&tl);
     detection_list_destroy(&objs);
-    fclose(f);
+    event_log_close(&elog);
 }
 
 /* 2명 착석 + 컵 0개, margin=1 → 2 > 0+1 → no_cup_seated 발화
@@ -1416,9 +1397,7 @@ static void test_rules_obj_no_cup_seated(void) {
     DetectionList objs;
     RulesConfig rcfg = {3600.0, 300.0, 5.0, 0, 0, 0, 0, 0, 0.15f, 1 /* margin=1 */};
     char error[128] = {0};
-    FILE *f = tmpfile();
-    ASSERT_TRUE(f != NULL);
-    event_log_init(&elog, f, LOG_INFO);
+    event_log_open(&elog, ":memory:", LOG_INFO, 0);
     ASSERT_INT_EQ(tracks_init(&tl, 16, 0.3f, 5, 1800.0, 0.45f, error, sizeof(error)), 0);
     ASSERT_INT_EQ(rules_init(&re, 16, &rcfg, error, sizeof(error)), 0);
     ASSERT_INT_EQ(detection_list_init(&objs, 8), 0);
@@ -1432,25 +1411,228 @@ static void test_rules_obj_no_cup_seated(void) {
     /* 컵 없음 → 2 > 0+1 → no_cup_seated 발화해야 함 */
     objs.count = 0;
     {
-        long pos_before = ftell(f);
+        int cnt_before = event_log_count(&elog, LOG_WARN);
         rules_evaluate_objects(&re, &objs, &tl, 100.0, &elog);
-        fflush(f);
-        EXPECT_TRUE(ftell(f) > pos_before);  /* 로그가 기록됐어야 함 */
+        EXPECT_TRUE(event_log_count(&elog, LOG_WARN) > cnt_before);  /* 로그가 기록됐어야 함 */
     }
 
     /* 컵 1개 → 2 > 1+1 은 거짓 → 발화 없음 */
     make_obj_list(&objs, 50, 50, 80, 100, 0.7f, 3 /* OBJ_CUP */);
     {
-        long pos_before = ftell(f);
+        int cnt_before = event_log_count(&elog, LOG_WARN);
         rules_evaluate_objects(&re, &objs, &tl, 101.0, &elog);
-        fflush(f);
-        EXPECT_TRUE(ftell(f) == pos_before);  /* 아무것도 기록되지 않아야 함 */
+        EXPECT_TRUE(event_log_count(&elog, LOG_WARN) == cnt_before);  /* 아무것도 기록되지 않아야 함 */
     }
 
     rules_destroy(&re);
     tracks_destroy(&tl);
     detection_list_destroy(&objs);
-    fclose(f);
+    event_log_close(&elog);
+}
+
+/* ── 헬퍼: ResidueMonitor 기본 초기화 ──────────────────────────────────── */
+static ResidueMonitor make_residue_monitor(void) {
+    ResidueMonitor r;
+    memset(&r, 0, sizeof(r));
+    r.config.enabled                  = 1;
+    r.config.diff_threshold           = 18;
+    r.config.min_blocks               = 3;
+    r.config.person_margin_blocks     = 1;
+    r.config.confirm_seconds          = 60.0;
+    r.config.clear_seconds            = 10.0;
+    r.config.baseline_refresh_seconds = 300.0;
+    r.config.global_change_ratio      = 1.1f; /* 기본 비활성 — 전용 테스트에서 명시적으로 설정 */
+    return r;
+}
+
+/* 헬퍼: 1×1 GrayBuf (블록 1개, 원본 8×8 = downsample 8) */
+static GrayBuf make_gray1(int value) {
+    GrayBuf g;
+    memset(&g, 0, sizeof(g));
+    g.data      = (uint8_t *)malloc(1);
+    g.width     = 1;
+    g.height    = 1;
+    g.downsample = 8;
+    if (g.data) g.data[0] = (uint8_t)value;
+    return g;
+}
+
+static void test_residue_no_event_before_confirm(void) {
+    /* confirm_seconds 경과 전에는 이벤트가 발화하지 않아야 합니다. */
+    ResidueMonitor r = make_residue_monitor();
+    r.config.confirm_seconds = 60.0;
+    r.config.min_blocks = 1; /* 1×1 테스트용 */
+
+    /* 기준: 픽셀 값 0 */
+    GrayBuf gray = make_gray1(0);
+    ASSERT_TRUE(gray.data != NULL);
+    residue_refresh_baseline(&r, &gray, 0.0);
+
+    /* 현재 프레임: 픽셀 값 100 (차이 100 > threshold 18) */
+    gray.data[0] = 100;
+
+    EventLog elog;
+    event_log_open(&elog, ":memory:", LOG_INFO, 0);
+
+    /* 59초 경과 — 확정 전 */
+    int cnt_before = event_log_count(&elog, LOG_WARN);
+    residue_evaluate(&r, &gray, NULL, 0, NULL, 0, 59.0, &elog);
+    EXPECT_TRUE(event_log_count(&elog, LOG_WARN) == cnt_before); /* 이벤트 없음 */
+
+    free(gray.data);
+    residue_destroy(&r);
+    event_log_close(&elog);
+}
+
+static void test_residue_confirms_after_hold(void) {
+    /* confirm_seconds 경과 후 정확히 1회 이벤트가 발화해야 합니다. */
+    ResidueMonitor r = make_residue_monitor();
+    r.config.confirm_seconds = 60.0;
+    r.config.min_blocks = 1;
+
+    GrayBuf gray = make_gray1(0);
+    ASSERT_TRUE(gray.data != NULL);
+    residue_refresh_baseline(&r, &gray, 0.0);
+    gray.data[0] = 100;
+
+    EventLog elog;
+    event_log_open(&elog, ":memory:", LOG_INFO, 0);
+
+    /* 등록 (t=0) 후 61초 경과 — 확정 */
+    residue_evaluate(&r, &gray, NULL, 0, NULL, 0, 0.0, &elog);
+    residue_evaluate(&r, &gray, NULL, 0, NULL, 0, 61.0, &elog);
+    EXPECT_TRUE(event_log_count(&elog, LOG_WARN) > 0); /* 이벤트 발화 */
+
+    /* 같은 조건 재호출 — 래치로 인해 중복 발화 없음 */
+    int cnt_after = event_log_count(&elog, LOG_WARN);
+    residue_evaluate(&r, &gray, NULL, 0, NULL, 0, 62.0, &elog);
+    EXPECT_TRUE(event_log_count(&elog, LOG_WARN) == cnt_after);
+
+    free(gray.data);
+    residue_destroy(&r);
+    event_log_close(&elog);
+}
+
+static void test_residue_excludes_person_overlap(void) {
+    /* 사람 bbox와 겹치는 변화는 후보가 되지 않아야 합니다. */
+    ResidueMonitor r = make_residue_monitor();
+    r.config.confirm_seconds = 0.1; /* 즉시 확정 허용 */
+    r.config.min_blocks = 1;
+
+    GrayBuf gray = make_gray1(0);
+    ASSERT_TRUE(gray.data != NULL);
+    residue_refresh_baseline(&r, &gray, 0.0);
+    gray.data[0] = 100; /* 큰 차이 */
+
+    /* 사람 bbox: 블록 [0,0]을 완전히 포함 (원본 0~7px 범위) */
+    GrayRect person;
+    person.x1 = 0.0f; person.y1 = 0.0f;
+    person.x2 = 7.0f; person.y2 = 7.0f;
+
+    EventLog elog;
+    event_log_open(&elog, ":memory:", LOG_INFO, 0);
+
+    int cnt_before = event_log_count(&elog, LOG_WARN);
+    residue_evaluate(&r, &gray, &person, 1, NULL, 0, 1.0, &elog);
+    EXPECT_TRUE(event_log_count(&elog, LOG_WARN) == cnt_before); /* 사람에 의해 배제 — 이벤트 없음 */
+
+    free(gray.data);
+    residue_destroy(&r);
+    event_log_close(&elog);
+}
+
+static void test_residue_global_change_resets(void) {
+    /* 전역 변화 비율 초과 시 영역 폐기 + 기준 갱신 이벤트가 발생해야 합니다. */
+    ResidueMonitor r = make_residue_monitor();
+    r.config.global_change_ratio = 0.5f;
+    r.config.min_blocks = 1;
+
+    /* 2×1 그레이 버퍼 (블록 2개) */
+    GrayBuf gray;
+    memset(&gray, 0, sizeof(gray));
+    gray.data      = (uint8_t *)malloc(2);
+    gray.width     = 2;
+    gray.height    = 1;
+    gray.downsample = 8;
+    ASSERT_TRUE(gray.data != NULL);
+
+    /* 기준: 두 픽셀 모두 0 */
+    gray.data[0] = 0; gray.data[1] = 0;
+    residue_refresh_baseline(&r, &gray, 0.0);
+
+    /* 현재: 두 픽셀 모두 100 — 전체 블록이 후보 (비율 1.0 > 0.5) */
+    gray.data[0] = 100; gray.data[1] = 100;
+
+    EventLog elog;
+    event_log_open(&elog, ":memory:", LOG_INFO, 0);
+
+    int cnt_before = event_log_count(&elog, LOG_INFO);
+    residue_evaluate(&r, &gray, NULL, 0, NULL, 0, 1.0, &elog);
+    EXPECT_TRUE(event_log_count(&elog, LOG_INFO) > cnt_before); /* residue_baseline_reset 이벤트 */
+
+    free(gray.data);
+    residue_destroy(&r);
+    event_log_close(&elog);
+}
+
+static void test_residue_clears_after_absence(void) {
+    /* clear_seconds 경과 후 cleared 이벤트가 발생하고 래치가 해제되어야 합니다. */
+    ResidueMonitor r = make_residue_monitor();
+    r.config.confirm_seconds = 0.1;
+    r.config.clear_seconds   = 10.0;
+    r.config.min_blocks = 1;
+
+    GrayBuf gray = make_gray1(0);
+    ASSERT_TRUE(gray.data != NULL);
+    residue_refresh_baseline(&r, &gray, 0.0);
+    gray.data[0] = 100;
+
+    EventLog elog;
+    event_log_open(&elog, ":memory:", LOG_INFO, 0);
+
+    /* 등록 후 확정 (confirm_seconds=0.1이므로 1.0s 후 확정) */
+    residue_evaluate(&r, &gray, NULL, 0, NULL, 0, 0.0, &elog);
+    residue_evaluate(&r, &gray, NULL, 0, NULL, 0, 1.0, &elog);
+
+    /* 잔류물 사라짐 — 기준과 동일한 값으로 */
+    gray.data[0] = 0;
+
+    /* clear_seconds 미경과 — 아직 cleared 없음 */
+    int cnt_before = event_log_count(&elog, LOG_WARN);
+    residue_evaluate(&r, &gray, NULL, 0, NULL, 0, 5.0, &elog);
+    EXPECT_TRUE(event_log_count(&elog, LOG_WARN) == cnt_before);
+
+    /* clear_seconds 경과 — cleared 발화 */
+    residue_evaluate(&r, &gray, NULL, 0, NULL, 0, 20.0, &elog);
+    EXPECT_TRUE(event_log_count(&elog, LOG_WARN) > cnt_before);
+
+    free(gray.data);
+    residue_destroy(&r);
+    event_log_close(&elog);
+}
+
+static void test_residue_min_blocks_filter(void) {
+    /* min_blocks 미만 영역은 폐기되어야 합니다. */
+    ResidueMonitor r = make_residue_monitor();
+    r.config.confirm_seconds = 0.1;
+    r.config.min_blocks = 3; /* 3블록 이상만 유효 */
+
+    /* 1×1 그레이 버퍼 (1블록) */
+    GrayBuf gray = make_gray1(0);
+    ASSERT_TRUE(gray.data != NULL);
+    residue_refresh_baseline(&r, &gray, 0.0);
+    gray.data[0] = 100;
+
+    EventLog elog;
+    event_log_open(&elog, ":memory:", LOG_INFO, 0);
+
+    int cnt_before = event_log_count(&elog, LOG_WARN);
+    residue_evaluate(&r, &gray, NULL, 0, NULL, 0, 1.0, &elog);
+    EXPECT_TRUE(event_log_count(&elog, LOG_WARN) == cnt_before); /* 1블록이므로 min_blocks=3에 의해 폐기 */
+
+    free(gray.data);
+    residue_destroy(&r);
+    event_log_close(&elog);
 }
 
 int main(void) {
@@ -1510,5 +1692,12 @@ int main(void) {
     RUN_TEST(test_rules_obj_animal_on_chair);
     RUN_TEST(test_rules_obj_animal_on_table);
     RUN_TEST(test_rules_obj_no_cup_seated);
+    /* 잔류물 감지 단위 테스트 */
+    RUN_TEST(test_residue_no_event_before_confirm);
+    RUN_TEST(test_residue_confirms_after_hold);
+    RUN_TEST(test_residue_excludes_person_overlap);
+    RUN_TEST(test_residue_global_change_resets);
+    RUN_TEST(test_residue_clears_after_absence);
+    RUN_TEST(test_residue_min_blocks_filter);
     TEST_SUITE_END();
 }

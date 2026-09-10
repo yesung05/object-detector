@@ -79,7 +79,9 @@ if(ORT_INCLUDE_DIR AND ORT_LIBRARY AND FFMPEG_INCLUDE_DIR AND FFMPEG_FOUND)
         src/rules.c
         src/stream.c
         src/door.c
-        src/model_select.c)
+        src/model_select.c
+        src/residue.c
+        third_party/sqlite/sqlite3.c)
     target_include_directories(yolo11-person PRIVATE
         include "${ORT_INCLUDE_DIR}" "${FFMPEG_INCLUDE_DIR}")
     target_link_libraries(yolo11-person PRIVATE "${ORT_LIBRARY}" ${FFMPEG_LIBRARIES} ws2_32)
@@ -125,7 +127,9 @@ add_executable(test_core
     src/camera_health.c
     src/tracks.c
     src/rules.c
-    src/door.c)
+    src/door.c
+    src/residue.c
+    third_party/sqlite/sqlite3.c)
 target_include_directories(test_core PRIVATE include tests)
 if(MSVC)
     target_compile_options(test_core PRIVATE /O1 /W4 /utf-8)
@@ -177,8 +181,9 @@ if(WIN32)
     # config.c 를 함께 빌드하는 이유: 설정 저장 시 기존 파일의 키를 읽어
     # 병합해야 합니다. 대시보드 UI 가 모르는 키가 저장 한 번에 사라지면
     # detector 가 조용히 기본값으로 되돌아갑니다.
-    add_executable(hunik-dashboard dashboard/server.c src/config.c)
-    target_include_directories(hunik-dashboard PRIVATE include)
+    add_executable(hunik-dashboard dashboard/server.c src/config.c
+                                  third_party/sqlite/sqlite3.c)
+    target_include_directories(hunik-dashboard PRIVATE include third_party/sqlite)
     target_link_libraries(hunik-dashboard ws2_32)
     if(MSVC)
         target_compile_options(hunik-dashboard PRIVATE /utf-8 /W3)
