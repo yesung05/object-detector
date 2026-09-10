@@ -64,9 +64,9 @@ echo [start] Ctrl+C to stop.
 echo.
 
 if defined OBJMODEL (
-    "%EXE%" --model "%MODEL%" --camera --camera-size 1280x720 --camera-fps 15 --provider cpu --detect-every 3 --track --warmup 2 --stream-port 8081 --event-log "%LOGFILE%" --config "%ROOT%\config.json" --obj-model "%OBJMODEL%"
+    "%EXE%" --model "%MODEL%" --camera --camera-size 1280x720 --camera-fps 15 --provider cpu --detect-every 5 --track --warmup 2 --confidence 0.20 --threads 3 --stream-port 8081 --event-log "%LOGFILE%" --config "%ROOT%\config.json" --obj-model "%OBJMODEL%"
 ) else (
-    "%EXE%" --model "%MODEL%" --camera --camera-size 1280x720 --camera-fps 15 --provider cpu --detect-every 3 --track --warmup 2 --stream-port 8081 --event-log "%LOGFILE%" --config "%ROOT%\config.json"
+    "%EXE%" --model "%MODEL%" --camera --camera-size 1280x720 --camera-fps 15 --provider cpu --detect-every 5 --track --warmup 2 --confidence 0.20 --threads 3 --stream-port 8081 --event-log "%LOGFILE%" --config "%ROOT%\config.json"
 )
 
 echo.

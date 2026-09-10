@@ -129,9 +129,11 @@ $cmdArgs = @(
     "--model", $model,
     "--camera",
     "--provider", "cpu",
-    "--detect-every", "3",
+    "--detect-every", "5",
     "--track",
     "--warmup", "2",
+    "--confidence", "0.20",
+    "--threads", "3",
     "--stream-port", "8081",
     "--event-log", $logFile,
     "--config", "$ROOT\config.json"

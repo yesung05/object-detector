@@ -381,14 +381,14 @@
             <span class="setting-value-display" id="disp-fall_hold_seconds">5</span>
           </div>
           <div class="setting-row">
-            <div><div class="setting-label">bbox 가로세로 비 (keypoint)</div><div class="setting-desc">fall_aspect_ratio_kp — 기본 1.8. 낮은 CCTV 각도에서 1.3~1.5로 낮추면 감도 향상</div></div>
-            <input type="range" class="setting-input" id="cfg-fall_aspect_ratio_kp" min="1.0" max="3.0" step="0.1" value="1.8" oninput="syncDisplay(this)">
-            <span class="setting-value-display" id="disp-fall_aspect_ratio_kp">1.8</span>
+            <div><div class="setting-label">bbox 가로세로 비 (keypoint)</div><div class="setting-desc">fall_aspect_ratio_kp — 기본 1.3. 사선 CCTV 화각 기준. 머리 위치 추적으로 YOLO 미탐지 시에도 보조 감지</div></div>
+            <input type="range" class="setting-input" id="cfg-fall_aspect_ratio_kp" min="1.0" max="3.0" step="0.1" value="1.3" oninput="syncDisplay(this)">
+            <span class="setting-value-display" id="disp-fall_aspect_ratio_kp">1.3</span>
           </div>
           <div class="setting-row">
-            <div><div class="setting-label">bbox 가로세로 비 (keypoint 없음)</div><div class="setting-desc">fall_aspect_ratio_nokp — 기본 2.2. keypoint 미탐지 시 더 엄격한 비율 적용</div></div>
-            <input type="range" class="setting-input" id="cfg-fall_aspect_ratio_nokp" min="1.2" max="4.0" step="0.1" value="2.2" oninput="syncDisplay(this)">
-            <span class="setting-value-display" id="disp-fall_aspect_ratio_nokp">2.2</span>
+            <div><div class="setting-label">bbox 가로세로 비 (keypoint 없음)</div><div class="setting-desc">fall_aspect_ratio_nokp — 기본 1.6. keypoint 미탐지 시 적용. 머리 추적이 주 감지를 대신함</div></div>
+            <input type="range" class="setting-input" id="cfg-fall_aspect_ratio_nokp" min="1.2" max="4.0" step="0.1" value="1.6" oninput="syncDisplay(this)">
+            <span class="setting-value-display" id="disp-fall_aspect_ratio_nokp">1.6</span>
           </div>
         </div>
 
@@ -556,6 +556,31 @@
               </div>
             </div>
             <div class="door-status" id="residue-status" style="margin-top:6px;">detector 스트림 포트로 캡처합니다.</div>
+          </div>
+        </div>
+
+        <!-- Tier 2 바운딩 박스 표시 -->
+        <div class="settings-section">
+          <h3>Tier 2 바운딩 박스 표시</h3>
+          <div class="setting-row">
+            <div><div class="setting-label">동물 (고양이·강아지)</div><div class="setting-desc">show_animal — 빨강 박스</div></div>
+            <label class="toggle"><input type="checkbox" id="cfg-show_animal" checked><span class="toggle-slider"></span></label>
+            <span></span>
+          </div>
+          <div class="setting-row">
+            <div><div class="setting-label">음식</div><div class="setting-desc">show_food — 주황 박스</div></div>
+            <label class="toggle"><input type="checkbox" id="cfg-show_food" checked><span class="toggle-slider"></span></label>
+            <span></span>
+          </div>
+          <div class="setting-row">
+            <div><div class="setting-label">음료 (병·컵)</div><div class="setting-desc">show_drink — 보라 박스</div></div>
+            <label class="toggle"><input type="checkbox" id="cfg-show_drink" checked><span class="toggle-slider"></span></label>
+            <span></span>
+          </div>
+          <div class="setting-row">
+            <div><div class="setting-label">가구 (의자·테이블)</div><div class="setting-desc">show_furniture — 회청 박스. SlotMonitor 확인용</div></div>
+            <label class="toggle"><input type="checkbox" id="cfg-show_furniture" checked><span class="toggle-slider"></span></label>
+            <span></span>
           </div>
         </div>
 
@@ -858,7 +883,7 @@ let streamActive = false;
 
 function connectStream() {
   const port = parseInt(portInput.value, 10) || 8081;
-  streamImg.src = `http://localhost:${port}/stream`;
+  streamImg.src = `http://${window.location.hostname}:${port}/stream`;
   streamImg.style.display = "";
   camOffline.style.display = "none";
   streamActive = true;
@@ -904,7 +929,8 @@ async function loadSettings() {
       "residue_confirm_seconds","residue_clear_seconds","residue_baseline_refresh_seconds","residue_global_change_ratio",
       "fall_aspect_ratio_kp","fall_aspect_ratio_nokp",
       "slot_warn_seconds","slot_urgent_seconds","slot_ttl_seconds","slot_dirty_threshold","slot_min_dirty_blocks",
-      "perf_log_interval_seconds"
+      "perf_log_interval_seconds",
+      "show_animal","show_food","show_drink","show_furniture"
     ];
     keys.forEach(k => { if (cfg[k] !== undefined) setCfgVal(k, cfg[k]); });
     updateRoiSummary();
@@ -957,6 +983,10 @@ async function saveSettings() {
     slot_dirty_threshold:               cfgVal("slot_dirty_threshold"),
     slot_min_dirty_blocks:              cfgVal("slot_min_dirty_blocks"),
     perf_log_interval_seconds:          cfgVal("perf_log_interval_seconds"),
+    show_animal:                        cfgVal("show_animal"),
+    show_food:                          cfgVal("show_food"),
+    show_drink:                         cfgVal("show_drink"),
+    show_furniture:                     cfgVal("show_furniture"),
   };
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 5000);
@@ -999,7 +1029,7 @@ async function captureDoorRef(state) {
   const label = state === "open" ? "열림" : "닫힘";
   st.textContent = `${label} 캡처 중...`;
   try {
-    const res = await fetch(`http://localhost:${port}/door/save?state=${state}`, { method: "POST" });
+    const res = await fetch(`http://${window.location.hostname}:${port}/door/save?state=${state}`, { method: "POST" });
     const json = await res.json();
     if (json.ok) {
       st.textContent = `${label} 기준 이미지 저장됨 — detector가 최대 2초 내 다시 읽습니다.`;
@@ -1018,7 +1048,7 @@ function refreshDoorPreview(state) {
   const phId  = state === "open" ? "door-ph-open"        : "door-ph-closed";
   const img   = document.getElementById(imgId);
   const ph    = document.getElementById(phId);
-  const src   = `http://localhost:${port}/door/preview?state=${state}&t=${Date.now()}`;
+  const src   = `http://${window.location.hostname}:${port}/door/preview?state=${state}&t=${Date.now()}`;
   const tmp   = new Image();
   tmp.onload  = () => { img.src = src; img.style.display = ""; ph.style.display = "none"; };
   tmp.onerror = () => { img.style.display = "none"; ph.style.display = ""; };
@@ -1031,7 +1061,7 @@ async function captureResidueRef() {
   const st = document.getElementById("residue-status");
   st.textContent = "청결 기준 캡처 중...";
   try {
-    const res = await fetch(`http://localhost:${port}/residue/save`, { method: "POST" });
+    const res = await fetch(`http://${window.location.hostname}:${port}/residue/save`, { method: "POST" });
     const json = await res.json();
     if (json.ok) {
       st.textContent = "청결 기준 이미지 저장됨 — detector가 최대 2초 내 다시 읽습니다.";
@@ -1049,7 +1079,7 @@ function refreshResiduePreview() {
   const img  = document.getElementById("residue-preview-img");
   const ph   = document.getElementById("residue-preview-ph");
   /* 별도 /residue/preview 엔드포인트 미구현 — 현재 스냅샷으로 대체 */
-  const src  = `http://localhost:${port}/snapshot?t=${Date.now()}`;
+  const src  = `http://${window.location.hostname}:${port}/snapshot?t=${Date.now()}`;
   const tmp  = new Image();
   tmp.onload  = () => { img.src = src; img.style.display = ""; ph.style.display = "none"; };
   tmp.onerror = () => { img.style.display = "none"; ph.style.display = ""; };
@@ -1061,7 +1091,7 @@ async function pollDoorState() {
   const port = getStreamPort();
   const badge = document.getElementById("door-state-badge");
   try {
-    const res = await fetch(`http://localhost:${port}/door/state`);
+    const res = await fetch(`http://${window.location.hostname}:${port}/door/state`);
     const json = await res.json();
     if (json.state === 1) {
       badge.textContent = "True (열림)"; badge.style.color = "var(--orange)";
@@ -1126,7 +1156,7 @@ async function openRoiPicker() {
   img.onerror = () => {
     document.getElementById("roi-hint").textContent = "스냅샷 실패 — detector가 실행 중인지 확인하세요.";
   };
-  img.src = `http://localhost:${port}/snapshot?t=${Date.now()}`;
+  img.src = `http://${window.location.hostname}:${port}/snapshot?t=${Date.now()}`;
 }
 
 function drawRoiRect(ctx, x, y, w, h) {

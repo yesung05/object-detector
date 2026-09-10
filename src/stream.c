@@ -468,7 +468,7 @@ int stream_start(int port, const char *data_dir) {
     struct sockaddr_in addr = {0};
     addr.sin_family = AF_INET;
     addr.sin_port   = htons((u_short)port);
-    inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
+    addr.sin_addr.s_addr = INADDR_ANY;  /* 모든 인터페이스 수신 (LAN 접근 허용) */
 
     if (bind(g_srv, (struct sockaddr *)&addr, sizeof(addr)) != 0 ||
         listen(g_srv, MAX_CLIENTS) != 0) {
@@ -486,7 +486,7 @@ int stream_start(int port, const char *data_dir) {
         return -1;
     }
 
-    fprintf(stderr, "stream: http://localhost:%d/stream  /snapshot  /door/save\n", port);
+    fprintf(stderr, "stream: http://0.0.0.0:%d/stream  /snapshot  /door/save\n", port);
     return 0;
 }
 

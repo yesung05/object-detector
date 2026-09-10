@@ -257,6 +257,12 @@ void tracks_update(TrackList *tl, const DetectionList *detections,
                                                 + 0.15f * cur_hist[kk];
             }
         } else {
+            /* 신규 트랙 생성 신뢰도 필터: new_track_min_score가 설정돼 있으면
+             * 낮은 신뢰도 detection은 신규 트랙을 만들지 않습니다.
+             * 이미 추적 중인 트랙은 Phase 1에서 detector 임계값(더 낮음)으로 유지됩니다. */
+            if (tl->new_track_min_score > 0.0f &&
+                detections->items[j].score < tl->new_track_min_score) continue;
+
             /* 신규 인물 — 슬롯을 확보합니다. 우선순위:
              *   1) 만료된 limbo 슬롯 (limbo_expired_at 지남)
              *   2) 배열 끝 빈 공간
@@ -299,6 +305,7 @@ void tracks_update(TrackList *tl, const DetectionList *detections,
             slot->last_seen   = now;
             slot->order       = TRACK_UNORDERED;
             slot->box         = detections->items[j];
+            slot->head_y_baseline_norm = -1.0f;  /* 미설정 초기값 */
             if (hist_computed) {
                 memcpy(slot->appear_hist, cur_hist, sizeof(slot->appear_hist));
                 slot->appear_valid = 1;
@@ -325,4 +332,159 @@ int tracks_limbo_count(const TrackList *tl, double now) {
         if (!t->active && t->limbo_expired_at > now) n++;
     }
     return n;
+}
+
+/* ── 머리 패치 추출 헬퍼 ──────────────────────────────────────────────
+ * cx, cy 중심으로 HEAD_PATCH_SIZE×HEAD_PATCH_SIZE 그레이 패치를 복사합니다.
+ * 경계를 벗어나는 부분은 0으로 채웁니다. luma_stride: 행 바이트 수. */
+static void extract_head_patch(const uint8_t *luma, int img_w, int img_h,
+                                int luma_stride, int cx, int cy, uint8_t *out) {
+    int half = HEAD_PATCH_SIZE / 2;
+    int r, c;
+    for (r = 0; r < HEAD_PATCH_SIZE; ++r) {
+        int iy = cy - half + r;
+        for (c = 0; c < HEAD_PATCH_SIZE; ++c) {
+            int ix = cx - half + c;
+            if (ix >= 0 && ix < img_w && iy >= 0 && iy < img_h)
+                out[r * HEAD_PATCH_SIZE + c] = luma[iy * luma_stride + ix];
+            else
+                out[r * HEAD_PATCH_SIZE + c] = 0;
+        }
+    }
+}
+
+/* ── SAD 템플릿 매칭 ──────────────────────────────────────────────────
+ * 검색창 (search_cx ± radius, search_cy ± radius) 내에서 stride=4로 탐색합니다.
+ * luma_stride: 행 바이트 수. 반환: 최소 SAD 값. */
+static int head_sad_search(const uint8_t *luma, int img_w, int img_h,
+                            int luma_stride, const uint8_t *tmpl,
+                            int search_cx, int search_cy, int radius,
+                            int *best_cx, int *best_cy) {
+    int half     = HEAD_PATCH_SIZE / 2;
+    int step     = 4;
+    int best_sad = 0x7fffffff;
+    int bx = search_cx, by = search_cy;
+    int sx, sy;
+
+    for (sy = search_cy - radius; sy <= search_cy + radius; sy += step) {
+        for (sx = search_cx - radius; sx <= search_cx + radius; sx += step) {
+            int r, c, sad = 0;
+            if (sx - half < 0 || sx + half >= img_w) continue;
+            if (sy - half < 0 || sy + half >= img_h) continue;
+            for (r = 0; r < HEAD_PATCH_SIZE && sad < best_sad; ++r) {
+                const uint8_t *lrow = luma + (sy - half + r) * luma_stride + (sx - half);
+                const uint8_t *trow = tmpl + r * HEAD_PATCH_SIZE;
+                for (c = 0; c < HEAD_PATCH_SIZE; ++c) {
+                    int d = (int)lrow[c] - (int)trow[c];
+                    sad += d < 0 ? -d : d;
+                }
+            }
+            if (sad < best_sad) { best_sad = sad; bx = sx; by = sy; }
+        }
+    }
+    *best_cx = bx;
+    *best_cy = by;
+    return best_sad;
+}
+
+/*
+ * misses==0 트랙: YOLO 키포인트(코, kp[0])에서 머리 패치를 캡처합니다.
+ *   - 박스가 "서있는" 자세(h > w * 1.1)일 때 baseline과 동적 임계값을 기록합니다.
+ *   - 낙하 임계값: head_y_baseline + bbox_h * 0.65 / img_h
+ *     → 카메라 해상도·비율·설치 높이와 무관하게 사람 자신의 키 기준으로 계산됩니다.
+ * misses>0 트랙: SAD 검색으로 머리 위치를 추정하고 낙하 속도를 계산합니다.
+ *   - 속도(초당 head_cy_norm 변화량) > 0.15/s 이면 fall_sudden 플래그를 세웁니다.
+ *
+ * 선택 이유: 전신 SAD 추적은 누운 자세에서 외형 급변으로 실패합니다.
+ * 머리는 자세와 무관하게 형태가 유지되므로 훨씬 안정적으로 추적됩니다.
+ * 동적 임계값은 4:3·16:9·기타 비율 모두에서 동일하게 동작합니다.
+ */
+void tracks_update_heads(TrackList *tl, const uint8_t *luma,
+                         int img_w, int img_h, int luma_stride, double now) {
+    size_t i;
+    /* 픽셀당 평균 20 허용: 30에서 낮춰 오탐 매칭 억제 */
+    int sad_threshold = HEAD_PATCH_SIZE * HEAD_PATCH_SIZE * 20;
+    int radius = 80;
+
+    if (!tl || !luma) return;
+
+    for (i = 0; i < tl->count; ++i) {
+        Track *t = &tl->items[i];
+        if (!t->active) continue;
+
+        if (t->misses == 0) {
+            /* YOLO 탐지 직후: 코 키포인트(kp[0])에서 패치 캡처 */
+            const Keypoint *nose = &t->box.kp[0];
+            if (nose->score > 0.25f) {
+                int cx = (int)nose->x;
+                int cy = (int)nose->y;
+                if (cx >= HEAD_PATCH_SIZE/2 && cx < img_w - HEAD_PATCH_SIZE/2 &&
+                    cy >= HEAD_PATCH_SIZE/2 && cy < img_h - HEAD_PATCH_SIZE/2) {
+                    extract_head_patch(luma, img_w, img_h, luma_stride,
+                                       cx, cy, t->head_patch);
+                    t->head_cx      = cx;
+                    t->head_cy      = cy;
+                    t->head_cy_norm = (float)cy / (float)img_h;
+                    t->head_valid   = 1;
+                    t->fall_sudden  = 0;
+
+                    /* 서있는 자세(h > w * 1.1)일 때 baseline 기록.
+                     * 낙하 임계값 = baseline_norm + bbox_h * 0.65 / img_h
+                     * → 카메라 거리·각도·해상도와 무관하게 사람 키 기준 */
+                    {
+                        float bw = t->box.x2 - t->box.x1;
+                        float bh = t->box.y2 - t->box.y1;
+                        if (bh > bw * 1.1f) {
+                            t->head_y_baseline_norm    = t->head_cy_norm;
+                            t->head_y_fall_threshold_norm =
+                                t->head_cy_norm + (bh * 0.65f) / (float)img_h;
+                        }
+                    }
+                    t->head_y_prev_norm = t->head_cy_norm;
+                    t->head_y_prev_time = now;
+                }
+            }
+        } else if (t->head_valid) {
+            /* YOLO가 놓친 프레임: SAD 탐색으로 머리 위치 추정 */
+            int best_cx, best_cy;
+            int sad = head_sad_search(luma, img_w, img_h, luma_stride,
+                                      t->head_patch,
+                                      t->head_cx, t->head_cy, radius,
+                                      &best_cx, &best_cy);
+            if (sad < sad_threshold) {
+                float new_norm = (float)best_cy / (float)img_h;
+                double dt = now - t->head_y_prev_time;
+
+                /* 낙하 속도 계산: 초당 head_cy_norm 변화량 */
+                if (dt > 0.05 && dt < 2.0) {
+                    float velocity = (new_norm - t->head_y_prev_norm) / (float)dt;
+                    /* 두 조건 동시 충족 시에만 sudden_fall 플래그:
+                     * 1) 속도 > 0.5/s: 실제 낙상(0.3~0.5s 내 하강) 수준
+                     * 2) 머리가 이미 낙하 임계값 아래 있음 (위치 확인)
+                     * → SAD 오탐 매칭으로 인한 단발성 점프는 걸러집니다. */
+                    if (velocity > 0.5f
+                        && t->head_y_fall_threshold_norm > 0.0f
+                        && new_norm > t->head_y_fall_threshold_norm)
+                        t->fall_sudden = 1;
+                }
+
+                t->head_cx          = best_cx;
+                t->head_cy          = best_cy;
+                t->head_cy_norm     = new_norm;
+                t->head_y_prev_norm = new_norm;
+                t->head_y_prev_time = now;
+
+                /* 패치 천천히 갱신 (α=0.125, 조명 변화 적응) */
+                {
+                    uint8_t new_patch[HEAD_PATCH_SIZE * HEAD_PATCH_SIZE];
+                    int p;
+                    extract_head_patch(luma, img_w, img_h, luma_stride,
+                                       best_cx, best_cy, new_patch);
+                    for (p = 0; p < HEAD_PATCH_SIZE * HEAD_PATCH_SIZE; ++p)
+                        t->head_patch[p] = (uint8_t)(
+                            (t->head_patch[p] * 7 + new_patch[p]) >> 3);
+                }
+            }
+        }
+    }
 }

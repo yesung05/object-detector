@@ -456,7 +456,11 @@ static const char *DEFAULT_CONFIG =
     "\"slot_ttl_seconds\":120,"
     "\"slot_dirty_threshold\":20,"
     "\"slot_min_dirty_blocks\":2,"
-    "\"perf_log_interval_seconds\":60"
+    "\"perf_log_interval_seconds\":60,"
+    "\"show_animal\":1,"
+    "\"show_food\":1,"
+    "\"show_drink\":1,"
+    "\"show_furniture\":1"
     "}";
 
 /* GET /api/config → config.json 반환 (없으면 기본값)

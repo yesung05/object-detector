@@ -34,8 +34,10 @@ static const RulesConfig DEFAULT_RULES = {
     3600.0,  /* dwell_limit_seconds */
     300.0,   /* unordered_grace_seconds */
     5.0,     /* fall_hold_seconds */
-    1.8f,    /* fall_aspect_ratio_kp */
-    2.2f,    /* fall_aspect_ratio_nokp */
+    /* 사선 화각(30-45°)에서는 누운 사람의 bbox 비율이 정수직 화각보다 낮음.
+       실험값: kp 경로 1.3, nokp 경로 1.6. 대시보드 설정으로 현장 조정 가능 */
+    1.3f,    /* fall_aspect_ratio_kp */
+    1.6f,    /* fall_aspect_ratio_nokp */
     0, 0, 0, 0, /* roi_kiosk_{x,y,w,h} */
     0,       /* roi_kiosk_set */
     0.15f,   /* animal_iou_threshold */
@@ -362,21 +364,39 @@ void rules_evaluate(RulesEngine *re, TrackList *tl, double now, EventLog *elog) 
         }
 
         /* ── 쓰러짐 ── */
-        if (is_horizontal_pose(&t->box,
-                               re->config.fall_aspect_ratio_kp,
-                               re->config.fall_aspect_ratio_nokp)) {
-            if (s->fall_start <= 0.0) s->fall_start = now;
-            if (!s->fall_latched &&
-                (now - s->fall_start) >= re->config.fall_hold_seconds) {
+        /* 머리 위치 하강: 서있을 때 대비 프레임 높이의 20% 이상 아래로 내려가면
+         * YOLO bbox가 사라진 상태에서도 쓰러짐 신호로 사용합니다. */
+        {
+            /* head_y_fall_threshold_norm: 서있는 bbox 높이의 65%를 baseline에 더한 값.
+             * 카메라 해상도·비율·높이와 무관하게 사람 자신의 키를 기준으로 합니다. */
+            int head_drop = t->head_valid
+                         && t->head_y_fall_threshold_norm > 0.0f
+                         && t->head_cy_norm > t->head_y_fall_threshold_norm;
+            /* fall_sudden: 머리가 급격히 하강 → hold 없이 즉시 발화 */
+            if (t->fall_sudden && !s->fall_latched) {
                 s->fall_latched = 1;
+                s->fall_start   = now;
                 snprintf(msg, sizeof(msg),
-                         "person_fallen track=%d hold=%.1fs",
-                         t->id, now - s->fall_start);
+                         "person_fallen track=%d sudden_head_drop",
+                         t->id);
                 event_log_write(elog, LOG_ERROR, "rules", msg);
+                t->fall_sudden = 0;
+            } else if (head_drop || is_horizontal_pose(&t->box,
+                                               re->config.fall_aspect_ratio_kp,
+                                               re->config.fall_aspect_ratio_nokp)) {
+                if (s->fall_start <= 0.0) s->fall_start = now;
+                if (!s->fall_latched &&
+                    (now - s->fall_start) >= re->config.fall_hold_seconds) {
+                    s->fall_latched = 1;
+                    snprintf(msg, sizeof(msg),
+                             "person_fallen track=%d hold=%.1fs",
+                             t->id, now - s->fall_start);
+                    event_log_write(elog, LOG_ERROR, "rules", msg);
+                }
+            } else {
+                s->fall_start  = 0.0;
+                s->fall_latched = 0;
             }
-        } else {
-            s->fall_start  = 0.0;
-            s->fall_latched = 0;
         }
     }
 }

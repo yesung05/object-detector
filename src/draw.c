@@ -371,6 +371,10 @@ void draw_tracks(uint8_t *rgb, int width, int height, int stride,
         uint8_t br, bg, bb;  /* 박스 색상 */
 
         if (!t->active) continue;
+        /* MISS 박스는 첫 15프레임(~1초)만 표시합니다.
+         * 이후에도 트랙은 내부적으로 유지(fall detection용)되지만 화면에는 숨깁니다.
+         * 10초간 주황 박스가 쌓이는 시각적 혼란을 방지합니다. */
+        if (t->misses > 15) continue;
 
         x1 = clampi((int)(t->box.x1 + 0.5f), 0, width - 1);
         y1 = clampi((int)(t->box.y1 + 0.5f), 0, height - 1);
@@ -429,7 +433,7 @@ void draw_tracks(uint8_t *rgb, int width, int height, int stride,
  *   TABLE             — 회청 (80, 140, 180)
  */
 void draw_obj_detections(uint8_t *rgb, int width, int height, int stride,
-                         const DetectionList *detections) {
+                         const DetectionList *detections, uint32_t obj_vis_mask) {
     int font_scale;
     size_t i;
 
@@ -450,18 +454,24 @@ void draw_obj_detections(uint8_t *rgb, int width, int height, int stride,
         int label_width, label_y;
         int id = d->class_id;
 
-        /* 클래스별 색상과 레이블 결정 */
+        /* 클래스별 색상과 레이블, 그리고 마스크 비트 결정 */
         if (id == OBJ_CAT || id == OBJ_DOG) {
+            if (!(obj_vis_mask & OBJ_VIS_ANIMAL)) continue;
             br = 220; bg = 50;  bb = 50;  label = "ANIMAL";
         } else if (id >= OBJ_FOOD_FIRST && id <= OBJ_FOOD_LAST) {
+            if (!(obj_vis_mask & OBJ_VIS_FOOD)) continue;
             br = 255; bg = 140; bb = 0;   label = "FOOD";
         } else if (id == OBJ_BOTTLE) {
+            if (!(obj_vis_mask & OBJ_VIS_DRINK)) continue;
             br = 160; bg = 80;  bb = 220; label = "DRINK";
         } else if (id == OBJ_CUP) {
+            if (!(obj_vis_mask & OBJ_VIS_DRINK)) continue;
             br = 180; bg = 120; bb = 240; label = "CUP";
         } else if (id == OBJ_CHAIR) {
+            if (!(obj_vis_mask & OBJ_VIS_FURNITURE)) continue;
             br = 100; bg = 160; bb = 200; label = "CHAIR";
         } else if (id == OBJ_DININGTABLE) {
+            if (!(obj_vis_mask & OBJ_VIS_FURNITURE)) continue;
             br = 80;  bg = 140; bb = 180; label = "TABLE";
         } else {
             /* 알 수 없는 class_id: 회색으로 표시 */

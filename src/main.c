@@ -161,6 +161,7 @@ typedef struct {
     DoorMonitor    door;           /* 문 여닫이 감지 (door_reference.raw 필요) */
     ResidueMonitor residue;        /* 잔류물 감지 (residue_clean_reference.raw 필요) */
     SlotMonitor    slot_mon;       /* 슬롯 기반 테이블·의자 청결 감지 */
+    uint32_t       obj_vis_mask;   /* Tier 2 표시 카테고리 마스크 (OBJ_VIS_*) */
 
     /* config.json hot-reload — 2초마다 mtime을 확인하고 변경 시 재로드합니다. */
     char   config_reload_path[512]; /* 재로드할 config 파일 경로 */
@@ -174,6 +175,18 @@ typedef struct {
     char   residue_ref_path[600];
     time_t residue_ref_mtime;
     double residue_ref_check_time;
+
+    /* 회전 프레임 쓰러짐 감지: YOLO가 수평 자세를 놓쳤을 때 90° 회전 프레임으로
+     * 재탐지합니다. 회전된 누운 사람이 서있는 사람처럼 보여 탐지됩니다.
+     * 회전 버퍼는 첫 프레임에서 1회 할당, 이후 재사용합니다. */
+    uint8_t       *rotated_rgb;       /* H×W×3 회전 버퍼 (원본 전치) */
+    int            rotated_rgb_size;  /* 할당 크기 (바이트) */
+    DetectionList  rotated_dets;      /* 회전 프레임 탐지 결과 */
+    double         last_person_time;  /* 마지막으로 사람을 탐지한 시각 */
+    /* luma 평면 없는 입력(RGB fallback) 대응: 원본 해상도 그레이스케일 버퍼.
+     * frame->luma가 있으면 그대로 사용하고, 없으면 RGB→Gray 변환 결과를 씁니다. */
+    uint8_t       *full_luma;         /* width×height 바이트, stride=width */
+    int            full_luma_size;
 } AppContext;
 
 /* 명령줄에서 읽은 경로와 프로그램 내부 기본 설정을 한곳에 모읍니다. */
@@ -557,6 +570,9 @@ static int parse_arguments(int argc, char **argv, Arguments *args) {
         if (!args->camera_device && args->input)
             fprintf(stderr, "camera: auto-detected %s\n", args->input);
         args->media.realtime = 1;
+        /* i5-4200U 발열 억제: --camera-fps 미지정 시 15fps로 고정 */
+        if (!args->media.framerate)
+            args->media.framerate = "15";
         if (!args->media.input_format || !args->input) {
             fprintf(stderr,
                     "no default camera backend on this platform; use "
@@ -791,6 +807,16 @@ static void reload_config(AppContext *app) {
 
     apply_residue_config(app, &cfg);
     apply_slot_config(app, &cfg);
+
+    /* Tier 2 바운딩 박스 표시 카테고리 — 체크박스로 토글 가능 */
+    {
+        uint32_t mask = 0;
+        if (config_long(&cfg, "show_animal",    1, 0, 1)) mask |= OBJ_VIS_ANIMAL;
+        if (config_long(&cfg, "show_food",      1, 0, 1)) mask |= OBJ_VIS_FOOD;
+        if (config_long(&cfg, "show_drink",     1, 0, 1)) mask |= OBJ_VIS_DRINK;
+        if (config_long(&cfg, "show_furniture", 1, 0, 1)) mask |= OBJ_VIS_FURNITURE;
+        app->obj_vis_mask = mask;
+    }
 
     config_destroy(&cfg);
     fprintf(stderr, "config: reloaded from %s\n", app->config_reload_path);
@@ -1195,18 +1221,127 @@ static int process_frame(RgbFrame *frame, void *opaque,
                    (size_t)app->gray.width * app->gray.height);
             app->gray_ref_ready = 1;
         }
+        /* ── 회전 프레임 재탐지 (쓰러짐 보조) ─────────────────────────
+         * YOLO가 사람을 놓쳤고 최근 10초 이내에 사람이 있었으면,
+         * 90° CW / CCW 두 방향으로 프레임을 회전해 다시 탐지합니다.
+         * 누운 사람은 회전하면 서있는 사람처럼 보여 탐지율이 높아집니다.
+         * 카메라 비율(4:3/16:9 등)과 무관하게 좌표 역변환으로 원복합니다. */
+        if (app->detections.count == 0
+            && app->last_person_time > 0
+            && (now - app->last_person_time) < 10.0) {
+
+            int rw = frame->height, rh = frame->width; /* 회전 후 크기 */
+            int need = rw * rh * 3;
+            if (!app->rotated_rgb || app->rotated_rgb_size < need) {
+                free(app->rotated_rgb);
+                app->rotated_rgb = (uint8_t *)malloc((size_t)need);
+                app->rotated_rgb_size = app->rotated_rgb ? need : 0;
+            }
+            if (app->rotated_rgb && app->rotated_dets.items) {
+                int dir, x, y;
+                for (dir = 0; dir < 2 && app->detections.count == 0; dir++) {
+                    /* dir=0: 90° CW,  dir=1: 90° CCW */
+                    for (y = 0; y < frame->height; y++) {
+                        for (x = 0; x < frame->width; x++) {
+                            int dx, dy;
+                            if (dir == 0) { dx = frame->height-1-y; dy = x; }
+                            else          { dx = y;                  dy = frame->width-1-x; }
+                            app->rotated_rgb[(dy*rw + dx)*3+0] =
+                                frame->data[y*frame->stride + x*3+0];
+                            app->rotated_rgb[(dy*rw + dx)*3+1] =
+                                frame->data[y*frame->stride + x*3+1];
+                            app->rotated_rgb[(dy*rw + dx)*3+2] =
+                                frame->data[y*frame->stride + x*3+2];
+                        }
+                    }
+                    app->rotated_dets.count = 0;
+                    if (detector_run(app->detector,
+                                     app->rotated_rgb, rw, rh, rw*3,
+                                     &app->rotated_dets,
+                                     error, error_size) == 0
+                        && app->rotated_dets.count > 0) {
+                        /* 좌표를 원본 공간으로 역변환 후 detections에 합산 */
+                        size_t di;
+                        for (di = 0; di < app->rotated_dets.count
+                             && app->detections.count < app->detections.capacity; di++) {
+                            Detection d = app->rotated_dets.items[di];
+                            float ox1, oy1, ox2, oy2;
+                            int ki;
+                            if (dir == 0) { /* CW 역변환 */
+                                ox1 = d.y1;
+                                oy1 = (float)frame->height - 1.0f - d.x2;
+                                ox2 = d.y2;
+                                oy2 = (float)frame->height - 1.0f - d.x1;
+                            } else {        /* CCW 역변환 */
+                                ox1 = (float)frame->width - 1.0f - d.y2;
+                                oy1 = d.x1;
+                                ox2 = (float)frame->width - 1.0f - d.y1;
+                                oy2 = d.x2;
+                            }
+                            d.x1 = ox1; d.y1 = oy1; d.x2 = ox2; d.y2 = oy2;
+                            /* 키포인트도 역변환 */
+                            for (ki = 0; ki < d.keypoint_count; ki++) {
+                                float kx = d.kp[ki].x, ky = d.kp[ki].y;
+                                if (dir == 0) {
+                                    d.kp[ki].x = ky;
+                                    d.kp[ki].y = (float)frame->height - 1.0f - kx;
+                                } else {
+                                    d.kp[ki].x = (float)frame->width - 1.0f - ky;
+                                    d.kp[ki].y = kx;
+                                }
+                            }
+                            app->detections.items[app->detections.count++] = d;
+                        }
+                    }
+                }
+            }
+        }
+
         tracks_update(&app->tracks, &app->detections,
                       frame->data, frame->width, frame->height, frame->stride,
                       now);
+        /* full_luma 준비: 원본 해상도 그레이스케일.
+         * luma 평면이 있으면 그대로, 없으면 RGB→Gray(BT.601) 변환합니다. */
+        {
+            int need = frame->width * frame->height;
+            if (!app->full_luma || app->full_luma_size < need) {
+                free(app->full_luma);
+                app->full_luma = (uint8_t *)malloc((size_t)need);
+                app->full_luma_size = app->full_luma ? need : 0;
+            }
+            if (app->full_luma) {
+                if (frame->luma) {
+                    /* luma 평면이 stride 포함이면 행마다 복사 */
+                    int row;
+                    for (row = 0; row < frame->height; row++)
+                        memcpy(app->full_luma + row * frame->width,
+                               frame->luma + row * frame->luma_stride,
+                               (size_t)frame->width);
+                } else {
+                    /* RGB → Gray: Y ≈ (R*77 + G*150 + B*29) >> 8  (BT.601) */
+                    int px, total = frame->width * frame->height;
+                    const uint8_t *src = frame->data;
+                    uint8_t *dst = app->full_luma;
+                    for (px = 0; px < total; px++, src += 3)
+                        dst[px] = (uint8_t)((src[0]*77u + src[1]*150u + src[2]*29u) >> 8);
+                }
+                tracks_update_heads(&app->tracks, app->full_luma,
+                                    frame->width, frame->height,
+                                    frame->width, now);
+            }
+        }
+        /* last_person_time 갱신 */
+        if (app->detections.count > 0)
+            app->last_person_time = now;
         rules_evaluate(&app->rules, &app->tracks, now, &app->event_log);
 
-        /* Tier 2: Tier 1과 다른 프레임에서 실행해 ORT 스레드 경합 방지.
-         * detect_every_obj/2 오프셋으로 Tier 1 실행 프레임을 피하되, 두 주기의
-         * LCM이 짧아 오프셋이 실제로 겹칠 때는 해당 프레임을 건너뛴다. */
+        /* Tier 2: detect_every_obj 주기마다 실행.
+         * 이전 코드는 && (frame->index % detect_every != 0) 조건 때문에
+         * detect_every_obj/2가 detect_every의 배수일 때 Tier 2가 영원히 실행되지
+         * 않는 버그가 있었다(detect_every=5, detect_every_obj=90 → 45%5==0).
+         * 조건을 단순 주기로 변경한다. ORT는 내부적으로 직렬 실행되므로 경합 없음. */
         if (app->obj_detector) {
-            int run_obj = ((frame->index + app->detect_every_obj / 2)
-                           % app->detect_every_obj == 0)
-                          && (frame->index % app->detect_every != 0);
+            int run_obj = (frame->index % app->detect_every_obj == 0);
             if (run_obj) {
                 int rc = detector_run(app->obj_detector,
                                       frame->data, frame->width, frame->height,
@@ -1393,10 +1528,13 @@ static int process_frame(RgbFrame *frame, void *opaque,
              * 프레임 밖 트랙(주황색 + #ID MISS)을 모두 표시합니다. */
             draw_tracks(frame->data, frame->width, frame->height,
                         frame->stride, &app->tracks);
-            /* Tier 2 물체 감지 결과를 Tier 1 트랙 위에 덧그립니다. */
+            /* Tier 2: obj_vis_mask 에 따라 카테고리별로 표시합니다.
+             * 대시보드 체크박스에서 show_animal/food/drink/furniture를 토글하면
+             * config.json → hot-reload → mask 갱신 경로로 반영됩니다. */
             if (app->obj_detector)
                 draw_obj_detections(frame->data, frame->width, frame->height,
-                                    frame->stride, &app->obj_detections);
+                                    frame->stride, &app->obj_detections,
+                                    app->obj_vis_mask);
             /* 잔류 영역 시각화 */
             {
                 int ri;
@@ -1604,6 +1742,7 @@ int main(int argc, char **argv) {
 
     memset(&app, 0, sizeof(app));
     slot_monitor_init(&app.slot_mon);
+    app.obj_vis_mask = OBJ_VIS_ALL;
     app.perf_log_interval = 60.0; /* 60초마다 성능 지표를 별도 perf DB에 기록 */
     app.detect_every = args.detect_every;
     app.detect_every_obj = args.detect_every_obj;
@@ -1625,11 +1764,16 @@ int main(int argc, char **argv) {
         fprintf(stderr, "failed to allocate bounded detection buffer\n");
         goto done;
     }
-    /* Tier 2용 결과 목록은 Tier 1과 독립적으로 초기화합니다.
-     * 물체 클래스 수가 적으므로 최대 후보 수는 Tier 1과 동일하게 재사용합니다. */
+    /* Tier 2용 결과 목록은 Tier 1과 독립적으로 초기화합니다. */
     if (detection_list_init(&app.obj_detections,
                             args.detector.max_candidates) != 0) {
         fprintf(stderr, "failed to allocate Tier 2 detection buffer\n");
+        goto done;
+    }
+    /* 회전 프레임 탐지 결과 버퍼 */
+    if (detection_list_init(&app.rotated_dets,
+                            args.detector.max_candidates) != 0) {
+        fprintf(stderr, "failed to allocate rotated detection buffer\n");
         goto done;
     }
 
@@ -1745,11 +1889,16 @@ int main(int argc, char **argv) {
         config_destroy(&cfg);
         /* limbo_seconds=1800(30분), appear_threshold=0.45
          * 카페 환경에서 의류 색이 다른 사람을 구별하기에 충분한 값입니다. */
-        if (tracks_init(&app.tracks, 64, 0.4f, 5, 1800.0, 0.45f,
+        /* max_misses=150: 어댑티브 탐지(매 프레임)에서도 ~10초 트랙 생존.
+         * 쓰러진 사람을 fall_hold_seconds=5s 동안 추적하기 위한 여유입니다. */
+        if (tracks_init(&app.tracks, 64, 0.4f, 150, 1800.0, 0.45f,
                         error, sizeof(error)) != 0) {
             fprintf(stderr, "failed to init track list: %s\n", error);
             goto done;
         }
+        /* 히스테리시스: 이미 추적 중인 트랙은 detector 임계값(0.20)으로 유지,
+         * 신규 트랙 생성은 0.30 이상 요구. 오탐 감소 + 추적 안정성 동시 달성. */
+        app.tracks.new_track_min_score = 0.30f;
         if (rules_init(&app.rules, 64, &rules_cfg, error, sizeof(error)) != 0) {
             fprintf(stderr, "failed to init rules engine: %s\n", error);
             goto done;
@@ -1997,5 +2146,8 @@ done:
     detection_list_destroy(&app.detections);
     detector_destroy(app.obj_detector);
     detection_list_destroy(&app.obj_detections);
+    detection_list_destroy(&app.rotated_dets);
+    free(app.rotated_rgb);
+    free(app.full_luma);
     return result;
 }

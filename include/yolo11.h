@@ -147,9 +147,17 @@ int yolo11_decode(const float *output, const int64_t *shape, size_t rank,
 void draw_detections(uint8_t *rgb, int width, int height, int stride,
                      const DetectionList *detections);
 
-/* Tier 2 물체 감지 결과를 클래스별 색상으로 그립니다. */
+/* Tier 2 표시 카테고리 비트마스크 — 0이면 전체 숨김, OBJ_VIS_ALL이면 전체 표시 */
+#define OBJ_VIS_ANIMAL    (1u << 0)
+#define OBJ_VIS_FOOD      (1u << 1)
+#define OBJ_VIS_DRINK     (1u << 2)
+#define OBJ_VIS_FURNITURE (1u << 3)
+#define OBJ_VIS_ALL       0x0Fu
+
+/* Tier 2 물체 감지 결과를 클래스별 색상으로 그립니다.
+ * obj_vis_mask: OBJ_VIS_* 비트 OR. 해당 비트가 꺼진 카테고리는 그리지 않습니다. */
 void draw_obj_detections(uint8_t *rgb, int width, int height, int stride,
-                         const DetectionList *detections);
+                         const DetectionList *detections, uint32_t obj_vis_mask);
 
 /* 왼쪽 상단에 추론 FPS / 카메라 FPS / CPU 사용률 / 온도를 표시합니다.
  * cpu_percent < 0이면 CPU 줄을 건너뜁니다. temperature_celsius < 0이면 온도 줄을 건너뜁니다. */

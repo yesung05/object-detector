@@ -1,10 +1,37 @@
 # TODO — 앞으로 진행 방향
 
-> 기준일: 2026-08-29. 완료된 기능은 `docs/checklist.md` 참조.
+> 최종 업데이트: 2026-09-10. 완료된 기능은 `docs/checklist.md` 참조.
+> Codex 검토: [구현 현실성](2026-09-10-feasibility-review.md) · [쓰러짐/모델 구성](2026-09-10-model-architecture-and-fall-detection.md)
 
 ---
 
-## 단기 — 배포 전 필수
+## 🔴 긴급 — 현재 시스템 오동작
+
+### [버그] Tier 2 실행 조건 오류 → **수정 완료 (2026-09-10)**
+
+`(frame_index + 45) % 90 == 0 && frame_index % 5 != 0` 조건에서
+45, 135, 225…는 모두 5의 배수라 두 번째 조건이 절대 참이 되지 않음.
+0~899프레임에서 Tier 2 실행 횟수 = 0.
+→ `frame->index % detect_every_obj == 0` 단순 주기 조건으로 수정함.
+
+### [버그] Tier 2 데이터셋 레이블 오매핑 → **다음 작업**
+
+COCO category_id 리매핑 오류로 레이블 파일 전체가 잘못된 클래스로 저장됨.
+bottle(학습 3,276개)이 실제로는 야구 방망이 이미지를, apple(20,650개)이 cup 이미지를 가리킴.
+mAP50 29.8%의 직접 원인. 상세: [Tier 2 데이터셋 레이블 오매핑](2026-09-10-tier2-dataset-labeling-issue.md)
+
+작업 목록:
+- [ ] COCO instances_train2017.json에서 정확한 category_id로 레이블 재변환
+  - 대상 ID: cat=17, dog=18, bottle=44, cup=47, banana=52, apple=53,
+    sandwich=54, orange=55, broccoli=56, carrot=57, hot_dog=58, pizza=59,
+    donut=60, cake=61, chair=62, dining_table=67
+- [ ] 재변환 후 샘플 이미지 육안 검증
+- [ ] 재학습: `epochs=100`, `patience=30`
+- [ ] 재학습 후 mAP50 목표 ≥ 50%, bottle AP 확인
+
+---
+
+## 🟠 단기 — 배포 전 필수
 
 ### 보안: 경로 검증
 
@@ -99,6 +126,38 @@ Celeron J1900은 싱글스레드 성능이 i5-4200U의 절반이다. `--low-powe
 - 30초간 빈 매장 영상으로 배경 luma 분포 측정
 - 백화/암전 임계값 자동 조정
 - 추천값을 `config/store.ini`에 기록
+
+---
+
+## 🟡 중기 — Codex 검토 결과 추가 개선사항
+
+### 쓰러짐 오탐 개선 (Codex 검토 기반)
+
+현재 `sudden_head_drop`이 hold time 없이 즉시 알림을 발화하고,
+추적 실패 후 오래된 머리 위치가 판단에 남는 문제 있음.
+임계값 조정만으로는 해결 안 됨 (head_drop 경로는 비율 조건과 무관).
+상세: [쓰러짐/모델 구성 검토](2026-09-10-model-architecture-and-fall-detection.md)
+
+- [ ] `sudden_head_drop` 즉시 알림 → 재검사 트리거로 전환
+- [ ] 머리/관절 추적 실패 시 유효 상태 해제 (유효 시간 부여)
+- [ ] 쓰러짐 후보 상태 추가: `정상 → 후보 → 재확인 중 → 의심 알림`
+- [ ] 알림 원인(경로)과 관측 품질을 이벤트 로그에 기록
+
+### 트랙 만료 개선 (Codex 검토 기반)
+
+`max_misses=150`은 추론 간격에 따라 최대 25분 지속될 수 있음.
+과거 트랙이 인원 집계·잔류물 제외 영역·쓰러짐 판정에 계속 사용됨.
+
+- [ ] `last_seen` 기준 초 단위 만료 적용
+- [ ] 상태 분리: 현재 관측 / 일시 놓침(5초 이내) / 퇴장 추정
+
+### 네트워크 바인딩 제한 (Codex 검토 기반)
+
+`src/stream.c` 471행, `dashboard/server.c` 742행이 0.0.0.0에 바인딩됨.
+인증 없이 LAN의 다른 장치에서 영상/설정에 접근 가능.
+
+- [ ] 기본 바인딩을 `127.0.0.1`로 변경
+- [ ] LAN 접근 필요 시 명시적 옵션(`--bind 0.0.0.0`)으로만 활성화
 
 ---
 

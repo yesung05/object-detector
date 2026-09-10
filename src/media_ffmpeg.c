@@ -514,6 +514,210 @@ static int drain_decoder(AVCodecContext *decoder, AVFrame *frame,
     }
 }
 
+/* ═══════════════════ 라이브 캡처 스레드 (카메라 전용) ═══════════════════
+ *
+ * 단일 스레드에서 디코드-YOLO 순차 실행 시 YOLO 추론(~200ms) 동안 카메라
+ * 프레임이 dshow 버퍼에 쌓여 처리 시간이 실시간에서 점점 뒤처집니다.
+ *
+ * 삼중 버퍼 불변식: write_idx ≠ read_idx
+ *   캡처 스레드: buf[write] 에 SWS 변환 결과를 씀
+ *               → write ↔ fresh 스왑 (lock 보호) → signal
+ *   처리 스레드: fresh ↔ read 스왑 (lock 보호) → buf[read] 읽음
+ * write ≠ read 이므로 캡처는 처리 중인 버퍼를 절대 덮어쓰지 않습니다.
+ */
+#ifdef _WIN32
+#  include <windows.h>
+   typedef CRITICAL_SECTION   lc_mutex_t;
+   typedef CONDITION_VARIABLE lc_cond_t;
+#  define lc_mutex_init(m)     InitializeCriticalSection(m)
+#  define lc_mutex_lock(m)     EnterCriticalSection(m)
+#  define lc_mutex_unlock(m)   LeaveCriticalSection(m)
+#  define lc_mutex_destroy(m)  DeleteCriticalSection(m)
+#  define lc_cond_init(c)      InitializeConditionVariable(c)
+#  define lc_cond_signal(c)    WakeConditionVariable(c)
+#  define lc_cond_destroy(c)   ((void)0)
+static int lc_cond_timedwait(lc_cond_t *c, lc_mutex_t *m, int ms) {
+    return SleepConditionVariableCS(c, m, (DWORD)ms) ? 0 : -1;
+}
+#else
+#  include <pthread.h>
+#  include <time.h>
+   typedef pthread_mutex_t lc_mutex_t;
+   typedef pthread_cond_t  lc_cond_t;
+#  define lc_mutex_init(m)     pthread_mutex_init(m, NULL)
+#  define lc_mutex_lock(m)     pthread_mutex_lock(m)
+#  define lc_mutex_unlock(m)   pthread_mutex_unlock(m)
+#  define lc_mutex_destroy(m)  pthread_mutex_destroy(m)
+#  define lc_cond_init(c)      pthread_cond_init(c, NULL)
+#  define lc_cond_signal(c)    pthread_cond_signal(c)
+#  define lc_cond_destroy(c)   pthread_cond_destroy(c)
+static int lc_cond_timedwait(lc_cond_t *c, lc_mutex_t *m, int ms) {
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    ts.tv_nsec += (long)ms * 1000000L;
+    if (ts.tv_nsec >= 1000000000L) { ts.tv_sec++; ts.tv_nsec -= 1000000000L; }
+    return pthread_cond_timedwait(c, m, &ts) == 0 ? 0 : -1;
+}
+#endif
+
+typedef struct {
+    /* 삼중 버퍼 인덱스 (각각 0·1·2 중 하나, 세 값이 서로 다름을 보장) */
+    int write_idx;   /* 캡처 스레드가 현재 쓰는 버퍼 */
+    int fresh_idx;   /* 최신 완성 프레임 (처리 측 미소비) */
+    int read_idx;    /* 처리 스레드가 안전하게 읽는 버퍼 */
+    int fresh_ready; /* fresh_idx에 새 프레임이 있으면 1 */
+
+    uint8_t  *rgb[3];    /* [width × height × 3], LiveCapture 소유 */
+    int       rgb_stride;
+    int       width, height;
+    int64_t   frame_index; /* 캡처가 완성한 누적 프레임 수 */
+
+    lc_mutex_t lock;
+    lc_cond_t  cond;
+
+    volatile int stop;  /* 1이면 캡처 스레드 종료 */
+    int          error; /* 캡처 스레드 에러 시 1 */
+
+    /* 캡처 스레드 전용 — 처리 스레드에서 접근 금지 */
+    AVFormatContext  *fmt;
+    AVCodecContext   *dec;
+    int               video_stream;
+    struct SwsContext *sws;
+    AVFrame           *av_frame;
+    AVPacket          *av_packet;
+    const MediaOptions *options;
+
+#ifdef _WIN32
+    HANDLE thread_handle;
+#else
+    pthread_t thread;
+#endif
+} LiveCapture;
+
+#ifdef _WIN32
+static DWORD WINAPI live_capture_thread(LPVOID arg)
+#else
+static void *live_capture_thread(void *arg)
+#endif
+{
+    LiveCapture *lc = (LiveCapture *)arg;
+    int ret;
+
+    while (!lc->stop) {
+        ret = av_read_frame(lc->fmt, lc->av_packet);
+        if (ret == AVERROR(EAGAIN)) { platform_sleep_milliseconds(1); continue; }
+        if (ret < 0) break;
+
+        if (lc->av_packet->stream_index != lc->video_stream) {
+            av_packet_unref(lc->av_packet);
+            continue;
+        }
+        ret = avcodec_send_packet(lc->dec, lc->av_packet);
+        av_packet_unref(lc->av_packet);
+        if (ret < 0) break;
+
+        while (!lc->stop) {
+            uint8_t *dst[4];
+            int dst_stride[4];
+            int back;
+
+            ret = avcodec_receive_frame(lc->dec, lc->av_frame);
+            if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) break;
+            if (ret < 0) { lc->error = 1; goto cap_done; }
+
+            lc->sws = sws_getCachedContext(
+                lc->sws,
+                lc->av_frame->width, lc->av_frame->height,
+                (enum AVPixelFormat)lc->av_frame->format,
+                lc->width, lc->height,
+                AV_PIX_FMT_RGB24, SWS_FAST_BILINEAR, NULL, NULL, NULL);
+            if (!lc->sws) { lc->error = 1; goto cap_done; }
+
+            /* write_idx 버퍼에 씁니다 (lock 불필요: 이 스레드만 접근). */
+            back = lc->write_idx;
+            dst[0] = lc->rgb[back]; dst[1] = dst[2] = dst[3] = NULL;
+            dst_stride[0] = lc->rgb_stride; dst_stride[1] = dst_stride[2] = dst_stride[3] = 0;
+            sws_scale(lc->sws,
+                      (const uint8_t *const *)lc->av_frame->data,
+                      lc->av_frame->linesize,
+                      0, lc->av_frame->height, dst, dst_stride);
+            av_frame_unref(lc->av_frame);
+
+            /* write ↔ fresh 스왑 후 시그널 */
+            lc_mutex_lock(&lc->lock);
+            { int tmp = lc->write_idx; lc->write_idx = lc->fresh_idx; lc->fresh_idx = tmp; }
+            lc->fresh_ready = 1;
+            lc->frame_index++;
+            lc_cond_signal(&lc->cond);
+            lc_mutex_unlock(&lc->lock);
+        }
+    }
+cap_done:
+#ifdef _WIN32
+    return 0;
+#else
+    return NULL;
+#endif
+}
+
+static int live_capture_start(LiveCapture *lc,
+                               AVFormatContext *fmt, AVCodecContext *dec,
+                               int video_stream, int width, int height,
+                               const MediaOptions *options,
+                               char *error, size_t error_size) {
+    int i;
+    lc->fmt = fmt; lc->dec = dec; lc->video_stream = video_stream;
+    lc->width = width; lc->height = height; lc->options = options;
+    lc->rgb_stride = width * 3;
+    lc->write_idx = 0; lc->fresh_idx = 1; lc->read_idx = 2;
+    lc->fresh_ready = 0; lc->stop = 0; lc->error = 0; lc->frame_index = 0;
+
+    lc_mutex_init(&lc->lock);
+    lc_cond_init(&lc->cond);
+
+    for (i = 0; i < 3; i++) {
+        lc->rgb[i] = (uint8_t *)malloc((size_t)width * height * 3);
+        if (!lc->rgb[i]) { set_error(error, error_size, "live_capture: OOM"); return -1; }
+    }
+    lc->av_frame = av_frame_alloc();
+    lc->av_packet = av_packet_alloc();
+    if (!lc->av_frame || !lc->av_packet) {
+        set_error(error, error_size, "live_capture: OOM (av alloc)"); return -1;
+    }
+#ifdef _WIN32
+    lc->thread_handle = CreateThread(NULL, 0, live_capture_thread, lc, 0, NULL);
+    if (!lc->thread_handle) { set_error(error, error_size, "CreateThread 실패"); return -1; }
+#else
+    if (pthread_create(&lc->thread, NULL, live_capture_thread, lc) != 0) {
+        set_error(error, error_size, "pthread_create 실패"); return -1;
+    }
+#endif
+    return 0;
+}
+
+static void live_capture_stop(LiveCapture *lc) {
+    int i;
+    lc->stop = 1;
+    lc_mutex_lock(&lc->lock);
+    lc_cond_signal(&lc->cond);
+    lc_mutex_unlock(&lc->lock);
+#ifdef _WIN32
+    if (lc->thread_handle) {
+        WaitForSingleObject(lc->thread_handle, 5000);
+        CloseHandle(lc->thread_handle);
+        lc->thread_handle = NULL;
+    }
+#else
+    pthread_join(lc->thread, NULL);
+#endif
+    sws_freeContext(lc->sws);
+    av_frame_free(&lc->av_frame);
+    av_packet_free(&lc->av_packet);
+    lc_cond_destroy(&lc->cond);
+    lc_mutex_destroy(&lc->lock);
+    for (i = 0; i < 3; i++) { free(lc->rgb[i]); lc->rgb[i] = NULL; }
+}
+
 /*
  * avdevice_list_input_sources를 선택한 이유:
  * ffmpeg -list_devices 와 동일한 내부 경로로 dshow/v4l2 장치 목록을 얻는
@@ -646,9 +850,12 @@ int media_process(const char *input_path, const char *output_path,
             av_dict_set(&input_options, "drop_late_frames", "1", 0);
         }
         if (strcmp(options->input_format, "dshow") == 0) {
-            /* 기본 rtbufsize(3MB)는 고해상도 카메라에서 쉽게 넘칩니다.
-             * 30MB로 늘려 "real-time buffer too full" frame-drop 경고를 줄입니다. */
-            av_dict_set(&input_options, "rtbufsize", "30M", 0);
+            /* MJPEG: YUY2(~28MB/s) 대비 USB 대역폭을 ~10배 줄여 rtbufsize 넘침을 방지합니다.
+             * 카메라가 MJPEG를 지원하지 않으면 avformat_open_input이 실패하므로 아래에서 폴백합니다. */
+            av_dict_set(&input_options, "vcodec", "mjpeg", 0);
+            /* 60M: MJPEG 폴백(YUY2) 시에도 열악한 환경(서멀 스로틀링, 추론 200ms+)에서
+             * 충분한 버퍼 여유를 확보합니다. */
+            av_dict_set(&input_options, "rtbufsize", "60M", 0);
         }
     }
 
@@ -671,6 +878,33 @@ int media_process(const char *input_path, const char *output_path,
      * 의도적으로 무시합니다.
      */
     ret = avformat_open_input(&input, input_path, input_format, &input_options);
+
+    /* dshow에서 MJPEG 미지원 카메라 → YUY2로 재시도 */
+    if (ret < 0 && options->input_format &&
+        strcmp(options->input_format, "dshow") == 0) {
+        fprintf(stderr, "info: dshow MJPEG 미지원, YUY2로 재시도합니다\n");
+        /* avformat_open_input 실패 시 input은 이미 NULL로 해제됩니다. */
+        av_dict_free(&input_options);
+        input_options = NULL;
+        if (options->video_size)
+            av_dict_set(&input_options, "video_size", options->video_size, 0);
+        if (options->framerate)
+            av_dict_set(&input_options, "framerate", options->framerate, 0);
+        av_dict_set(&input_options, "rtbufsize", "60M", 0);
+        input = avformat_alloc_context();
+        if (!input) {
+            set_error(error, error_size, "out of memory creating input context");
+            goto done;
+        }
+        input->interrupt_callback.callback = interrupt_ffmpeg;
+        input->interrupt_callback.opaque = (void *)options;
+        if (options->realtime) {
+            input->flags |= AVFMT_FLAG_NOBUFFER;
+            input->max_delay = 0;
+        }
+        ret = avformat_open_input(&input, input_path, input_format, &input_options);
+    }
+
     if (ret < 0) {
         if (interrupt_ffmpeg((void *)options)) {
             result = 0;
@@ -720,6 +954,80 @@ int media_process(const char *input_path, const char *output_path,
     if (options->stats && pipeline.frame_rate.num > 0 &&
         pipeline.frame_rate.den > 0)
         options->stats->frame_rate = av_q2d(pipeline.frame_rate);
+
+    /* ── 카메라 입력: 캡처 스레드 분리 ──────────────────────────────────
+     * 파일 입력은 기존 단일 스레드 루프를 그대로 씁니다.
+     * 카메라 입력(dshow·avfoundation·v4l2)만 LiveCapture 경로로 분기합니다. */
+    if (options->input_format) {
+        LiveCapture lc;
+        int lc_w = decoder->width, lc_h = decoder->height;
+        /* 일부 카메라는 avformat_find_stream_info 이후에도 codecpar 해상도가 0입니다.
+         * --camera-size 옵션에서 직접 파싱합니다. */
+        if ((lc_w <= 0 || lc_h <= 0) && options->video_size)
+            sscanf(options->video_size, "%dx%d", &lc_w, &lc_h);
+        if (lc_w <= 0 || lc_h <= 0) {
+            set_error(error, error_size,
+                      "카메라 해상도를 알 수 없습니다. --camera-size 옵션을 지정하세요.");
+            goto done;
+        }
+        memset(&lc, 0, sizeof(lc));
+        if (live_capture_start(&lc, input, decoder, video_stream,
+                               lc_w, lc_h, options, error, error_size) != 0)
+            goto done;
+
+        while (!interrupt_ffmpeg((void *)options)) {
+            int64_t seq;
+            int     ridx;
+
+            lc_mutex_lock(&lc.lock);
+            /* 새 프레임이 올 때까지 최대 100ms씩 대기합니다. */
+            while (!lc.fresh_ready && !lc.error && !lc.stop) {
+                lc_cond_timedwait(&lc.cond, &lc.lock, 100);
+                if (interrupt_ffmpeg((void *)options)) break;
+            }
+            if (lc.error || lc.stop || interrupt_ffmpeg((void *)options)) {
+                lc_mutex_unlock(&lc.lock);
+                break;
+            }
+            /* fresh ↔ read 스왑: read_idx 버퍼가 처리 전용으로 안전해집니다.
+             * 캡처 스레드는 write_idx(≠ read_idx)에만 씁니다. */
+            { int tmp = lc.read_idx; lc.read_idx = lc.fresh_idx; lc.fresh_idx = tmp; }
+            lc.fresh_ready = 0;
+            seq  = lc.frame_index;
+            ridx = lc.read_idx;
+            lc_mutex_unlock(&lc.lock);
+
+            {
+                RgbFrame rgb;
+                double   started;
+                memset(&rgb, 0, sizeof(rgb));
+                rgb.data   = lc.rgb[ridx];
+                rgb.width  = lc.width;
+                rgb.height = lc.height;
+                rgb.stride = lc.rgb_stride;
+                rgb.index  = seq;
+                /* luma: MJPEG/YUY2 캡처 후 RGB 변환 시 별도 Y 평면 없음.
+                 * main.c 의 full_luma(BT.601 RGB→Y) 폴백이 처리합니다. */
+                rgb.luma        = NULL;
+                rgb.luma_stride = 0;
+
+                started = monotonic_seconds();
+                if (pipeline.callback(&rgb, pipeline.opaque, error, error_size) != 0) {
+                    live_capture_stop(&lc);
+                    goto done;
+                }
+                if (options->stats) {
+                    options->stats->callback_seconds +=
+                        monotonic_seconds() - started;
+                    options->stats->frames = seq;
+                }
+            }
+        }
+
+        live_capture_stop(&lc);
+        result = 0;
+        goto done;
+    }
 
     /*
      * av_read_frame이 주는 AVPacket은 아직 압축된 데이터입니다.
