@@ -25,6 +25,8 @@
 #include <sys/stat.h>  /* _stat / stat: config.json mtime 감시용 */
 
 #if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
 #define popen _popen
 #define pclose _pclose
 #endif
@@ -1559,6 +1561,12 @@ static int is_directory(const char *path) {
 }
 
 int main(int argc, char **argv) {
+#if defined(_WIN32)
+    /* CMD/PowerShell 콘솔을 UTF-8 모드로 전환합니다.
+     * 기본 CP949에서는 fprintf(stderr, ...) 한글이 깨집니다. */
+    SetConsoleOutputCP(CP_UTF8);
+    SetConsoleCP(CP_UTF8);
+#endif
     Arguments args;
     AppContext app;
     char error[512] = {0};
