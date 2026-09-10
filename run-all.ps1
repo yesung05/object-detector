@@ -1,18 +1,18 @@
-# ffmpeg stderr 등 외부 exe 출력이 ErrorRecord로 잡혀 중단되지 않도록 Continue로 설정
+# ffmpeg stderr captured as ErrorRecord -- keep Continue so it doesn't abort
 $ErrorActionPreference = 'Continue'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $OutputEncoding          = [System.Text.Encoding]::UTF8
 $ROOT = Split-Path $MyInvocation.MyCommand.Path
 
-# ── EXE 탐색 ──────────────────────────────────────────────────────────────
+# ── find exe ──────────────────────────────────────────────────────────────────
 $exe = $null
 foreach ($d in @("$ROOT\build-windows\Release", "$ROOT\build\Release")) {
     if (Test-Path "$d\yolo11-person.exe") { $exe = "$d\yolo11-person.exe"; break }
 }
 if (-not $exe) {
-    Write-Host "[ERROR] 실행 파일 없음. 먼저 빌드하세요:" -ForegroundColor Red
+    Write-Host "[ERROR] Executable not found. Build first:" -ForegroundColor Red
     Write-Host "        cmake --build build-windows --config Release"
-    Read-Host "엔터 키를 눌러 닫기"
+    Read-Host "Press Enter to close"
     exit 1
 }
 
@@ -21,7 +21,7 @@ foreach ($d in @("$ROOT\build-windows\Release", "$ROOT\build\Release")) {
     if (Test-Path "$d\hunik-dashboard.exe") { $dashboard = "$d\hunik-dashboard.exe"; break }
 }
 
-# ── DLL PATH 추가 ──────────────────────────────────────────────────────────
+# ── DLL paths ─────────────────────────────────────────────────────────────────
 $ffmpegBin = $null
 foreach ($d in @("$ROOT\build-windows\Release", "$ROOT\build\Release",
                  "C:\dev\ffmpeg-master-latest-win64-gpl-shared\bin",
@@ -37,23 +37,22 @@ foreach ($d in @("$ROOT\build-windows\Release", "$ROOT\build\Release",
 if ($ffmpegBin) { $env:PATH = "$ffmpegBin;$env:PATH" }
 if ($ortLib)    { $env:PATH = "$ortLib;$env:PATH" }
 
-# ── ffmpeg.exe 탐색 ────────────────────────────────────────────────────────
+# ── ffmpeg.exe ────────────────────────────────────────────────────────────────
 $ffmpeg = $null
 foreach ($d in @($ffmpegBin, "C:\dev\ffmpeg-master-latest-win64-gpl-shared\bin",
                  "C:\deps\ffmpeg\bin")) {
     if ($d -and (Test-Path "$d\ffmpeg.exe")) { $ffmpeg = "$d\ffmpeg.exe"; break }
 }
 
-# ── 카메라 선택 ────────────────────────────────────────────────────────────
+# ── camera selection ──────────────────────────────────────────────────────────
 Write-Host ""
-Write-Host "===== hunik 무인매장 감지 시스템 =====" -ForegroundColor Cyan
+Write-Host "===== HUNIK unmanned store detection system =====" -ForegroundColor Cyan
 Write-Host ""
 
 $cameraDevice = $null
 
 if ($ffmpeg) {
-    Write-Host "카메라 목록 확인 중..." -NoNewline
-    # 2>&1 은 stderr를 ErrorRecord로 감싸므로 .ToString()으로 문자열 추출
+    Write-Host "Scanning cameras..." -NoNewline
     $raw   = & $ffmpeg -f dshow -list_devices true -i dummy 2>&1 |
              ForEach-Object { $_.ToString() }
     $cams  = $raw | Select-String '\(video\)' | ForEach-Object {
@@ -62,32 +61,31 @@ if ($ffmpeg) {
     Write-Host ""
 
     if ($cams.Count -eq 0) {
-        Write-Host "[warn] 카메라를 찾을 수 없습니다 — 기본 카메라 사용" -ForegroundColor Yellow
+        Write-Host "[warn] No cameras found -- using default" -ForegroundColor Yellow
     } elseif ($cams.Count -eq 1) {
-        Write-Host "카메라: $($cams[0]) (1개뿐이므로 자동 선택)" -ForegroundColor Green
+        Write-Host "Camera: $($cams[0]) (auto-selected)" -ForegroundColor Green
         $cameraDevice = "video=$($cams[0])"
     } else {
-        Write-Host "카메라 선택:"
+        Write-Host "Select camera:"
         for ($i = 0; $i -lt $cams.Count; $i++) {
             Write-Host "  [$($i+1)] $($cams[$i])"
         }
         Write-Host ""
-        $sel = Read-Host "번호 입력"
+        $sel = Read-Host "Enter number"
         $idx = [int]$sel - 1
         if ($idx -lt 0 -or $idx -ge $cams.Count) {
-            Write-Host "[warn] 잘못된 번호 — 기본 카메라 사용" -ForegroundColor Yellow
+            Write-Host "[warn] Invalid -- using default" -ForegroundColor Yellow
         } else {
-            Write-Host "선택: $($cams[$idx])" -ForegroundColor Green
+            Write-Host "Selected: $($cams[$idx])" -ForegroundColor Green
             $cameraDevice = "video=$($cams[$idx])"
         }
     }
 } else {
-    Write-Host "[warn] ffmpeg.exe 없음 — 기본 카메라 사용" -ForegroundColor Yellow
+    Write-Host "[warn] ffmpeg.exe not found -- using default camera" -ForegroundColor Yellow
 }
 
-# ── Tier 1 모델 (pose) — INT8 우선, 없으면 models\ 자동 화면비 선택 ──────
+# ── Tier 1 model (pose): INT8 first, then models\ auto-select, then FP32 ─────
 $model = $null
-# 루트의 INT8 pose 모델이 있으면 가장 먼저 사용 (크기 3x 절감)
 foreach ($f in @("$ROOT\yolo11n-pose-416-int8.onnx")) {
     if (Test-Path $f) { $model = $f; break }
 }
@@ -95,39 +93,39 @@ if ($model) {
     Write-Host "[model] $model (INT8)"
 } elseif (Test-Path "$ROOT\models\") {
     $model = "$ROOT\models"
-    Write-Host "[model] models\ (FP32, 자동 화면비 선택)"
+    Write-Host "[model] models\ (FP32, auto aspect-ratio)"
 } else {
     foreach ($f in @("$ROOT\yolo11n-pose-416.onnx", "$ROOT\yolo11n-416.onnx", "$ROOT\yolo11n.onnx")) {
         if (Test-Path $f) { $model = $f; break }
     }
     if (-not $model) {
-        Write-Host "[ERROR] 모델 파일 없음. models\ 폴더에 *.onnx 를 넣으세요." -ForegroundColor Red
-        Read-Host "엔터 키를 눌러 닫기"
+        Write-Host "[ERROR] No model found. Put *.onnx in models\ folder." -ForegroundColor Red
+        Read-Host "Press Enter to close"
         exit 1
     }
     Write-Host "[model] $model"
 }
 
-# ── 이벤트 로그 ────────────────────────────────────────────────────────────
+# ── event log ─────────────────────────────────────────────────────────────────
 $logsDir = "$ROOT\logs"
 if (-not (Test-Path $logsDir)) { New-Item -ItemType Directory $logsDir | Out-Null }
 $stamp   = Get-Date -Format "yyyyMMdd_HHmmss"
 $logFile = "$logsDir\$stamp.db"
 Write-Host "[log]   $logFile"
 
-# ── 대시보드 백그라운드 실행 ───────────────────────────────────────────────
+# ── dashboard (background) ────────────────────────────────────────────────────
 if ($dashboard) {
-    Write-Host "[dash]  http://localhost:8080 (백그라운드)"
+    Write-Host "[dash]  http://localhost:8080 (background)"
     Start-Process -FilePath $dashboard -ArgumentList "--root `"$ROOT`" --config `"$ROOT\config.json`"" -WindowStyle Hidden
 } else {
-    Write-Host "[dash]  dashboard 바이너리 없음"
+    Write-Host "[dash]  dashboard binary not found"
 }
 
-Write-Host "[start] Ctrl+C 로 종료."
+Write-Host "[start] Press Ctrl+C to stop."
 Write-Host ""
 
-# ── 인자 구성 ──────────────────────────────────────────────────────────────
-$args = @(
+# ── build argument list ───────────────────────────────────────────────────────
+$cmdArgs = @(
     "--model", $model,
     "--camera",
     "--provider", "cpu",
@@ -139,12 +137,11 @@ $args = @(
     "--config", "$ROOT\config.json"
 )
 if ($cameraDevice) {
-    $args += "--camera-format", "dshow", "--camera-device", $cameraDevice
-    # QHD 이상 카메라는 버퍼 넘침 방지를 위해 해상도·fps 상한을 설정합니다.
-    # 모델 입력이 416×224 수준이므로 1280×720 이상은 추론에 기여하지 않습니다.
-    $args += "--camera-size", "1280x720", "--camera-fps", "15"
+    $cmdArgs += "--camera-format", "dshow", "--camera-device", $cameraDevice
+    $cmdArgs += "--camera-size", "1280x720", "--camera-fps", "15"
 }
-# INT8 우선, 없으면 FP32 폴백
+
+# Tier 2 (object): INT8 first, FP32 fallback
 $objModel = $null
 foreach ($f in @("$ROOT\models\yolo11n_tier2_int8.onnx",
                   "$ROOT\models\yolo11n_tier2_fp32.onnx")) {
@@ -152,14 +149,14 @@ foreach ($f in @("$ROOT\models\yolo11n_tier2_int8.onnx",
 }
 if ($objModel) {
     Write-Host "[tier2] $objModel"
-    $args += "--obj-model", $objModel
+    $cmdArgs += "--obj-model", $objModel
 } else {
-    Write-Host "[tier2] 모델 없음 — 의자/테이블/동물 감지 비활성" -ForegroundColor Yellow
+    Write-Host "[tier2] not found -- chair/table/animal detection disabled" -ForegroundColor Yellow
 }
 
-# ── 실행 ──────────────────────────────────────────────────────────────────
+# ── run ───────────────────────────────────────────────────────────────────────
 $ErrorActionPreference = 'Continue'
-& $exe @args
+& $exe @cmdArgs
 
 Write-Host ""
-Write-Host "[done] 이벤트 로그: $logFile" -ForegroundColor Cyan
+Write-Host "[done] Log: $logFile" -ForegroundColor Cyan
