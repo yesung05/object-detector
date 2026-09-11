@@ -82,6 +82,8 @@ if(ORT_INCLUDE_DIR AND ORT_LIBRARY AND FFMPEG_INCLUDE_DIR AND FFMPEG_FOUND)
         src/model_select.c
         src/residue.c
         src/slot_monitor.c
+        src/surface_config.c
+        src/surface_monitor.c
         src/perf_log.c
         third_party/sqlite/sqlite3.c)
     target_include_directories(yolo11-person PRIVATE
@@ -185,7 +187,7 @@ if(WIN32)
     # config.c 를 함께 빌드하는 이유: 설정 저장 시 기존 파일의 키를 읽어
     # 병합해야 합니다. 대시보드 UI 가 모르는 키가 저장 한 번에 사라지면
     # detector 가 조용히 기본값으로 되돌아갑니다.
-    add_executable(hunik-dashboard dashboard/server.c src/config.c
+    add_executable(hunik-dashboard dashboard/server.c src/config.c src/surface_config.c
                                   third_party/sqlite/sqlite3.c)
     target_include_directories(hunik-dashboard PRIVATE include third_party/sqlite)
     target_link_libraries(hunik-dashboard ws2_32)
@@ -195,4 +197,28 @@ if(WIN32)
     endif()
     # Release 폴더에 index.html 복사 (실행 파일과 같은 위치에 없어도 --root로 지정)
     message(STATUS "hunik-dashboard: http://localhost:8080 (run from project root)")
+endif()
+
+add_executable(test_surface tests/test_surface.c src/surface_config.c src/surface_monitor.c
+    src/log.c src/platform.c third_party/sqlite/sqlite3.c)
+target_include_directories(test_surface PRIVATE include tests)
+if(MSVC)
+    target_compile_options(test_surface PRIVATE /W4 /utf-8)
+    target_compile_definitions(test_surface PRIVATE _CRT_SECURE_NO_WARNINGS WIN32_LEAN_AND_MEAN)
+    target_link_libraries(test_surface PRIVATE psapi)
+else()
+    target_link_libraries(test_surface PRIVATE m)
+endif()
+add_test(NAME surface_unit COMMAND test_surface)
+set_tests_properties(surface_unit PROPERTIES LABELS "unit")
+if(WIN32)
+    add_executable(test_surface_stream tests/test_surface_stream.c src/stream.c
+        src/surface_config.c src/surface_monitor.c src/log.c src/platform.c
+        third_party/sqlite/sqlite3.c)
+    target_include_directories(test_surface_stream PRIVATE include)
+    target_compile_definitions(test_surface_stream PRIVATE _CRT_SECURE_NO_WARNINGS)
+    target_link_libraries(test_surface_stream PRIVATE ws2_32 psapi)
+    if(MSVC)
+        target_compile_options(test_surface_stream PRIVATE /utf-8)
+    endif()
 endif()

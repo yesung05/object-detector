@@ -244,9 +244,16 @@
   ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
 
   .badge-count { background: var(--blue); color: #fff; font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 10px; min-width: 20px; text-align: center; }
+  .surface-summary{padding:12px 16px;border-bottom:1px solid var(--border);background:var(--surface)}
+  .surface-summary h2{font-size:15px;margin:0 0 8px}.surface-summary a{color:#67d7c4}
+  #surface-main-cards{max-height:300px;overflow:auto;display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px}.surface-main-card{padding:12px;border:1px solid var(--border);border-radius:8px;font-size:13px}
+  .surface-verdict{font-size:22px;font-weight:800}.surface-main-card[data-state="ok"] .surface-verdict{color:#67d7a0}.surface-main-card[data-state="alert"] .surface-verdict{color:#ffb074}.surface-main-card[data-state="wait"] .surface-verdict{color:#d4d9e2}
+  .surface-main-card p{margin:4px 0}.surface-main-card progress{width:130px;margin-right:8px}
+  #surface-main-message{font-size:13px;color:#ffd47e;white-space:pre-wrap}
 </style>
 </head>
 <body>
+<a href="/surfaces" style="display:block;padding:10px 20px;color:#67d7c4;background:#18232b">표면 감시 설정 · 바닥 / 테이블 / 벽 →</a>
 
 <header>
   <h1>HUNIK 관리 대시보드</h1>
@@ -317,6 +324,12 @@
 
   <!-- 탭 영역 -->
   <section class="feed-area">
+    <div class="surface-summary">
+      <h2>지금 청소가 필요한가요? <a href="/surfaces" style="font-size:12px;margin-left:12px">감시할 곳 설정 →</a></h2>
+      <div id="surface-main-health" role="status">감지기 연결 확인 중...</div>
+      <div id="surface-main-message" role="status"></div>
+      <div id="surface-main-cards"></div>
+    </div>
     <div class="tab-bar">
       <button class="tab-btn active" onclick="switchTab('feed',this)">실시간 이벤트</button>
       <button class="tab-btn" onclick="switchTab('settings',this)">설정</button>
@@ -651,6 +664,74 @@
   <span id="footer-count"></span>
 </footer>
 
+<script id="surface-main-script">
+(() => {
+  const el=id=>document.getElementById(id);
+  const health=el('surface-main-health'),cards=el('surface-main-cards'),message=el('surface-main-message');
+  let loading=false,pending=false,lastFrame=null,lastChange=0,lastBase='';
+  const expanded=new Set();
+  const place=id=>id.replace(/^table-(\d+)$/,'테이블 $1').replace(/^floor-(\d+)$/,'바닥 $1').replace(/^wall-(\d+)$/,'벽 $1');
+  function verdict(s,enabled,stale){
+    if(!enabled)return ['wait','감시 꺼짐','감시할 곳 설정에서 켜 주세요.'];
+    if(stale||s.age>3)return ['wait','화면 확인 필요','새 영상이 들어오지 않아 지금 상태를 알 수 없어요.'];
+    const candidates=s.candidates||[];
+    if(candidates.some(c=>c.animal))return ['alert','동물 확인 필요','동물로 의심되는 모습이 보여요. 직접 확인해 주세요.'];
+    if(candidates.some(c=>c.alert))return ['alert','청소 확인 필요','남겨진 물건이나 오염이 의심돼요. 직접 확인해 주세요.'];
+    if(s.capturing)return ['wait','깨끗한 모습 기억 중',`잠시 비켜 주세요. 자동으로 등록하고 있어요. (${s.capture_count}/5)`];
+    if(!s.baseline)return ['wait','처음 설정이 필요해요','깨끗하게 정리한 뒤 아래 등록 버튼을 눌러 주세요.'];
+    if(s.quality===2)return ['wait','가려져서 안 보여요','사람이나 물건이 비키면 다시 확인할게요.'];
+    if(s.quality!==0)return ['wait','화면 확인 필요','카메라 화면이나 조명이 바뀌었는지 확인해 주세요.'];
+    if(s.layout_changed)return ['wait','물건 위치가 바뀌었어요','원래 있던 물건의 위치를 확인해 주세요.'];
+    if(s.occupancy==='occupied')return ['wait','사람이 사용 중이에요','사람이 떠난 뒤 청소가 필요한지 확인할게요.'];
+    if(s.occupancy==='departure_pending')return ['wait','잠시 기다리는 중','사람이 떠났는지 확인하고 있어요.'];
+    if(s.occupancy!=='vacant'||candidates.length)return ['wait','확인 중','변화가 보여서 조금 더 지켜보고 있어요.'];
+    return ['ok','이상 없음','현재 화면에서 청소가 필요한 변화는 감지되지 않았어요.'];
+  }
+  const base=()=>`${location.protocol}//${location.hostname}:${Number(el('port-input').value)||8081}`;
+  async function request(url,options={}){
+    const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),4000);
+    try{const r=await fetch(url,{...options,signal:controller.signal});const j=await r.json();if(!r.ok)throw Error(j.message||j.error||`HTTP ${r.status}`);return j;}finally{clearTimeout(timer);}
+  }
+  async function capture(s,revision,endpoint){
+    if(pending)return;
+    if(!confirm(`${s.id}: 평소 비치물만 남기고 쓰레기·오염을 치웠나요? 현재 모습을 정상 기준으로 등록합니다. 기존 기준은 교체됩니다.`))return;
+    pending=true;message.textContent='등록 요청을 확인하고 있습니다...';
+    try{
+      const config=await request('/api/surfaces');
+      const live=await request(endpoint+'/surface/status');
+      if(endpoint!==base()||!config.enabled||!live.enabled||config.revision!==revision||live.revision!==revision||!config.surfaces.some(v=>v.id===s.id))throw Error('설정이 변경되었거나 아직 적용 중입니다. 상태 갱신 후 다시 눌러 주세요.');
+      await request(endpoint+'/surface/capture?id='+encodeURIComponent(s.id)+'&empty=0',{method:'POST'});
+      message.textContent=`${s.id}: 등록 요청됨. 사람이 영역을 가리지 않도록 잠시 비켜 주세요. 아래에서 진행 상황을 확인할 수 있습니다.`;
+    }catch(e){message.textContent='등록하지 못했습니다: '+e.message;}finally{pending=false;poll();}
+  }
+  async function poll(){
+    if(loading)return;loading=true;const endpoint=base();
+    try{
+      const data=await request(endpoint+'/surface/status');if(endpoint!==base())return;
+      if(lastBase!==endpoint||lastFrame!==data.frame_time){lastFrame=data.frame_time;lastBase=endpoint;lastChange=Date.now();}
+      const stale=!Number.isFinite(data.frame_time)||Date.now()-lastChange>4000;
+      health.textContent=stale?'카메라 연결을 확인해 주세요. 지금 상태를 알 수 없어요.':!data.enabled?'감시가 꺼져 있어요. ‘감시할 곳 설정’에서 켤 수 있어요.':'자동으로 확인 중 · 쓰레기 종류가 아니라 깨끗할 때와 달라진 모습을 살펴봐요.';
+      cards.replaceChildren();
+      for(const s of data.surfaces||[]){
+        const card=document.createElement('div');card.className='surface-main-card';
+        const title=document.createElement('strong');title.textContent=place(s.id);card.append(title);
+        const [kind,label,reason]=verdict(s,data.enabled,stale);card.dataset.state=kind;
+        const line=document.createElement('p');line.className='surface-verdict';line.textContent=label;card.append(line);
+        const explanation=document.createElement('p');explanation.textContent=reason;card.append(explanation);
+        if(s.capturing){const progress=document.createElement('progress');progress.max=5;progress.value=s.capture_count;card.append(progress);}
+        let controls=card;
+        if(s.baseline){controls=document.createElement('details');controls.open=expanded.has(s.id);controls.ontoggle=()=>{if(controls.open)expanded.add(s.id);else expanded.delete(s.id);};const summary=document.createElement('summary');summary.textContent='등록한 모습 보기 · 다시 등록';controls.append(summary);card.append(controls);}
+        const button=document.createElement('button');button.className='btn';button.textContent=s.baseline?'지금 모습으로 다시 등록':'깨끗한 모습 등록';button.disabled=pending||stale||s.age>3||!data.enabled||!!s.capturing;button.onclick=()=>capture(s,data.revision,endpoint);controls.append(button);
+        if(s.baseline&&s.reference){const a=document.createElement('a');a.textContent='기억한 사진 보기';a.href=endpoint+'/surface/reference?file='+encodeURIComponent(s.reference);a.target='_blank';a.rel='noopener';a.style.marginLeft='12px';controls.append(a);}
+        cards.append(card);
+      }
+      if(!(data.surfaces||[]).length)cards.textContent='아직 적용된 영역이 없습니다. ‘영역 설정’에서 먼저 ROI를 지정하세요.';
+    }catch(e){if(endpoint===base()){health.textContent='표면 감시 연결 안 됨 · 감지기 실행 상태와 영상 포트를 확인하세요.';cards.replaceChildren();}}
+    finally{loading=false;}
+  }
+  poll();setInterval(poll,2000);
+})();
+</script>
 <script>
 const MAX_ROWS = 500;
 const WARN_EVENTS = new Set(["camera_whiteout","camera_blackout","camera_frozen","camera_stalled"]);

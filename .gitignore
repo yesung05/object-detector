@@ -49,4 +49,7 @@ build-windows/
 *.docx
 *.hwpx
 *.hwp
+surface-test-*/
+config/surface-*.bin*
+config/surfaces.json*
 *.doc

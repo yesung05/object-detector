@@ -1,6 +1,7 @@
 #include "camera_health.h"
 #include "perf_log.h"
 #include "slot_monitor.h"
+#include "surface_monitor.h"
 #include "stream.h"
 #include "door.h"
 #include "residue.h"
@@ -93,6 +94,11 @@ typedef struct {
     Detector        *obj_detector;      /* NULL 이면 Tier 2 비활성 */
     DetectionList    obj_detections;    /* Tier 2 전용 결과 목록 — detections 와 별도 */
     DetectorRunStats obj_detector_stats;
+    SurfaceMonitor *surface_monitor; /* AppContext owns; destroy at done. */
+    DetectionList surface_detections;
+    char surface_config_path[640];
+    double surface_config_check, surface_people_at, surface_status_at;
+    int surface_revision;
     int              detect_every_obj;  /* Tier 2 실행 간격(프레임), 기본 90 */
     int64_t          obj_inference_runs;
     /* 이상 탐지 모듈 */
@@ -873,6 +879,66 @@ static void reload_door_references(AppContext *app) {
  * detect-every가 3이면 0, 3, 6...번 프레임에서만 YOLO를 실행하고, 그 사이
  * 프레임에는 detections 배열에 남아 있는 직전 박스를 다시 그립니다.
  */
+static void surface_reload(AppContext *app, double now) {
+    SurfaceConfig config;char err[256];
+    if(!app->surface_monitor||now-app->surface_config_check<2)return;
+    app->surface_config_check=now;
+    if(surface_config_read(app->surface_config_path,&config,err,sizeof(err))==0&&config.revision!=app->surface_revision) {
+        if(surface_monitor_apply(app->surface_monitor,&config,err,sizeof(err))==0){
+            app->surface_revision=config.revision;
+            event_log_write(&app->event_log,LOG_INFO,"surface","configuration applied");
+        }else event_log_write(&app->event_log,LOG_WARN,"surface",err);
+    }
+}
+static void surface_process(AppContext *app,RgbFrame *frame,double now) {
+    SurfaceFrame sf;SurfaceObject people[64];size_t n=0,i;char status[32768],id[40],err[256];int empty;
+    if(!app->surface_monitor)return;
+    if(stream_surface_capture_request(id,sizeof(id),&empty)&&surface_monitor_capture(app->surface_monitor,id,empty,err,sizeof(err)))
+        event_log_write(&app->event_log,LOG_WARN,"surface",err);
+    {int candidate,revision,version;if(stream_surface_ack_request(id,sizeof(id),&candidate,&revision,&version)&&
+        surface_monitor_acknowledge(app->surface_monitor,id,candidate,revision,version,&app->event_log))
+        event_log_write(&app->event_log,LOG_WARN,"surface","Acknowledgement rejected: stale or missing event");}
+    memset(&sf,0,sizeof(sf));
+    for(i=0;i<app->tracks.count&&n<64;i++) {
+        const Track *t=&app->tracks.items[i];SurfaceObject *p;
+        if(!t->active||now-t->last_seen>2)continue;p=&people[n++];memset(p,0,sizeof(*p));
+        p->id=t->id;p->x1=t->box.x1/frame->width;p->y1=t->box.y1/frame->height;
+        p->x2=t->box.x2/frame->width;p->y2=t->box.y2/frame->height;
+        p->anchor_x=(p->x1+p->x2)*0.5f;p->anchor_y=p->y1+(p->y2-p->y1)*0.55f;
+        if(t->box.keypoint_count>12&&t->box.kp[11].score>0.4f&&t->box.kp[12].score>0.4f){
+            p->anchor_x=(t->box.kp[11].x+t->box.kp[12].x)*0.5f/frame->width;
+            p->anchor_y=(t->box.kp[11].y+t->box.kp[12].y)*0.5f/frame->height;}
+    }
+    sf.rgb=frame->data;sf.width=frame->width;sf.height=frame->height;sf.stride=frame->stride;sf.now=now;
+    sf.people=people;sf.people_count=n;sf.people_at=app->surface_people_at;sf.people_valid=app->surface_people_at>0;
+    sf.camera_ok=app->cam_health.state==CAM_OK;
+    surface_monitor_update(app->surface_monitor,&sf,&app->event_log);
+    {SurfaceInspection q;
+     if(surface_monitor_poll_request(app->surface_monitor,now,&q)) {
+        SurfaceObject objs[128];size_t count=0;int success=0;
+        int x=(int)(q.x1*frame->width),y=(int)(q.y1*frame->height);
+        int w=(int)(q.x2*frame->width)-x,h=(int)(q.y2*frame->height)-y;
+        if(app->obj_detector&&w>1&&h>1) {
+            DetectorRunStats rs;
+            success=detector_run(app->obj_detector,frame->data+(size_t)y*frame->stride+x*3,w,h,frame->stride,
+                &app->surface_detections,err,sizeof(err))==0;
+            if(success){app->obj_inference_runs++;detector_get_last_stats(app->obj_detector,&rs);
+                app->obj_detector_stats.preprocess_seconds+=rs.preprocess_seconds;
+                app->obj_detector_stats.inference_seconds+=rs.inference_seconds;
+                app->obj_detector_stats.postprocess_seconds+=rs.postprocess_seconds;
+                for(i=0;i<app->surface_detections.count&&count<128;i++){
+                    Detection *d=&app->surface_detections.items[i];SurfaceObject *o=&objs[count++];memset(o,0,sizeof(*o));
+                    o->kind=d->class_id==OBJ_CAT||d->class_id==OBJ_DOG?1:2;
+                    o->x1=(d->x1+x)/frame->width;o->x2=(d->x2+x)/frame->width;
+                    o->y1=(d->y1+y)/frame->height;o->y2=(d->y2+y)/frame->height;
+                    o->anchor_x=(o->x1+o->x2)*0.5f;o->anchor_y=o->y2;}
+            }
+        }
+        surface_monitor_submit_result(app->surface_monitor,&q,objs,count,success,platform_monotonic_seconds(),&app->event_log);
+     }}
+    if(now-app->surface_status_at>=0.5){surface_monitor_status(app->surface_monitor,now,status,sizeof(status));
+        stream_surface_status(status);app->surface_status_at=now;}
+}
 static int process_frame(RgbFrame *frame, void *opaque,
                          char *error, size_t error_size) {
     AppContext *app = (AppContext *)opaque;
@@ -884,6 +950,7 @@ static int process_frame(RgbFrame *frame, void *opaque,
     const char *kind = "reused";
     double started;
     double now = platform_monotonic_seconds();
+    surface_reload(app,now);
 
     /* config.json hot-reload: 2초마다 파일 수정 시각을 체크합니다.
      * 대시보드에서 설정 저장 후 2초 이내에 자동으로 반영됩니다. */
@@ -1180,6 +1247,8 @@ static int process_frame(RgbFrame *frame, void *opaque,
             kind = "tracked";
         }
     }
+    /* Fresh person evidence is reserved independently of motion gating. */
+    if(surface_monitor_enabled(app->surface_monitor)&&now-app->surface_people_at>=1.0)run_detector=1;
     if (run_detector) {
         DetectorRunStats run_stats;
         if (detector_run(app->detector, frame->data, frame->width,
@@ -1195,6 +1264,7 @@ static int process_frame(RgbFrame *frame, void *opaque,
         app->detector_stats.inference_p95_ms = run_stats.inference_p95_ms;
         app->detector_stats.inference_max_ms = run_stats.inference_max_ms;
         app->inference_runs++;
+        app->surface_people_at=now;
         kind = requested ? "adaptive" : "inference";
         if (app->tracking) {
             started = platform_monotonic_seconds();
@@ -1340,7 +1410,7 @@ static int process_frame(RgbFrame *frame, void *opaque,
          * detect_every_obj/2가 detect_every의 배수일 때 Tier 2가 영원히 실행되지
          * 않는 버그가 있었다(detect_every=5, detect_every_obj=90 → 45%5==0).
          * 조건을 단순 주기로 변경한다. ORT는 내부적으로 직렬 실행되므로 경합 없음. */
-        if (app->obj_detector) {
+        if (app->obj_detector && !surface_monitor_enabled(app->surface_monitor)) {
             int run_obj = (frame->index % app->detect_every_obj == 0);
             if (run_obj) {
                 int rc = detector_run(app->obj_detector,
@@ -1422,7 +1492,8 @@ static int process_frame(RgbFrame *frame, void *opaque,
      *
      * 그리기보다 먼저 실행하는 이유: door_check()와 같습니다 — 박스·HUD 픽셀이
      * 기준 이미지 비교에 섞이면 없던 변화가 생겨납니다 (설계 문서 "반드시 지킬 3가지" #1). */
-    if (app->residue.config.enabled && app->residue.baseline_ready) {
+    surface_process(app,frame,now);
+    if (!surface_monitor_enabled(app->surface_monitor) && app->residue.config.enabled && app->residue.baseline_ready) {
         /* 사람 bbox 배열 구성 */
         GrayRect person_rects[64];
         int pcount = 0;
@@ -2037,6 +2108,15 @@ int main(int argc, char **argv) {
         else { data_dir[0] = '.'; data_dir[1] = '\0'; }
     }
 
+    {
+        char surface_dir[600];
+        snprintf(surface_dir,sizeof(surface_dir),"%s/config",data_dir);
+        snprintf(app.surface_config_path,sizeof(app.surface_config_path),"%s/surfaces.json",surface_dir);
+        app.surface_monitor=surface_monitor_create(surface_dir);
+        if(!app.surface_monitor||detection_list_init(&app.surface_detections,args.detector.max_candidates)!=0){
+            fprintf(stderr,"surface monitor allocation failed\n");goto done;}
+        surface_reload(&app,platform_monotonic_seconds());
+    }
     if (app.stream_port > 0) {
         if (stream_start(app.stream_port, data_dir) != 0)
             fprintf(stderr, "stream: failed to start on port %d\n", app.stream_port);
@@ -2146,6 +2226,8 @@ done:
     detection_list_destroy(&app.detections);
     detector_destroy(app.obj_detector);
     detection_list_destroy(&app.obj_detections);
+    detection_list_destroy(&app.surface_detections);
+    surface_monitor_destroy(app.surface_monitor);
     detection_list_destroy(&app.rotated_dets);
     free(app.rotated_rgb);
     free(app.full_luma);

@@ -22,6 +22,7 @@
 #include <ws2tcpip.h>
 #include <windows.h>
 #include "../include/config.h"
+#include "../include/surface_monitor.h"
 /* SQLite amalgamation — 이벤트 로그(.db) 파일을 직접 쿼리합니다.
  * WAL 모드로 열린 DB는 detector가 쓰는 도중에도 읽기 가능합니다. */
 #include "../third_party/sqlite/sqlite3.h"
@@ -40,6 +41,7 @@ static char g_root[MAX_PATH];        /* 프로젝트 루트 (logs\ 부모) */
 static char g_logs[MAX_PATH];        /* g_root\logs\ */
 static char g_config_path[MAX_PATH]; /* g_root\config.json */
 static int  g_port = 8080;
+static SRWLOCK g_surface_config_lock = SRWLOCK_INIT;
 
 /* ── HTTP 기초 ────────────────────────────────────────────────────────────── */
 
@@ -180,9 +182,9 @@ static int is_db_file(const char *filename) {
 /* ── 라우트 핸들러 ────────────────────────────────────────────────────────── */
 
 /* GET / → dashboard/index.html */
-static void serve_index(SOCKET s) {
+static void serve_page(SOCKET s, const char *name) {
     char path[MAX_PATH];
-    snprintf(path, sizeof(path), "%s\\dashboard\\index.html", g_root);
+    snprintf(path, sizeof(path), "%s\\dashboard\\%s", g_root,name);
 
     HANDLE hFile = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ, NULL,
                                OPEN_EXISTING, 0, NULL);
@@ -513,15 +515,22 @@ static const char *extract_body(const char *buf, int buflen, int *body_len) {
 }
 
 static int content_length(const char *buf) {
-    const char *p = strstr(buf, "Content-Length:");
-    char *end;
-    long n;
-    if (!p) return 0;
-    p += strlen("Content-Length:");
-    while (*p == ' ' || *p == '\t') p++;
-    n = strtol(p, &end, 10);
-    if (end == p || n < 0 || n > 7000) return -1;
-    return (int)n;
+    const char *p=strstr(buf,"\r\n");int found=0,result=0;
+    while(p&&p[2]&&p[2]!='\r') {
+        const char *line=p+2,*next=strstr(line,"\r\n");char *end;long n;
+        if(!next)return -1;
+        if(!_strnicmp(line,"Transfer-Encoding:",18))return -1;
+        if(!_strnicmp(line,"Content-Length:",15)) {
+            if(found++)return -1;line+=15;
+            while(*line==' '||*line=='\t')line++;
+            n=strtol(line,&end,10);
+            while(*end==' '||*end=='\t')end++;
+            if(end==line||end!=next||n<0||n>SURFACE_JSON_MAX)return -1;
+            result=(int)n;
+        }
+        p=next;
+    }
+    return result;
 }
 
 /* POST /api/config body: { ... } → config.json 저장 */
@@ -613,13 +622,52 @@ static void serve_config_post(SOCKET s, const char *body, int body_len) {
 
 /* ── 클라이언트 스레드 ────────────────────────────────────────────────────── */
 
+static void serve_surfaces(SOCKET socket, const char *body, int length) {
+    char path[MAX_PATH],directory[MAX_PATH],message[256];SurfaceConfig config,old;
+    char *data=NULL;FILE *f;size_t count;int code=200;
+    snprintf(directory,sizeof(directory),"%s\\config",g_root);
+    snprintf(path,sizeof(path),"%s\\surfaces.json",directory);
+    AcquireSRWLockExclusive(&g_surface_config_lock);
+    if(body) {
+        data=(char*)malloc((size_t)length+1);
+        if(!data){code=500;strcpy(message,"Out of memory");goto reply;}
+        memcpy(data,body,(size_t)length);data[length]=0;
+        if(surface_config_parse(data,&config,message,sizeof(message))){code=400;goto reply;}
+        if(surface_config_read(path,&old,message,sizeof(message))==0&&surface_config_transition(&old,&config,message,sizeof(message))){code=409;goto reply;}
+        CreateDirectoryA(directory,NULL);
+        /* Persist old revision for rollback; never overwrite a saved revision. */
+        {char backup[MAX_PATH];snprintf(backup,sizeof(backup),"%s.revision-%d",path,config.revision-1);CopyFileA(path,backup,TRUE);}
+        if(surface_file_replace(path,data,(size_t)length)){code=500;strcpy(message,"Unable to save configuration");goto reply;}
+        strcpy(message,"saved; detector applies within two seconds");goto reply;
+    }
+    f=fopen(path,"rb");
+    if(!f){const char *empty="{\"schema_version\":1,\"revision\":0,\"enabled\":false,\"camera_id\":\"camera-1\",\"geometry_revision\":1,\"width\":1280,\"height\":720,\"source\":\"manual\",\"surfaces\":[]}";
+        send_header(socket,200,"application/json",(int64_t)strlen(empty));send_all(socket,empty,(int)strlen(empty));goto done;}
+    data=(char*)malloc(SURFACE_JSON_MAX+1);if(!data){fclose(f);code=500;strcpy(message,"Out of memory");goto reply;}
+    count=fread(data,1,SURFACE_JSON_MAX,f);fclose(f);data[count]=0;
+    send_header(socket,200,"application/json",(int64_t)count);send_all(socket,data,(int)count);goto done;
+reply:
+    /* Error strings are fixed parser messages, no unescaped user input. */
+    {char response[384];snprintf(response,sizeof(response),"{\"ok\":%s,\"message\":\"%s\"}",code==200?"true":"false",message);
+     send_header(socket,code,"application/json",(int64_t)strlen(response));send_all(socket,response,(int)strlen(response));}
+done:
+    free(data);ReleaseSRWLockExclusive(&g_surface_config_lock);
+}
 static DWORD WINAPI client_thread(LPVOID arg) {
     SOCKET s = (SOCKET)(uintptr_t)arg;
     /* POST body를 담으려면 버퍼가 충분해야 합니다. config JSON ≒ 500B */
-    char buf[8192] = {0};
+    char buf[SURFACE_JSON_MAX + 4096] = {0};
     int n = recv(s, buf, sizeof(buf) - 1, 0);
     if (n <= 0) { closesocket(s); return 0; }
     buf[n] = '\0';
+    /* Headers, like bodies, may be split across TCP packets. Bound both size
+     * and waiting time so partial requests cannot occupy a worker forever. */
+    {DWORD timeout=5000;setsockopt(s,SOL_SOCKET,SO_RCVTIMEO,(const char*)&timeout,sizeof(timeout));}
+    while(!strstr(buf,"\r\n\r\n")&&n<4096) {
+        int got=recv(s,buf+n,(int)sizeof(buf)-1-n,0);
+        if(got<=0){closesocket(s);return 0;}n+=got;buf[n]=0;
+    }
+    if(!strstr(buf,"\r\n\r\n")){send_header(s,400,"text/plain",0);closesocket(s);return 0;}
 
     char method[16], path[512], query[512];
     parse_request(buf, method, path, query);
@@ -666,7 +714,11 @@ static DWORD WINAPI client_thread(LPVOID arg) {
 
     if (strcmp(method, "GET") == 0) {
         if (strcmp(path, "/") == 0 || strcmp(path, "/index.html") == 0) {
-            serve_index(s);
+            serve_page(s,"index.html");
+        } else if (strcmp(path,"/surfaces")==0) {
+            serve_page(s,"surfaces.html");
+        } else if (strcmp(path,"/api/surfaces")==0) {
+            serve_surfaces(s,NULL,0);
         } else if (strcmp(path, "/api/logs") == 0) {
             serve_log_list(s);
         } else if (strcmp(path, "/api/config") == 0) {
@@ -686,7 +738,9 @@ static DWORD WINAPI client_thread(LPVOID arg) {
     } else if (strcmp(method, "POST") == 0) {
         int body_len = 0;
         const char *body = extract_body(buf, n, &body_len);
-        if (strcmp(path, "/api/config") == 0) {
+        if (strcmp(path, "/api/surfaces") == 0) {
+            serve_surfaces(s,body,content_length(buf));
+        } else if (strcmp(path, "/api/config") == 0) {
             serve_config_post(s, body, body_len);
         } else {
             send_header(s, 404, "text/plain", 3);

@@ -43,11 +43,35 @@
 #define IDLE_PUSH_FPS 1
 
 static CRITICAL_SECTION g_lock;
+static int g_running;
+static char g_surface_status[32768] = "{\"enabled\":false,\"surfaces\":[]}";
+static char g_surface_capture[40];
+static int g_surface_empty;
+static char g_surface_ack[40];
+static int g_surface_ack_candidate,g_surface_ack_revision,g_surface_ack_version;
+int stream_surface_ack_request(char *id,size_t size,int *candidate,int *revision,int *version) {
+    int found;if(!g_running)return 0;
+    EnterCriticalSection(&g_lock);found=g_surface_ack[0]!=0;
+    if(found){snprintf(id,size,"%s",g_surface_ack);*candidate=g_surface_ack_candidate;*revision=g_surface_ack_revision;*version=g_surface_ack_version;g_surface_ack[0]=0;}
+    LeaveCriticalSection(&g_lock);return found;
+}
+void stream_surface_status(const char *json) {
+    if(!g_running) return;
+    EnterCriticalSection(&g_lock);
+    snprintf(g_surface_status,sizeof(g_surface_status),"%s",json);
+    LeaveCriticalSection(&g_lock);
+}
+int stream_surface_capture_request(char *id,size_t size,int *empty) {
+    int found;
+    if(!g_running)return 0;
+    EnterCriticalSection(&g_lock);found=g_surface_capture[0]!=0;
+    if(found){snprintf(id,size,"%s",g_surface_capture);*empty=g_surface_empty;g_surface_capture[0]=0;}
+    LeaveCriticalSection(&g_lock);return found;
+}
 static uint8_t  *g_rgb    = NULL; /* 최신 프레임 RGB 버퍼 (g_lock 보호) */
 static int       g_width  = 0;
 static int       g_height = 0;
 static uint32_t  g_seq    = 0;    /* 프레임 일련번호: 변경 감지용 */
-static int       g_running = 0;
 static HANDLE    g_accept_thread = NULL;
 static SOCKET    g_srv = INVALID_SOCKET;
 static char      g_data_dir[MAX_PATH] = "."; /* door_reference.raw 저장 위치 */
@@ -311,6 +335,22 @@ static void handle_door_preview(SOCKET s, int is_open) {
 
 /* ── 클라이언트 스레드 ──────────────────────────────────────────────────── */
 
+static void handle_surface_reference(SOCKET s,const char *qs) {
+    char name[160]={0},path[1024],header[384];const char *p=strstr(qs,"file=");size_t n=0;
+    uint32_t meta[4];uint8_t rgb[96*96*3];FILE *f;JpegBuf jpg={NULL,0,65536};int h;
+    if(p){p+=5;while(*p&&*p!='&'&&n<sizeof(name)-1){char c=*p++;
+        if(!((c>='a'&&c<='z')||(c>='A'&&c<='Z')||(c>='0'&&c<='9')||c=='-'||c=='_'||c=='.'))break;
+        name[n++]=c;}}
+    if(strncmp(name,"surface-",8)||strstr(name,"..")||n<12||strcmp(name+n-4,".bin")){send_json(s,400,"{\"error\":\"invalid reference\"}");return;}
+    snprintf(path,sizeof(path),"%s/config/%s",g_data_dir,name);f=fopen(path,"rb");
+    if(!f){send_json(s,404,"{\"error\":\"reference unavailable\"}");return;}
+    if(fread(meta,sizeof(meta),1,f)!=1||meta[0]!=0x53524631||meta[1]!=96||fread(rgb,1,sizeof(rgb),f)!=sizeof(rgb)){
+        fclose(f);send_json(s,400,"{\"error\":\"invalid image\"}");return;}
+    fclose(f);jpg.data=(uint8_t*)malloc(jpg.cap);if(!jpg.data)return;
+    stbi_write_jpg_to_func(jpeg_write_cb,&jpg,96,96,3,rgb,JPEG_QUALITY);
+    h=snprintf(header,sizeof(header),"HTTP/1.1 200 OK\r\nContent-Type: image/jpeg\r\nContent-Length: %d\r\nAccess-Control-Allow-Origin: *\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n",jpg.size);
+    send_all(s,header,h);send_all(s,(const char*)jpg.data,jpg.size);free(jpg.data);
+}
 static DWORD WINAPI client_thread(LPVOID arg) {
     SOCKET s = (SOCKET)(uintptr_t)arg;
     char req[2048] = {0};
@@ -343,7 +383,26 @@ static DWORD WINAPI client_thread(LPVOID arg) {
         *qmark = '\0';
     }
 
-    if (strcmp(url, "/stream") == 0) {
+    if (strcmp(url,"/surface/reference")==0) {
+        handle_surface_reference(s,qs);
+    } else if (strcmp(url, "/surface/status") == 0) {
+        char copy[32768];
+        EnterCriticalSection(&g_lock);memcpy(copy,g_surface_status,sizeof(copy));LeaveCriticalSection(&g_lock);
+        send_json(s,200,copy);
+    } else if ((!strcmp(url,"/surface/capture")||!strcmp(url,"/surface/ack")) && strcmp(method,"POST")==0) {
+        char id[40]={0};int k=0;const char *p=strstr(qs,"id=");
+        if(p) {p+=3;while(*p&&*p!='&'&&k<39) {
+            char c=*p++;if(!((c>='a'&&c<='z')||(c>='A'&&c<='Z')||(c>='0'&&c<='9')||c=='_'||c=='-')){k=0;break;}id[k++]=c;}}
+        if(!k)send_json(s,400,"{\"error\":\"invalid id\"}");
+        else {EnterCriticalSection(&g_lock);
+            if(!strcmp(url,"/surface/ack")){const char *c=strstr(qs,"candidate="),*r=strstr(qs,"revision="),*v=strstr(qs,"version=");
+                /* revision contains 'version='; require a query-key boundary. */
+                v=strstr(qs,"&version=");
+                snprintf(g_surface_ack,sizeof(g_surface_ack),"%s",id);g_surface_ack_candidate=c?atoi(c+10):-1;g_surface_ack_revision=r?atoi(r+9):-1;g_surface_ack_version=v?atoi(v+9):-1;}
+            else{snprintf(g_surface_capture,sizeof(g_surface_capture),"%s",id);g_surface_empty=strstr(qs,"empty=1")!=NULL;}
+            LeaveCriticalSection(&g_lock);
+            send_json(s,202,"{\"queued\":true}");}
+    } else if (strcmp(url, "/stream") == 0) {
         /* MJPEG 스트림 헤더 */
         const char *boundary = "mjpeg_boundary";
         char hdr[512];

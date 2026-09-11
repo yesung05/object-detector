@@ -2,6 +2,7 @@
 #define STREAM_H
 
 #include <stdint.h>
+#include <stddef.h>
 
 /*
  * MJPEG HTTP 스트리밍 서버 + 문 여닫이 기준 이미지 관리입니다.
@@ -27,6 +28,10 @@
 /* data_dir: door_reference.raw를 저장할 디렉터리 (프로젝트 루트).
  * NULL이면 현재 작업 디렉터리를 사용합니다. */
 int  stream_start(int port, const char *data_dir);
+/* Snapshot mailbox: copied under stream lock; monitor runs on processing thread. */
+void stream_surface_status(const char *json);
+int stream_surface_capture_request(char *id, size_t size, int *empty);
+int stream_surface_ack_request(char *id, size_t size, int *candidate, int *revision, int *version);
 
 /*
  * 최신 프레임을 스트림 서버에 등록합니다.
@@ -71,6 +76,13 @@ static inline void stream_push(const uint8_t *rgb, int width, int height,
     (void)rgb; (void)width; (void)height; (void)stride;
 }
 static inline void stream_stop(void) { }
+static inline void stream_surface_status(const char *json) { (void)json; }
+static inline int stream_surface_capture_request(char *id, size_t size, int *empty) {
+    (void)id; (void)size; (void)empty; return 0;
+}
+static inline int stream_surface_ack_request(char *id, size_t size, int *candidate, int *revision, int *version) {
+    (void)id; (void)size; (void)candidate; (void)revision; (void)version; return 0;
+}
 static inline int  stream_client_count(void) { return 0; }
 static inline void stream_set_door_state(int state) { (void)state; }
 static inline void stream_set_door_enabled(int enabled) { (void)enabled; }
