@@ -21,18 +21,32 @@ i5-4200U (Haswell, AVX2, VNNI 없음) 기대 성능:
 
 import argparse
 import os
+import random
 import sys
 
 
-def _build_static(model_path: str, calib_dir: str, output_path: str) -> None:
+def _build_static(
+    model_path: str,
+    calib_dir: str,
+    output_path: str,
+    quant_format_name: str,
+    activation_type_name: str,
+    weight_type_name: str,
+    per_channel: bool,
+    reduce_range: bool,
+    calib_limit: int,
+    calib_seed: int,
+    op_types: list[str] | None,
+) -> None:
     try:
         import onnx
         from onnxruntime.quantization import (
             CalibrationDataReader,
+            QuantFormat,
             QuantType,
             quantize_static,
         )
-        from onnxruntime.quantization.quant_pre_process import quant_pre_process
+        from onnxruntime.quantization.shape_inference import quant_pre_process
     except ImportError:
         sys.exit("필요 패키지 없음. pip install onnxruntime onnxruntime-tools onnx Pillow")
 
@@ -59,10 +73,16 @@ def _build_static(model_path: str, calib_dir: str, output_path: str) -> None:
             ]
             if not files:
                 sys.exit(f"캘리브레이션 이미지가 없습니다: {calib_dir}")
-            print(f"캘리브레이션 이미지 {len(files)}장 로드 중...")
+            if len(files) > calib_limit:
+                files = random.Random(calib_seed).sample(files, calib_limit)
+                files.sort()
+            print(
+                f"캘리브레이션 이미지 {len(files)}장 로드 중 "
+                f"(seed={calib_seed})..."
+            )
 
             tensors = []
-            for path in files[:300]:  # 최대 300장으로 제한
+            for path in files:
                 img = Image.open(path).convert("RGB")
                 iw, ih = img.size
                 scale = min(w / iw, h / ih)
@@ -96,12 +116,30 @@ def _build_static(model_path: str, calib_dir: str, output_path: str) -> None:
     print(f"입력 이름: {input_name}, 형상: {shape}")
 
     reader = YoloCalibReader(calib_dir, shape, input_name)
+    quant_format = {
+        "qdq": QuantFormat.QDQ,
+        "qoperator": QuantFormat.QOperator,
+    }[quant_format_name]
+    quant_type = {
+        "qint8": QuantType.QInt8,
+        "quint8": QuantType.QUInt8,
+    }
     print(f"static INT8 양자화 중: {preprocessed_path} → {output_path}")
+    print(
+        f"format={quant_format_name}, activation={activation_type_name}, "
+        f"weight={weight_type_name}, per_channel={per_channel}, "
+        f"reduce_range={reduce_range}"
+    )
     quantize_static(
         preprocessed_path,
         output_path,
         reader,
-        weight_type=QuantType.QInt8,
+        quant_format=quant_format,
+        activation_type=quant_type[activation_type_name],
+        weight_type=quant_type[weight_type_name],
+        per_channel=per_channel,
+        reduce_range=reduce_range,
+        op_types_to_quantize=op_types,
     )
     os.remove(preprocessed_path)
     print(f"완료: {output_path}")
@@ -143,12 +181,42 @@ if __name__ == "__main__":
         help="static 모드용 캘리브레이션 이미지 폴더",
     )
     parser.add_argument("--output", default=None, help="출력 파일명 (기본: 자동)")
+    parser.add_argument(
+        "--format", choices=["qdq", "qoperator"], default="qdq",
+        help="static 양자화 그래프 형식",
+    )
+    parser.add_argument(
+        "--activation-type", choices=["qint8", "quint8"], default="qint8",
+    )
+    parser.add_argument(
+        "--weight-type", choices=["qint8", "quint8"], default="qint8",
+    )
+    parser.add_argument("--per-channel", action="store_true")
+    parser.add_argument("--reduce-range", action="store_true")
+    parser.add_argument("--calib-limit", type=int, default=300)
+    parser.add_argument("--calib-seed", type=int, default=4200)
+    parser.add_argument(
+        "--op-types", default="",
+        help="쉼표로 구분한 양자화 대상 연산자. 예: Conv (기본: ORT 지원 연산 전체)",
+    )
     args = parser.parse_args()
 
     suffix = "-int8"
     output = args.output or args.model.replace(".onnx", f"{suffix}.onnx")
 
     if args.mode == "static":
-        _build_static(args.model, args.calib_dir, output)
+        _build_static(
+            args.model,
+            args.calib_dir,
+            output,
+            args.format,
+            args.activation_type,
+            args.weight_type,
+            args.per_channel,
+            args.reduce_range,
+            args.calib_limit,
+            args.calib_seed,
+            [v.strip() for v in args.op_types.split(",") if v.strip()] or None,
+        )
     else:
         _build_dynamic(args.model, output)
