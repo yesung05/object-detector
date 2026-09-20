@@ -764,8 +764,9 @@ int media_first_video_device(const char *format, char *buf, size_t bufsize) {
 
         desc = dev->device_description;
         if (strcmp(format, "dshow") == 0) {
-            /* device_description(친숙한 이름)이 있으면 우선 사용합니다. */
-            if (!desc || desc[0] == '\0') continue;
+            /* device_description(친숙한 이름)이 있으면 우선 사용합니다.
+             * 2자 이하 항목은 꺼진 가상 카메라 드라이버 찌꺼기이므로 건너뜁니다. */
+            if (!desc || desc[0] == '\0' || desc[1] == '\0') continue;
             snprintf(buf, bufsize, "video=%s", desc);
         } else {
             if (!dev->device_name) continue;
@@ -773,15 +774,22 @@ int media_first_video_device(const char *format, char *buf, size_t bufsize) {
         }
         rc = 0;
     }
-    /* fallback: device_description이 없는 환경에서는 device_name을 씁니다. */
+    /* fallback: device_description이 아예 없는 환경(드라이버가 설명을 제공하지 않음)에서만
+     * device_name(pnp 경로)을 씁니다. 설명이 있지만 짧은 항목(= 꺼진 가상 카메라 찌꺼기)은
+     * 이미 위 루프에서 걸렀으므로 다시 꺼내지 않습니다. */
     if (rc != 0) {
         for (i = 0; i < device_list->nb_devices; ++i) {
             AVDeviceInfo *dev = device_list->devices[i];
             int has_video = (dev->nb_media_types == 0);
+            const char *d;
             for (j = 0; j < dev->nb_media_types; ++j) {
                 if (dev->media_types[j] == AVMEDIA_TYPE_VIDEO) { has_video = 1; break; }
             }
             if (!has_video || !dev->device_name) continue;
+            d = dev->device_description;
+            /* description이 있으면(빈 문자열 포함 이상) 첫 루프에서 이미 판단한 장치입니다.
+             * 짧아서 건너뛴 항목을 device_name으로 재시도하지 않습니다. */
+            if (d && d[0] != '\0') continue;
             if (strcmp(format, "dshow") == 0)
                 snprintf(buf, bufsize, "video=%s", dev->device_name);
             else

@@ -55,9 +55,12 @@ if ($ffmpeg) {
     Write-Host "Scanning cameras..." -NoNewline
     $raw   = & $ffmpeg -f dshow -list_devices true -i dummy 2>&1 |
              ForEach-Object { $_.ToString() }
-    $cams  = $raw | Select-String '\(video\)' | ForEach-Object {
-        if ($_ -match '"(.+?)" \(video\)') { $Matches[1] }
-    } | Where-Object { $_ }
+    $cams  = @()
+    foreach ($line in $raw) {
+        if ($line -match '"(.+?)" \(video\)' -and $Matches[1].Length -gt 1) {
+            $cams += $Matches[1]
+        }
+    }
     Write-Host ""
 
     if ($cams.Count -eq 0) {
