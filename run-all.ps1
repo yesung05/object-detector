@@ -87,26 +87,44 @@ if ($ffmpeg) {
     Write-Host "[warn] ffmpeg.exe not found -- using default camera" -ForegroundColor Yellow
 }
 
-# ── Tier 1 model (pose): INT8 first, then models\ auto-select, then FP32 ─────
+# ── Tier 1 model (pose): FP32 first ───────────────────────────────────────────
+# INT8 is NOT the default. Measured on this codebase (docs/quantization-benchmark-2026-09-20.md
+# and re-measured independently): at the same 416x416 input the C pipeline inference p50 is
+#   FP32 26.6 ms  vs  INT8 46.2 ms   -- INT8 is ~1.7x SLOWER, not faster.
+# ORT's CPU INT8 kernels only pay off with VNNI instructions. Neither the dev machine
+# (i7-8700, Coffee Lake) nor the deployment target (i5-4200U, Haswell) has VNNI, so the
+# quantize/dequantize overhead around each op dominates. Memory saving is only ~7 MB RSS.
+# INT8 accuracy (mAP / pose AP) has never been evaluated either -- see the doc.
+#
+# If you deploy on newer hardware, re-measure with scripts\bench-models.ps1 and, only if
+# INT8 actually wins there, move it back to the front of this list.
+#
+# models\ is preferred over a single file because model_select picks the input size closest
+# to the camera aspect ratio, which matters more than precision: 416x416 26.7 ms -> 416x224 14.0 ms.
+# On equal aspect fit it prefers the LARGEST file, i.e. the original FP32 over distilled variants.
 $model = $null
-foreach ($f in @("$ROOT\yolo11n-pose-416-int8.onnx")) {
-    if (Test-Path $f) { $model = $f; break }
-}
-if ($model) {
-    Write-Host "[model] $model (INT8)"
-} elseif (Test-Path "$ROOT\models\") {
+if ((Test-Path "$ROOT\models") -and
+    (Get-ChildItem "$ROOT\models" -Filter "*-*x*.onnx" -File -ErrorAction SilentlyContinue)) {
     $model = "$ROOT\models"
-    Write-Host "[model] models\ (FP32, auto aspect-ratio)"
-} else {
+    Write-Host "[model] models\ (FP32, auto aspect-ratio, non-distilled)"
+}
+if (-not $model) {
     foreach ($f in @("$ROOT\yolo11n-pose-416.onnx", "$ROOT\yolo11n-416.onnx", "$ROOT\yolo11n.onnx")) {
         if (Test-Path $f) { $model = $f; break }
     }
-    if (-not $model) {
-        Write-Host "[ERROR] No model found. Put *.onnx in models\ folder." -ForegroundColor Red
-        Read-Host "Press Enter to close"
-        exit 1
+    if ($model) { Write-Host "[model] $model (FP32)" }
+}
+if (-not $model) {
+    # Last resort only -- slower here, but better than not running at all.
+    if (Test-Path "$ROOT\yolo11n-pose-416-int8.onnx") {
+        $model = "$ROOT\yolo11n-pose-416-int8.onnx"
+        Write-Host "[model] $model (INT8 fallback -- no FP32 model found)" -ForegroundColor Yellow
     }
-    Write-Host "[model] $model"
+}
+if (-not $model) {
+    Write-Host "[ERROR] No model found. Put *.onnx in models\ folder." -ForegroundColor Red
+    Read-Host "Press Enter to close"
+    exit 1
 }
 
 # ── event log ─────────────────────────────────────────────────────────────────
@@ -146,10 +164,10 @@ if ($cameraDevice) {
     $cmdArgs += "--camera-size", "1280x720", "--camera-fps", "15"
 }
 
-# Tier 2 (object): INT8 first, FP32 fallback
+# Tier 2 (object): FP32 first, INT8 fallback -- same reasoning as Tier 1 above.
 $objModel = $null
-foreach ($f in @("$ROOT\models\yolo11n_tier2_int8.onnx",
-                  "$ROOT\models\yolo11n_tier2_fp32.onnx")) {
+foreach ($f in @("$ROOT\models\yolo11n_tier2_fp32.onnx",
+                  "$ROOT\models\yolo11n_tier2_int8.onnx")) {
     if (Test-Path $f) { $objModel = $f; break }
 }
 if ($objModel) {
