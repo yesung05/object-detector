@@ -28,7 +28,19 @@ const stream=()=>`${location.protocol}//${location.hostname}:${Number($('port').
 const say=t=>$('message').textContent=t;
 const selected=()=>config?.surfaces.find(s=>s.id===$('selected').value);
 function explainError(message){const rules=[['outside surface ROI','비치물 테두리가 감시 ROI 밖에 있습니다. 해당 비치물 경계 또는 ROI를 다시 그려 주세요.'],['allowed required','이동형 비치물의 이동 허용 구역을 지정해 주세요.'],['fixtures.allowed','이동 허용 구역이 잘못되었습니다. 사용하지 않는 allowed 항목은 생략하고, 사용할 때는 점 3개 이상으로 그려 주세요.'],['fixtures.polygon','비치물 경계를 점 3개 이상으로 다시 그려 주세요. 선이 교차하거나 같은 점이 반복되면 저장할 수 없습니다.'],['duplicate fixture ID','비치물 ID가 중복되었습니다. 서로 다른 ID를 사용해 주세요.'],['duplicate surface ID','감시 영역 ID가 중복되었습니다. 서로 다른 ID를 사용해 주세요.'],['fixtures.id','비치물 ID는 영문·숫자·밑줄·하이픈으로 지정해 주세요.'],['fixtures limit','한 영역에는 비치물을 최대 8개까지 개별 지정할 수 있습니다.'],['fixtures.movable','비치물 movable 값은 true 또는 false로 지정해 주세요.'],['at fixtures','비치물 설정을 확인해 주세요. 고정된 기본 비치물은 개별 경계 없이 정상 모습 등록만으로 사용할 수 있습니다.']];const match=rules.find(([key])=>message.includes(key));return match?match[1]+'\n'+message:message;}
-async function request(url,options){const r=await fetch(url,options);const j=await r.json();if(!r.ok)throw Error(explainError(j.message||j.error||`HTTP ${r.status}`));return j;}
+/* index.html 의 authFetch 와 같은 규칙: 저장된 PIN 을 X-Hunik-Pin 으로 보내고, 서버가 403 pin_required/pin_wrong 을
+   돌려줄 때만 물어봅니다(localhost·PIN 미설정 매장에서는 프롬프트가 뜨지 않음). 같은 sessionStorage 키를 공유합니다. */
+async function request(url,options){
+  options=Object.assign({},options||{});
+  const withPin=p=>{if(p)options.headers=Object.assign({},options.headers||{},{'X-Hunik-Pin':p});};
+  withPin(sessionStorage.getItem('hunikPin'));
+  let r=await fetch(url,options),j=await r.json();
+  if(r.status===403&&(j.error==='pin_required'||j.error==='pin_wrong')){
+    const p=prompt(j.error==='pin_wrong'?'PIN 이 틀렸습니다. 다시 입력하세요:':'설정 변경에는 접근 PIN 이 필요합니다:');
+    if(p!==null){sessionStorage.setItem('hunikPin',p.trim());withPin(p.trim());r=await fetch(url,options);j=await r.json();}
+  }
+  if(r.status===403&&j.error==='pin_locked')throw Error('PIN 오류가 반복되어 이 기기는 10분간 잠겼습니다.');
+  if(!r.ok)throw Error(explainError(j.message||j.error||`HTTP ${r.status}`));return j;}
 function sync(){ $('json').value=JSON.stringify(config,null,2); }
 function populate(id){const select=$('selected');select.replaceChildren();for(const s of config.surfaces){const o=document.createElement('option');o.value=s.id;o.textContent=`${s.id} · ${s.type}`;select.append(o);}if(id)select.value=id;$('enabled').checked=config.enabled;details();sync();draw();}
 function drawingHelp(){const s=selected();$('drawing-help').textContent=!config?'설정을 불러오는 중입니다.':tool==='polygon'?`${s?.id||'영역 추가 필요'} · ${$('mode').value==='usage'?'사람이 앉는 곳':'선택한 영역'} · 꼭짓점 ${points.length}/16 · 3점 이상 클릭 후 ‘영역 확정’`:'테이블·바닥·벽 버튼을 눌러 시작하세요. 비치물은 하나씩 그리지 않고 정상 모습으로 함께 등록합니다.';}
@@ -76,7 +88,7 @@ async function status(){
    const div=document.createElement('div');div.className='card';
    const title=document.createElement('strong');title.textContent=s.id;
    const text=document.createElement('p');
-   text.textContent=`${occ[s.occupancy]} · ${quality[s.quality]} · 기준 ${s.baseline?'등록됨':'없음'}${s.capturing?' · 캡처 '+s.capture_count+'/5':''}${s.layout_changed?' · 비치물 배치 확인':''}${s.age>3?' · 영상 갱신 지연':''}`;
+   text.textContent=`${occ[s.occupancy]} · ${quality[s.quality]} · 기준 ${s.baseline?'등록됨':'없음'}${s.capturing?' · '+(s.auto_capture?'자동 ':'')+'캡처 '+s.capture_count+'/5':''}${s.layout_changed?' · 비치물 배치 확인':''}${s.age>3?' · 영상 갱신 지연':''}`;
    div.append(title,text);
    if(s.baseline){const link=document.createElement('a');link.textContent='승인된 기준 영상 보기';link.href=stream()+'/surface/reference?file='+encodeURIComponent(s.reference);link.target='_blank';link.rel='noopener';div.append(link);}
    for(const c of s.candidates){
