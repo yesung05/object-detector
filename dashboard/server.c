@@ -13,7 +13,10 @@
  * detector exe 없이 단독 실행 가능합니다. logs\ 폴더가 없으면 파일 목록이
  * 비어 있는 채로 대기하다가 파일이 생기면 자동으로 반영됩니다.
  *
- * 보안: 127.0.0.1 전용 바인딩 — 외부 네트워크에 노출되지 않습니다.
+ * 보안: INADDR_ANY 바인딩 — 같은 LAN 의 점주 폰·태블릿에서 접속합니다.
+ *       접근 판정은 netaccess.h 가 스트림 서버(8081)와 공유합니다: 서브넷 밖 거부,
+ *       POST(설정 변경)는 PIN, localhost 는 무제한. 변경·거부는 detector 의 이벤트
+ *       로그(logs\*.db 최신 파일)에 module=access 로 기록해 대시보드 로그 탭에 보입니다.
  *       로그 파일 경로는 logs\ 하위인지 검증하여 디렉터리 탈출을 막습니다.
  */
 
@@ -23,12 +26,14 @@
 #include <windows.h>
 #include "../include/config.h"
 #include "../include/surface_monitor.h"
+#include "../include/netaccess.h"
 /* SQLite amalgamation — 이벤트 로그(.db) 파일을 직접 쿼리합니다.
  * WAL 모드로 열린 DB는 detector가 쓰는 도중에도 읽기 가능합니다. */
 #include "../third_party/sqlite/sqlite3.h"
 
 #include <ctype.h>
 #include <stdio.h>
+#include <time.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
@@ -42,6 +47,99 @@ static char g_logs[MAX_PATH];        /* g_root\logs\ */
 static char g_config_path[MAX_PATH]; /* g_root\config.json */
 static int  g_port = 8080;
 static SRWLOCK g_surface_config_lock = SRWLOCK_INIT;
+
+/* ── 접근 로그 ────────────────────────────────────────────────────────────────
+ * 이 프로세스는 EventLog 를 갖지 않으므로 detector 가 쓰는 최신 logs\*.db 에 직접
+ * INSERT 합니다. WAL 모드라 두 프로세스가 번갈아 써도 안전하고(busy_timeout 으로 대기),
+ * 대시보드 로그 탭은 이 파일을 tail 하므로 접근 기록이 다른 이벤트와 같은 목록에 뜹니다.
+ * detector 가 꺼져 있으면 마지막 세션 파일에 남습니다 — 파일이 하나도 없으면 stderr 만. */
+static SRWLOCK   g_access_lock = SRWLOCK_INIT;
+static char      g_denied_ip[48];
+static ULONGLONG g_denied_ms;
+static int       g_denied_suppressed;
+
+static int newest_log_db(char *out, size_t size) {
+    char pattern[MAX_PATH], best[MAX_PATH] = "";
+    WIN32_FIND_DATAA fd;
+    HANDLE h;
+    snprintf(pattern, sizeof(pattern), "%s\\*.db", g_logs);
+    h = FindFirstFileA(pattern, &fd);
+    if (h == INVALID_HANDLE_VALUE) return 0;
+    do {
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+        if (strstr(fd.cFileName, "_perf.db")) continue;
+        /* 파일명이 YYYYMMDD_HHMMSS.db 라 문자열 비교 최대값 = 최신 */
+        if (strcmp(fd.cFileName, best) > 0) strncpy(best, fd.cFileName, sizeof(best) - 1);
+    } while (FindNextFileA(h, &fd));
+    FindClose(h);
+    if (!best[0]) return 0;
+    snprintf(out, size, "%s\\%s", g_logs, best);
+    return 1;
+}
+
+static void access_log_write(int warn, const char *message) {
+    char path[MAX_PATH], ts[24];
+    time_t t;
+    struct tm tm_buf;
+    sqlite3 *db = NULL;
+    sqlite3_stmt *st = NULL;
+    time(&t);
+    localtime_s(&tm_buf, &t);
+    strftime(ts, sizeof(ts), "%Y-%m-%dT%H:%M:%S", &tm_buf);
+    fprintf(stderr, "%s %-5s access   %s\n", ts, warn ? "WARN" : "INFO", message);
+    if (!newest_log_db(path, sizeof(path))) return;
+    if (sqlite3_open_v2(path, &db, SQLITE_OPEN_READWRITE, NULL) != SQLITE_OK) {
+        if (db) sqlite3_close(db);
+        return;
+    }
+    sqlite3_busy_timeout(db, 500);
+    if (sqlite3_prepare_v2(db,
+            "INSERT INTO events(ts_unix,ts_iso,level,module,message) VALUES(?,?,?,'access',?)",
+            -1, &st, NULL) == SQLITE_OK) {
+        sqlite3_bind_double(st, 1, (double)t);
+        sqlite3_bind_text(st, 2, ts, -1, SQLITE_STATIC);
+        sqlite3_bind_text(st, 3, warn ? "WARN" : "INFO", -1, SQLITE_STATIC);
+        sqlite3_bind_text(st, 4, message, -1, SQLITE_STATIC);
+        if (sqlite3_step(st) != SQLITE_DONE)
+            fprintf(stderr, "access log: insert failed: %s\n", sqlite3_errmsg(db));
+        sqlite3_finalize(st);
+    }
+    sqlite3_close(db);
+}
+
+/* 거부 로그는 같은 IP 가 10초 안에 반복하면 묶어서 남깁니다 — 스캐너 한 대가 로그를
+   초당 수십 줄로 덮어 실제 이벤트를 밀어내지 못하게 하기 위함입니다. */
+static void access_denied(const char *ip, const char *detail) {
+    ULONGLONG now = GetTickCount64();
+    char msg[720];
+    int suppressed = 0, emit = 1;
+    AcquireSRWLockExclusive(&g_access_lock);
+    if (strcmp(ip, g_denied_ip) == 0 && now - g_denied_ms < 10000) {
+        g_denied_suppressed++;
+        emit = 0;
+    } else {
+        suppressed = g_denied_suppressed;
+        g_denied_suppressed = 0;
+        strncpy(g_denied_ip, ip, sizeof(g_denied_ip) - 1);
+        g_denied_ms = now;
+    }
+    ReleaseSRWLockExclusive(&g_access_lock);
+    if (!emit) return;
+    if (suppressed) snprintf(msg, sizeof(msg), "DENIED %s %s (+%d suppressed)", ip, detail, suppressed);
+    else            snprintf(msg, sizeof(msg), "DENIED %s %s", ip, detail);
+    access_log_write(1, msg);
+}
+
+/* config.json 의 access_pin. 요청마다 읽습니다 — 파일이 작고 변경 요청은 드뭅니다. */
+static void read_access_pin(char *out, size_t size) {
+    Config c;
+    const char *v = NULL;
+    out[0] = '\0';
+    if (config_load(&c, g_config_path, NULL, 0) == 0) {
+        if (config_get(&c, "access_pin", &v) == 0 && v) snprintf(out, size, "%s", v);
+        config_destroy(&c);
+    }
+}
 
 /* ── HTTP 기초 ────────────────────────────────────────────────────────────── */
 
@@ -79,7 +177,10 @@ static void send_header(SOCKET s, int code, const char *ctype, int64_t body_len)
     char h[512];
     const char *status = (code == 200) ? "OK"
                        : (code == 404) ? "Not Found"
-                       : (code == 400) ? "Bad Request" : "Internal Server Error";
+                       : (code == 403) ? "Forbidden"
+                       : (code == 400) ? "Bad Request"
+                       : (code == 405) ? "Method Not Allowed"
+                       : (code == 409) ? "Conflict" : "Internal Server Error";
     int n;
     if (body_len >= 0) {
         n = snprintf(h, sizeof(h),
@@ -462,7 +563,18 @@ static const char *DEFAULT_CONFIG =
     "\"show_animal\":1,"
     "\"show_food\":1,"
     "\"show_drink\":1,"
-    "\"show_furniture\":1"
+    "\"show_furniture\":1,"
+    "\"stream_privacy_mode\":1,"
+    "\"privacy_unlock_max_seconds\":600,"
+    "\"door_auto_capture\":1,"
+    "\"door_auto_quiet_seconds\":20,"
+    "\"door_auto_open_hold_seconds\":1.0,"
+    "\"door_auto_open_l1\":25,"
+    "\"door_band_ratio\":0.3,"
+    "\"residue_auto_capture\":1,"
+    "\"residue_auto_quiet_seconds\":15,"
+    "\"surface_auto_capture\":1,"
+    "\"surface_auto_quiet_seconds\":10"
     "}";
 
 /* GET /api/config → config.json 반환 (없으면 기본값)
@@ -533,8 +645,29 @@ static int content_length(const char *buf) {
     return result;
 }
 
+/* 저장 전후 config 를 비교해 바뀐 키만 "key old→new" 로 이어 붙입니다.
+ * "누가 문 감지를 꺼놨지?"를 로그 한 줄로 답하기 위한 것입니다. 상한을 넘으면 …로 끝냅니다. */
+static void config_diff(const Config *before, const Config *after, char *out, size_t size) {
+    size_t i, pos = 0;
+    int changes = 0;
+    out[0] = '\0';
+    for (i = 0; i < after->count; ++i) {
+        const char *old = NULL;
+        const char *k = after->keys[i], *v = after->values[i];
+        int n;
+        if (!k || !v) continue;
+        if (config_get(before, k, &old) == 0 && old && strcmp(old, v) == 0) continue;
+        if (strcmp(k, "access_pin") == 0) { old = old ? "***" : NULL; v = "***"; } /* PIN 값은 로그에 남기지 않음 */
+        n = snprintf(out + pos, size - pos, "%s%s %s→%s", changes ? ", " : "", k, old ? old : "(none)", v);
+        if (n < 0 || (size_t)n >= size - pos) { if (size > 4) strcpy(out + size - 4, "..."); return; }
+        pos += (size_t)n;
+        changes++;
+    }
+    if (!changes) snprintf(out, size, "(no value changes)");
+}
+
 /* POST /api/config body: { ... } → config.json 저장 */
-static void serve_config_post(SOCKET s, const char *body, int body_len) {
+static void serve_config_post(SOCKET s, const char *body, int body_len, const NetAccess *acc) {
     if (!body || body_len <= 0) {
         send_header(s, 400, "application/json", 12);
         send(s, "{\"ok\":false}", 12, 0);
@@ -603,9 +736,14 @@ static void serve_config_post(SOCKET s, const char *body, int body_len) {
         }
     }
 
+    /* 접근 로그용 변경 전 스냅샷 — 저장 뒤 다시 읽어 바뀐 키만 기록합니다. */
+    Config before;
+    int have_before = config_load(&before, g_config_path, NULL, 0) == 0;
+
     FILE *f = fopen(g_config_path, "w");
     if (!f) {
         free(merged);
+        if (have_before) config_destroy(&before);
         send_header(s, 500, "application/json", 12);
         send(s, "{\"ok\":false}", 12, 0);
         return;
@@ -615,6 +753,22 @@ static void serve_config_post(SOCKET s, const char *body, int body_len) {
     free(merged);
     fclose(f);
     fprintf(stderr, "config: saved %d bytes → %s\n", body_len, g_config_path);
+    {
+        Config after;
+        char diff[400], msg[520];
+        if (config_load(&after, g_config_path, NULL, 0) == 0) {
+            Config empty;
+            memset(&empty, 0, sizeof(empty));
+            config_diff(have_before ? &before : &empty, &after, diff, sizeof(diff));
+            config_destroy(&after);
+        } else {
+            snprintf(diff, sizeof(diff), "(reload failed)");
+        }
+        snprintf(msg, sizeof(msg), "config changed by %s (%s): %s",
+                 acc ? acc->ip : "?", acc ? netaccess_tier_name(acc->tier) : "?", diff);
+        access_log_write(0, msg);
+    }
+    if (have_before) config_destroy(&before);
     const char *ok = "{\"ok\":true}";
     send_header(s, 200, "application/json", (int64_t)strlen(ok));
     send(s, ok, (int)strlen(ok), 0);
@@ -622,7 +776,7 @@ static void serve_config_post(SOCKET s, const char *body, int body_len) {
 
 /* ── 클라이언트 스레드 ────────────────────────────────────────────────────── */
 
-static void serve_surfaces(SOCKET socket, const char *body, int length) {
+static void serve_surfaces(SOCKET socket, const char *body, int length, const NetAccess *acc) {
     char path[MAX_PATH],directory[MAX_PATH],message[256];SurfaceConfig config,old;
     char *data=NULL;FILE *f;size_t count;int code=200;
     snprintf(directory,sizeof(directory),"%s\\config",g_root);
@@ -638,6 +792,8 @@ static void serve_surfaces(SOCKET socket, const char *body, int length) {
         /* Persist old revision for rollback; never overwrite a saved revision. */
         {char backup[MAX_PATH];snprintf(backup,sizeof(backup),"%s.revision-%d",path,config.revision-1);CopyFileA(path,backup,TRUE);}
         if(surface_file_replace(path,data,(size_t)length)){code=500;strcpy(message,"Unable to save configuration");goto reply;}
+        {char note[240];snprintf(note,sizeof(note),"surfaces changed by %s (%s): revision=%d count=%d enabled=%d",
+            acc?acc->ip:"?",acc?netaccess_tier_name(acc->tier):"?",config.revision,config.count,config.enabled);access_log_write(0,note);}
         strcpy(message,"saved; detector applies within two seconds");goto reply;
     }
     f=fopen(path,"rb");
@@ -699,15 +855,44 @@ static DWORD WINAPI client_thread(LPVOID arg) {
         }
     }
 
-    /* CORS 프리플라이트 */
+    /* CORS 프리플라이트 — X-Hunik-Pin 을 허용하지 않으면 브라우저가 PIN 헤더를 못 보냅니다. */
     if (strcmp(method, "OPTIONS") == 0) {
         const char *cors =
             "HTTP/1.1 204 No Content\r\n"
             "Access-Control-Allow-Origin: *\r\n"
             "Access-Control-Allow-Methods: GET, POST\r\n"
-            "Access-Control-Allow-Headers: Content-Type\r\n"
+            "Access-Control-Allow-Headers: Content-Type, X-Hunik-Pin\r\n"
             "Connection: close\r\n\r\n";
         send(s, cors, (int)strlen(cors), 0);
+        closesocket(s);
+        return 0;
+    }
+
+    /* ── 접근 제어 (netaccess.h — 8081 과 같은 규칙) ─────────────────────────
+       서브넷 밖은 전부 거부. POST 는 PIN 까지(localhost 제외). 페이지·로그 읽기는 서브넷만. */
+    NetAccess acc;
+    {
+        char pin[64];
+        read_access_pin(pin, sizeof(pin));
+        netaccess_evaluate(s, buf, pin, &acc);
+    }
+    if (acc.tier == NET_TIER_DENIED) {
+        char detail[600];
+        snprintf(detail, sizeof(detail), "%s %s — %s", method, path, netaccess_deny_reason_name(acc.deny_reason));
+        access_denied(acc.ip, detail);
+        send_header(s, 403, "application/json", 32);
+        send(s, "{\"ok\":false,\"error\":\"forbidden\"}", 32, 0);
+        closesocket(s);
+        return 0;
+    }
+    if (strcmp(method, "POST") == 0 && !acc.pin_ok) {
+        char detail[600], rbody[96];
+        int blen;
+        snprintf(detail, sizeof(detail), "%s %s — %s", method, path, netaccess_pin_reason_name(acc.pin_reason));
+        access_denied(acc.ip, detail);
+        blen = snprintf(rbody, sizeof(rbody), "{\"ok\":false,\"error\":\"%s\"}", netaccess_pin_reason_name(acc.pin_reason));
+        send_header(s, 403, "application/json", blen);
+        send(s, rbody, blen, 0);
         closesocket(s);
         return 0;
     }
@@ -717,8 +902,10 @@ static DWORD WINAPI client_thread(LPVOID arg) {
             serve_page(s,"index.html");
         } else if (strcmp(path,"/surfaces")==0) {
             serve_page(s,"surfaces.html");
+        } else if (strcmp(path,"/research")==0) {
+            serve_page(s,"research.html");
         } else if (strcmp(path,"/api/surfaces")==0) {
-            serve_surfaces(s,NULL,0);
+            serve_surfaces(s,NULL,0,NULL);
         } else if (strcmp(path, "/api/logs") == 0) {
             serve_log_list(s);
         } else if (strcmp(path, "/api/config") == 0) {
@@ -739,9 +926,9 @@ static DWORD WINAPI client_thread(LPVOID arg) {
         int body_len = 0;
         const char *body = extract_body(buf, n, &body_len);
         if (strcmp(path, "/api/surfaces") == 0) {
-            serve_surfaces(s,body,content_length(buf));
+            serve_surfaces(s,body,content_length(buf),&acc);
         } else if (strcmp(path, "/api/config") == 0) {
-            serve_config_post(s, body, body_len);
+            serve_config_post(s, body, body_len, &acc);
         } else {
             send_header(s, 404, "text/plain", 3);
             send(s, "404", 3, 0);

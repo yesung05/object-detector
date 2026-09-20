@@ -21,6 +21,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <stdarg.h>
 
 /* STB: 헤더 전용 라이브러리를 이 번역 단위에서만 구현 */
 #define STB_IMAGE_WRITE_IMPLEMENTATION
@@ -28,6 +29,7 @@
 #include "../third_party/stb/stb_image_write.h"
 
 #include "stream.h"
+#include "netaccess.h"
 
 #pragma comment(lib, "ws2_32.lib")
 
@@ -100,6 +102,106 @@ static size_t    g_jpeg_scratch_cap = 0;
 void stream_set_door_state  (int state)   { g_door_state   = state;   }
 void stream_set_door_enabled(int enabled) { g_door_enabled = enabled; }
 int  stream_client_count    (void)        { return (int)g_clients;    }
+
+/* ── 개인정보 보호 · 접근 제어 상태 ─────────────────────────────────────────
+ * g_running 이 0 인 동안(stream_start 전)은 다른 스레드가 없으므로 락 없이 씁니다 —
+ * g_lock 은 stream_start 에서 초기화되는데 main.c 의 설정 적용은 그보다 먼저 옵니다. */
+
+static char          g_access_pin[64];              /* "" = PIN 비활성 */
+static volatile int  g_privacy_mode       = 1;      /* 배포 기본값 on — localhost 대시보드에서 즉시 끌 수 있음 */
+static volatile int  g_privacy_unlock_max = 600;
+static ULONGLONG     g_privacy_unlock_until_ms = 0; /* 0 = 잠김 (g_lock 보호) */
+static StreamStatus  g_status;                      /* g_lock 보호 */
+
+/* 접근 로그 링 — 클라이언트 스레드가 쌓고 main 스레드가 stream_pop_access_log 로 회수 */
+#define ACCESS_RING 32
+typedef struct { int level; char msg[240]; } AccessEntry;
+static AccessEntry g_access[ACCESS_RING];
+static int g_access_head = 0, g_access_count = 0, g_access_dropped = 0;
+
+static void access_log(int level, const char *fmt, ...) {
+    AccessEntry *e;
+    va_list ap;
+    if (!g_running) return;
+    EnterCriticalSection(&g_lock);
+    if (g_access_count >= ACCESS_RING) {
+        /* 넘치면 가장 오래된 항목을 버리고 개수만 셉니다 — 다음 회수 때 한 줄로 보고 */
+        g_access_head = (g_access_head + 1) % ACCESS_RING;
+        g_access_count--;
+        g_access_dropped++;
+    }
+    e = &g_access[(g_access_head + g_access_count) % ACCESS_RING];
+    e->level = level;
+    va_start(ap, fmt);
+    vsnprintf(e->msg, sizeof(e->msg), fmt, ap);
+    va_end(ap);
+    g_access_count++;
+    LeaveCriticalSection(&g_lock);
+}
+
+int stream_pop_access_log(int *level, char *msg, size_t size) {
+    int found = 0;
+    if (!g_running) return 0;
+    EnterCriticalSection(&g_lock);
+    if (g_access_dropped) {
+        snprintf(msg, size, "access log ring overflow — %d entries dropped", g_access_dropped);
+        *level = 1;
+        g_access_dropped = 0;
+        found = 1;
+    } else if (g_access_count > 0) {
+        AccessEntry *e = &g_access[g_access_head];
+        *level = e->level;
+        snprintf(msg, size, "%s", e->msg);
+        g_access_head = (g_access_head + 1) % ACCESS_RING;
+        g_access_count--;
+        found = 1;
+    }
+    LeaveCriticalSection(&g_lock);
+    return found;
+}
+
+void stream_set_access_pin(const char *pin) {
+    if (g_running) EnterCriticalSection(&g_lock);
+    snprintf(g_access_pin, sizeof(g_access_pin), "%s", pin ? pin : "");
+    if (g_running) LeaveCriticalSection(&g_lock);
+}
+void stream_set_privacy_mode(int enabled)       { g_privacy_mode = enabled ? 1 : 0; }
+void stream_set_privacy_unlock_max(int seconds) { g_privacy_unlock_max = seconds > 0 ? seconds : 600; }
+
+/* main 스레드가 프레임마다 호출합니다. 해제 시간이 끝나면 여기서 재잠금하고 로그를 남깁니다 —
+   브라우저가 닫혀도 서버가 스스로 복귀하도록 타임아웃은 서버가 강제합니다. */
+int stream_privacy_active(void) {
+    int active;
+    if (!g_privacy_mode) return 0;
+    if (!g_running) return 1;
+    EnterCriticalSection(&g_lock);
+    if (g_privacy_unlock_until_ms && GetTickCount64() >= g_privacy_unlock_until_ms) {
+        g_privacy_unlock_until_ms = 0;
+        LeaveCriticalSection(&g_lock);
+        access_log(0, "privacy relocked (timeout)");
+        return 1;
+    }
+    active = g_privacy_unlock_until_ms == 0;
+    LeaveCriticalSection(&g_lock);
+    return active;
+}
+
+/* 클라이언트 스레드용 — 로그 없이 현재 상태만 읽습니다. */
+static int privacy_active_now(void) {
+    int active;
+    if (!g_privacy_mode) return 0;
+    EnterCriticalSection(&g_lock);
+    active = g_privacy_unlock_until_ms == 0 || GetTickCount64() >= g_privacy_unlock_until_ms;
+    LeaveCriticalSection(&g_lock);
+    return active;
+}
+
+void stream_set_status(const StreamStatus *st) {
+    if (!st) return;
+    if (g_running) EnterCriticalSection(&g_lock);
+    g_status = *st;
+    if (g_running) LeaveCriticalSection(&g_lock);
+}
 
 /* ── JPEG 콜백 버퍼 ─────────────────────────────────────────────────────── */
 
@@ -203,7 +305,9 @@ static int send_all(SOCKET s, const char *buf, int len) {
 static void send_json(SOCKET s, int code, const char *body) {
     char hdr[512];
     int blen = (int)strlen(body);
-    const char *status = code == 200 ? "OK" : code == 503 ? "Service Unavailable" : "Error";
+    const char *status = code == 200 ? "OK" : code == 202 ? "Accepted" : code == 403 ? "Forbidden"
+                       : code == 404 ? "Not Found" : code == 409 ? "Conflict"
+                       : code == 503 ? "Service Unavailable" : "Error";
     int hlen = snprintf(hdr, sizeof(hdr),
         "HTTP/1.1 %d %s\r\n"
         "Content-Type: application/json\r\n"
@@ -353,18 +457,30 @@ static void handle_surface_reference(SOCKET s,const char *qs) {
 }
 static DWORD WINAPI client_thread(LPVOID arg) {
     SOCKET s = (SOCKET)(uintptr_t)arg;
-    char req[2048] = {0};
+    /* PIN 헤더까지 붙은 브라우저 요청 헤더는 1KB 를 넘기도 합니다. 헤더 끝(\r\n\r\n)이
+       올 때까지 이어 받되 상한과 시간을 둬 반쪽 요청이 스레드를 붙잡지 못하게 합니다. */
+    char req[4096] = {0};
+    int n = 0;
+    {
+        DWORD timeout = 5000;
+        setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, (const char *)&timeout, sizeof(timeout));
+    }
+    for (;;) {
+        int got = recv(s, req + n, (int)sizeof(req) - 1 - n, 0);
+        if (got <= 0) { closesocket(s); return 0; }
+        n += got;
+        req[n] = '\0';
+        if (strstr(req, "\r\n\r\n") || n >= (int)sizeof(req) - 1) break;
+    }
 
-    int n = recv(s, req, sizeof(req) - 1, 0);
-    if (n <= 0) { closesocket(s); return 0; }
-
-    /* CORS 프리플라이트 (브라우저가 POST 전에 OPTIONS로 먼저 물어봄) */
+    /* CORS 프리플라이트 (브라우저가 POST 전에 OPTIONS로 먼저 물어봄).
+       X-Hunik-Pin 을 허용 목록에 넣지 않으면 브라우저가 PIN 헤더를 보내지 못합니다. */
     if (strncmp(req, "OPTIONS", 7) == 0) {
         const char *cors =
             "HTTP/1.1 204 No Content\r\n"
             "Access-Control-Allow-Origin: *\r\n"
             "Access-Control-Allow-Methods: GET, POST\r\n"
-            "Access-Control-Allow-Headers: Content-Type\r\n"
+            "Access-Control-Allow-Headers: Content-Type, X-Hunik-Pin\r\n"
             "Connection: close\r\n"
             "\r\n";
         send(s, cors, (int)strlen(cors), 0);
@@ -383,7 +499,105 @@ static DWORD WINAPI client_thread(LPVOID arg) {
         *qmark = '\0';
     }
 
-    if (strcmp(url,"/surface/reference")==0) {
+    /* ── 접근 제어 ─────────────────────────────────────────────────────────
+       모든 경로에 공통: 서브넷 밖이면 거부. POST(상태를 바꾸는 요청)는 PIN 까지.
+       거부는 WARN, 허용된 변경은 INFO 로 남겨 "누가 언제 무엇을"이 로그 한 줄에 있게 합니다. */
+    NetAccess acc;
+    char pin[64];
+    int is_post = strcmp(method, "POST") == 0;
+    EnterCriticalSection(&g_lock);
+    snprintf(pin, sizeof(pin), "%s", g_access_pin);
+    LeaveCriticalSection(&g_lock);
+    netaccess_evaluate(s, req, pin, &acc);
+    if (acc.tier == NET_TIER_DENIED) {
+        access_log(1, "DENIED %s %s %s — %s", acc.ip, method, url,
+                   netaccess_deny_reason_name(acc.deny_reason));
+        send_json(s, 403, "{\"ok\":false,\"error\":\"forbidden\"}");
+        closesocket(s);
+        return 0;
+    }
+    if (is_post && !acc.pin_ok) {
+        char body[96];
+        snprintf(body, sizeof(body), "{\"ok\":false,\"error\":\"%s\"}",
+                 netaccess_pin_reason_name(acc.pin_reason));
+        access_log(1, "DENIED %s %s %s — %s", acc.ip, method, url,
+                   netaccess_pin_reason_name(acc.pin_reason));
+        send_json(s, 403, body);
+        closesocket(s);
+        return 0;
+    }
+    /* 저장된 매장 사진은 보호 모드에서 내보내지 않습니다. 라이브 /snapshot 은 main.c 가
+       이미 가린 프레임이라 그대로 응답해도 새는 것이 없습니다. */
+    if (privacy_active_now() &&
+        (strcmp(url, "/door/preview") == 0 || strcmp(url, "/surface/reference") == 0)) {
+        send_json(s, 403, "{\"ok\":false,\"error\":\"privacy_locked\"}");
+        closesocket(s);
+        return 0;
+    }
+
+    if (strcmp(url, "/status") == 0) {
+        StreamStatus st;
+        char body[640];
+        ULONGLONG until;
+        int remaining = 0;
+        EnterCriticalSection(&g_lock);
+        st = g_status;
+        until = g_privacy_unlock_until_ms;
+        LeaveCriticalSection(&g_lock);
+        if (until) { ULONGLONG now = GetTickCount64(); remaining = until > now ? (int)((until - now) / 1000) : 0; }
+        snprintf(body, sizeof(body),
+            "{\"door\":{\"enabled\":%d,\"state\":%d,\"label\":\"%s\",\"auto_phase\":%d,"
+            "\"auto_stalled\":%d,\"roi_set\":%d,"
+            "\"band_valid\":%d,\"band_active\":%d,\"band_signal\":%.1f,"
+            "\"closed_ready\":%d,\"open_ready\":%d,\"auto_wait\":%.1f},"
+            "\"residue\":{\"enabled\":%d,\"ready\":%d,\"auto_phase\":%d,\"auto_wait\":%.1f},"
+            "\"privacy\":{\"mode\":%d,\"active\":%d,\"unlock_remaining\":%d,\"unlock_max\":%d},"
+            "\"access\":{\"tier\":\"%s\",\"pin_required\":%d}}",
+            st.door_enabled, st.door_state,
+            st.door_state == 1 ? "open" : st.door_state == 0 ? "closed" : "unknown",
+            st.door_auto_phase, st.door_auto_stalled, st.door_roi_set,
+            st.door_band_valid, st.door_band_active, st.door_band_signal,
+            st.door_closed_ready, st.door_open_ready, st.door_auto_wait,
+            st.residue_enabled, st.residue_ready, st.residue_auto_phase, st.residue_auto_wait,
+            g_privacy_mode, privacy_active_now(), remaining, g_privacy_unlock_max,
+            netaccess_tier_name(acc.tier), (acc.tier == NET_TIER_LAN && pin[0]) ? 1 : 0);
+        send_json(s, 200, body);
+
+    } else if (strcmp(url, "/privacy/state") == 0) {
+        char body[200];
+        ULONGLONG until;
+        int remaining = 0;
+        EnterCriticalSection(&g_lock);
+        until = g_privacy_unlock_until_ms;
+        LeaveCriticalSection(&g_lock);
+        if (until) { ULONGLONG now = GetTickCount64(); remaining = until > now ? (int)((until - now) / 1000) : 0; }
+        snprintf(body, sizeof(body),
+            "{\"mode\":%d,\"active\":%d,\"unlock_remaining\":%d,\"unlock_max\":%d,\"tier\":\"%s\",\"pin_required\":%d}",
+            g_privacy_mode, privacy_active_now(), remaining, g_privacy_unlock_max,
+            netaccess_tier_name(acc.tier), (acc.tier == NET_TIER_LAN && pin[0]) ? 1 : 0);
+        send_json(s, 200, body);
+
+    } else if (strcmp(url, "/privacy/unlock") == 0 && is_post) {
+        const char *p = strstr(qs, "seconds=");
+        int seconds = p ? atoi(p + 8) : 300;
+        char body[96];
+        if (seconds <= 0) seconds = 300;
+        if (seconds > g_privacy_unlock_max) seconds = g_privacy_unlock_max;
+        EnterCriticalSection(&g_lock);
+        g_privacy_unlock_until_ms = GetTickCount64() + (ULONGLONG)seconds * 1000ULL;
+        LeaveCriticalSection(&g_lock);
+        access_log(0, "privacy unlocked by %s (%s) for %ds", acc.ip, netaccess_tier_name(acc.tier), seconds);
+        snprintf(body, sizeof(body), "{\"ok\":true,\"unlock_remaining\":%d}", seconds);
+        send_json(s, 200, body);
+
+    } else if (strcmp(url, "/privacy/lock") == 0 && is_post) {
+        EnterCriticalSection(&g_lock);
+        g_privacy_unlock_until_ms = 0;
+        LeaveCriticalSection(&g_lock);
+        access_log(0, "privacy relocked by %s (%s)", acc.ip, netaccess_tier_name(acc.tier));
+        send_json(s, 200, "{\"ok\":true}");
+
+    } else if (strcmp(url,"/surface/reference")==0) {
         handle_surface_reference(s,qs);
     } else if (strcmp(url, "/surface/status") == 0) {
         char copy[32768];
@@ -401,6 +615,7 @@ static DWORD WINAPI client_thread(LPVOID arg) {
                 snprintf(g_surface_ack,sizeof(g_surface_ack),"%s",id);g_surface_ack_candidate=c?atoi(c+10):-1;g_surface_ack_revision=r?atoi(r+9):-1;g_surface_ack_version=v?atoi(v+9):-1;}
             else{snprintf(g_surface_capture,sizeof(g_surface_capture),"%s",id);g_surface_empty=strstr(qs,"empty=1")!=NULL;}
             LeaveCriticalSection(&g_lock);
+            access_log(0,"%s by %s (%s) id=%s",url+1,acc.ip,netaccess_tier_name(acc.tier),id);
             send_json(s,202,"{\"queued\":true}");}
     } else if (strcmp(url, "/stream") == 0) {
         /* MJPEG 스트림 헤더 */
@@ -420,6 +635,8 @@ static DWORD WINAPI client_thread(LPVOID arg) {
          * 아래 루프가 어떤 경로로 끝나든 반드시 감소시켜야 하므로
          * break 이후 단일 지점에서 처리합니다. */
         InterlockedIncrement(&g_clients);
+        access_log(0, "stream opened by %s (%s) privacy=%d",
+                   acc.ip, netaccess_tier_name(acc.tier), privacy_active_now());
 
         uint32_t last_seq = (uint32_t)-1;
         DWORD frame_ms = 1000 / STREAM_FPS;
@@ -455,6 +672,7 @@ static DWORD WINAPI client_thread(LPVOID arg) {
         }
         free(jpg);
         InterlockedDecrement(&g_clients);
+        access_log(0, "stream closed by %s", acc.ip);
 
     } else if (strcmp(url, "/snapshot") == 0) {
         handle_snapshot(s);
@@ -470,11 +688,24 @@ static DWORD WINAPI client_thread(LPVOID arg) {
                  s_val == 1 ? "open" : s_val == 0 ? "closed" : "unknown");
         send_json(s, 200, body);
 
-    } else if (strcmp(url, "/door/save") == 0) {
+    /* 저장 계열은 POST 만 받습니다 — GET 을 열어 두면 위의 PIN 검사(POST 전용)를 우회합니다. */
+    } else if ((strcmp(url, "/door/save") == 0 || strcmp(url, "/residue/save") == 0) && is_post &&
+               privacy_active_now()) {
+        /* 보호 모드에서는 g_rgb 가 main.c 가 가린 프레임입니다. 그걸 기준으로 저장하면 검은 사진이
+           되어 문·잔류물 감지가 조용히 망가지므로 서버에서 막습니다. 대시보드는 캡처 전에
+           /privacy/unlock 을 먼저 부릅니다. */
+        access_log(1, "DENIED %s POST %s — privacy_locked (unlock first)", acc.ip, url);
+        send_json(s, 409, "{\"ok\":false,\"error\":\"privacy_locked\"}");
+
+    } else if (strcmp(url, "/door/save") == 0 && is_post) {
         int is_open = (strstr(qs, "state=open") != NULL);
+        access_log(0, "door reference %s captured by %s (%s)",
+                   is_open ? "open" : "closed", acc.ip, netaccess_tier_name(acc.tier));
         handle_door_save(s, is_open);
 
-    } else if (strcmp(url, "/residue/save") == 0) {
+    } else if (strcmp(url, "/residue/save") == 0 && is_post) {
+        access_log(0, "residue clean reference captured by %s (%s)",
+                   acc.ip, netaccess_tier_name(acc.tier));
         handle_save_raw(s,
             "residue_clean_reference.raw",
             "{\"ok\":true,\"kind\":\"residue_clean\"}");
@@ -545,7 +776,8 @@ int stream_start(int port, const char *data_dir) {
         return -1;
     }
 
-    fprintf(stderr, "stream: http://0.0.0.0:%d/stream  /snapshot  /door/save\n", port);
+    fprintf(stderr, "stream: http://0.0.0.0:%d  /stream /snapshot /status  privacy=%s pin=%s\n",
+            port, g_privacy_mode ? "on" : "off", g_access_pin[0] ? "set" : "off");
     return 0;
 }
 
