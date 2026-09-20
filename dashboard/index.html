@@ -249,10 +249,10 @@ header {
 }
 .cam-reconnect:hover { background: rgba(255,255,255,.2); }
 
-/* ── 간단 모드: 상태 카드 그리드 ── */
+/* ── 간단 모드: 상태 카드 그리드 (auto-fill: 항목 추가 시 자동 확장) ── */
 .status-grid {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
   gap: 14px;
   margin-bottom: 20px;
 }
@@ -307,6 +307,45 @@ header {
 .alert-msg { font-size: 13px; flex: 1; }
 .alert-ts  { font-size: 11px; color: var(--muted); white-space: nowrap; }
 .alert-empty { font-size: 13px; color: var(--muted); padding: 16px 0; text-align: center; }
+
+/* ── 간단 모드: 데스크탑 2열 (카메라 | 상태·알림) ──
+   기존 960px 고정폭은 1920px 모니터에서 화면 절반을 버리고, 카메라·카드·알림이
+   세로로만 쌓여 알림을 보려면 스크롤해야 했습니다. 900px 이상에서만 2열로 바꾸고
+   그 아래(태블릿·폰)에서는 기존 세로 스택을 그대로 둡니다. */
+@media (min-width: 900px) {
+  #panel-easy {
+    max-width: none;
+    height: calc(100vh - 64px);
+    padding: 14px 18px;
+    display: grid;
+    grid-template-columns: 1fr minmax(340px, 400px);
+    gap: 16px;
+    overflow: hidden;
+  }
+  #easy-stream-slot {
+    margin-bottom: 0;
+    display: flex; flex-direction: column; min-height: 0;
+  }
+  /* 카메라가 남는 세로 공간을 모두 차지하도록 — 기존 min-height:240px / max-height:420px 해제 */
+  #easy-stream-slot .camera-panel { flex: 1; min-height: 0; }
+  #easy-stream-slot .camera-panel img { max-height: 100%; }
+  .easy-side {
+    display: flex; flex-direction: column; gap: 14px;
+    min-height: 0; overflow: hidden;
+  }
+  .easy-side .status-grid {
+    grid-template-columns: repeat(2, 1fr);
+    gap: 10px; margin-bottom: 0; flex-shrink: 0;
+  }
+  .easy-side .status-card { padding: 14px 10px; gap: 4px; }
+  .easy-side .card-icon { font-size: 24px; }
+  /* 알림 영역이 남은 높이를 채우고, 넘치면 그 안에서만 스크롤 */
+  .easy-side .alerts-section {
+    flex: 1; min-height: 0;
+    display: flex; flex-direction: column;
+  }
+  .easy-side #alert-list { flex: 1; overflow-y: auto; min-height: 0; }
+}
 
 /* ── 고급 모드 탭 바 ── */
 .adv-tab-bar {
@@ -612,6 +651,40 @@ details.neu-accordion[open] > summary { color: var(--accent); }
   cursor: pointer; font-size: 12px; font-weight: 500;
 }
 
+/* ── 시간 설정: 고정 눈금 슬라이더 + 범위 밖 직접 입력 ── */
+.time-setting {
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 12px 14px; border-radius: 10px;
+  background: var(--bg);
+  box-shadow: inset -2px -2px 5px var(--sh-light), inset 2px 2px 5px var(--sh-dark);
+}
+.time-setting-head {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 10px;
+}
+.time-setting-label { font-size: 12px; font-weight: 500; }
+.time-setting-val {
+  font-size: 17px; font-weight: 700; color: var(--accent);
+  font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+.time-setting-val.out-of-range { color: var(--orange); }
+.time-setting-foot {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 8px; flex-wrap: wrap;
+}
+.time-range-hint { font-size: 10px; color: var(--muted); }
+.time-setting-val.out-of-range + .time-range-hint { color: var(--orange); }
+.time-manual {
+  display: flex; align-items: center; gap: 5px;
+  font-size: 10px; color: var(--muted); white-space: nowrap;
+}
+.time-manual-input {
+  width: 66px !important; padding: 4px 7px !important;
+  font-size: 12px !important; text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+/* 슬라이더가 실제 값을 표현하지 못할 때(범위 밖) 썸을 주황으로 바꿔 경고 */
+input[type="range"].out-of-range::-webkit-slider-thumb { background: var(--orange); }
+
 /* ── 스크롤바 ── */
 ::-webkit-scrollbar { width: 5px; height: 5px; }
 ::-webkit-scrollbar-track { background: transparent; }
@@ -628,6 +701,93 @@ details.neu-accordion[open] > summary { color: var(--accent); }
 }
 @media (max-width: 400px) {
   .status-grid { grid-template-columns: 1fr 1fr; gap: 10px; }
+}
+
+/* ══ 고급 모드 전체 레이아웃 (PC 2열 구조) ══════════════════════════════════ */
+#panel-advanced {
+  max-width: none; margin: 0;
+  padding: 12px 16px;
+  height: calc(100vh - 64px);
+  overflow: hidden;
+  display: flex; flex-direction: column;
+  box-sizing: border-box;
+}
+.adv-main-grid {
+  display: grid;
+  grid-template-columns: 300px 1fr;
+  gap: 12px;
+  flex: 1; min-height: 0;
+}
+/* ── 왼쪽 열: 카메라 + 상태 칩 ── */
+.adv-left-col {
+  display: flex; flex-direction: column;
+  gap: 10px; min-height: 0; overflow: hidden;
+}
+#adv-stream-slot {
+  flex: 1; min-height: 0;
+  display: flex; flex-direction: column;
+}
+#adv-stream-slot .camera-panel {
+  flex: 1; min-height: 180px; max-height: 420px;
+}
+#adv-stream-slot .camera-offline { padding: 16px; }
+#adv-stream-slot .camera-offline span:first-child { font-size: 24px !important; }
+.adv-chips-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(108px, 1fr));
+  gap: 6px; flex-shrink: 0;
+}
+.status-chip {
+  display: flex; align-items: center; gap: 5px;
+  padding: 7px 9px; border-radius: 10px;
+  font-size: 11px; font-weight: 500;
+  background: var(--bg);
+  box-shadow: -2px -2px 6px var(--sh-light), 2px 2px 6px var(--sh-dark);
+  transition: box-shadow .3s; overflow: hidden; cursor: default;
+}
+.status-chip[data-state="warn"] {
+  box-shadow: -2px -2px 6px var(--sh-light), 2px 2px 6px var(--sh-dark),
+              inset 0 0 0 1.5px rgba(249,115,22,.4);
+}
+.status-chip[data-state="danger"] {
+  box-shadow: -2px -2px 6px var(--sh-light), 2px 2px 6px var(--sh-dark),
+              inset 0 0 0 1.5px rgba(232,68,90,.5);
+}
+.chip-icon { font-size: 14px; flex-shrink: 0; }
+.chip-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chip-count {
+  font-variant-numeric: tabular-nums; font-size: 10px; font-weight: 700;
+  color: var(--muted);
+  background: var(--bg);
+  box-shadow: inset -1px -1px 2px var(--sh-light), inset 1px 1px 2px var(--sh-dark);
+  border-radius: 5px; padding: 1px 5px; flex-shrink: 0;
+}
+.status-chip[data-state="warn"]   .chip-count { color: var(--orange); }
+.status-chip[data-state="danger"] .chip-count { color: var(--red); }
+/* ── 오른쪽 열: 탭 바 + 탭 패널 ── */
+.adv-right-col {
+  display: flex; flex-direction: column;
+  gap: 8px; min-height: 0; overflow: hidden;
+}
+.adv-right-col .adv-tab-bar { flex-shrink: 0; margin-bottom: 0; }
+.adv-right-col .adv-panel { flex: 1; min-height: 0; display: none; }
+.adv-right-col .adv-panel.active { display: flex; flex-direction: column; }
+#adv-monitor { overflow-y: auto; }
+#adv-settings { overflow: hidden; }
+.settings-scroll { flex: 1; overflow-y: auto; min-height: 0; }
+#adv-settings .save-bar { position: static; flex-shrink: 0; box-shadow: 0 -3px 8px var(--sh-dark); border-radius: 0 0 12px 12px; }
+#adv-logs { gap: 6px; overflow: hidden; }
+#adv-logs #event-list { flex: 1; height: auto; min-height: 80px; }
+/* 개발자 설정 아코디언 강조 */
+details.dev-accordion > summary { color: var(--orange) !important; }
+details.dev-accordion[open] > summary { color: var(--red) !important; }
+/* ── 모바일: 1열 스택 ── */
+@media (max-width: 720px) {
+  #panel-advanced { height: auto; overflow: visible; padding-bottom: 20px; }
+  .adv-main-grid { grid-template-columns: 1fr; height: auto; }
+  #adv-stream-slot .camera-panel { flex: none; max-height: 260px; }
+  .adv-right-col .adv-panel { overflow-y: visible; min-height: 0; }
+  .adv-right-col .adv-panel.active { min-height: 400px; }
 }
 </style>
 </head>
@@ -661,9 +821,9 @@ details.neu-accordion[open] > summary { color: var(--accent); }
 <!-- ══ 간단 모드 ═════════════════════════════════════════════════════════════ -->
 <div id="panel-easy" class="mode-panel">
 
-  <!-- 카메라 스트림 -->
-  <div class="easy-stream">
-    <div class="camera-panel" id="camera-panel">
+  <!-- 카메라 스트림 (stream-container는 setMode에 의해 easy/adv 슬롯 사이를 이동) -->
+  <div class="easy-stream" id="easy-stream-slot">
+    <div class="camera-panel" id="stream-container">
       <div class="camera-offline" id="cam-offline">
         <span style="font-size:36px">📷</span>
         <span>detector 미실행 또는 스트림 포트 미설정</span>
@@ -674,7 +834,10 @@ details.neu-accordion[open] > summary { color: var(--accent); }
     </div>
   </div>
 
-  <!-- 상태 카드 3×2 -->
+  <!-- 오른쪽 열: 상태 카드 + 알림 (데스크탑에서 카메라 옆에 배치) -->
+  <div class="easy-side">
+
+  <!-- 상태 카드 (auto-fill — 감지 항목 추가 시 자동 확장) -->
   <div class="status-grid">
     <div class="status-card" id="card-overstay" data-state="normal">
       <div class="card-icon">⏱️</div>
@@ -718,88 +881,128 @@ details.neu-accordion[open] > summary { color: var(--accent); }
       <div class="alert-empty" id="alert-empty">감지된 알림이 없습니다.</div>
     </div>
   </div>
+
+  </div><!-- /easy-side -->
 </div>
 
 <!-- ══ 고급 모드 ═════════════════════════════════════════════════════════════ -->
-<div id="panel-advanced" class="mode-panel" style="display:none">
+<div id="panel-advanced" style="display:none">
+<div class="adv-main-grid">
 
-  <!-- 탭 바 -->
-  <div class="adv-tab-bar">
-    <button class="adv-tab active" id="atab-monitor" onclick="switchAdvTab('monitor')">
-      📊 현황
-    </button>
-    <button class="adv-tab" id="atab-settings" onclick="switchAdvTab('settings')">
-      ⚙️ 설정
-    </button>
-    <button class="adv-tab" id="atab-logs" onclick="switchAdvTab('logs')">
-      📋 로그 <span class="tab-badge" id="log-new-badge" style="display:none">0</span>
-    </button>
-  </div>
+  <!-- ── 왼쪽 열: 카메라 + 상태 칩 ── -->
+  <div class="adv-left-col">
+    <!-- 카메라 패널 슬롯 (setMode가 stream-container를 이동시킴) -->
+    <div id="adv-stream-slot"></div>
 
-  <!-- ── 현황 탭 ── -->
-  <div class="adv-panel active" id="adv-monitor">
-    <!-- 통계 카드 -->
-    <div class="stats-row">
-      <div class="stat-card">
-        <div><div class="stat-label">체류 초과</div><div class="stat-sublabel">overstay</div></div>
-        <div class="stat-value red"   id="cnt-overstay">0</div>
+    <!-- 상태 칩 그리드 (항목 추가 시 auto-fill로 자동 확장) -->
+    <div class="adv-chips-grid" id="adv-chips">
+      <div class="status-chip" id="chip-overstay" data-state="normal">
+        <span class="chip-icon">⏱️</span>
+        <span class="chip-name">장기 체류</span>
+        <span class="chip-count" id="chip-cnt-overstay">0</span>
       </div>
-      <div class="stat-card">
-        <div><div class="stat-label">미주문 착석</div><div class="stat-sublabel">unordered</div></div>
-        <div class="stat-value yellow" id="cnt-unordered">0</div>
+      <div class="status-chip" id="chip-unordered" data-state="normal">
+        <span class="chip-icon">🪑</span>
+        <span class="chip-name">미주문</span>
+        <span class="chip-count" id="chip-cnt-unordered">0</span>
       </div>
-      <div class="stat-card">
-        <div><div class="stat-label">쓰러짐</div><div class="stat-sublabel">fallen</div></div>
-        <div class="stat-value red"   id="cnt-fallen">0</div>
+      <div class="status-chip" id="chip-fallen" data-state="normal">
+        <span class="chip-icon">🚨</span>
+        <span class="chip-name">응급</span>
+        <span class="chip-count" id="chip-cnt-fallen">0</span>
       </div>
-      <div class="stat-card">
-        <div><div class="stat-label">잔류물</div><div class="stat-sublabel">residue</div></div>
-        <div class="stat-value orange" id="cnt-residue">0</div>
+      <div class="status-chip" id="chip-door" data-state="normal">
+        <span class="chip-icon">🚪</span>
+        <span class="chip-name">출입문</span>
+        <span class="chip-count" id="chip-cnt-door">0</span>
+      </div>
+      <div class="status-chip" id="chip-residue" data-state="normal">
+        <span class="chip-icon">🧹</span>
+        <span class="chip-name">잔류물</span>
+        <span class="chip-count" id="chip-cnt-residue">0</span>
+      </div>
+      <div class="status-chip" id="chip-camera" data-state="normal">
+        <span class="chip-icon">📷</span>
+        <span class="chip-name">카메라</span>
+        <span class="chip-count" id="chip-cnt-camera">0</span>
       </div>
     </div>
-    <div class="stats-row" style="margin-top:-4px">
-      <div class="stat-card">
-        <div><div class="stat-label">문 장기 개방</div></div>
-        <div class="stat-value blue" id="cnt-door">0</div>
-      </div>
-      <div class="stat-card">
-        <div><div class="stat-label">카메라 장애</div></div>
-        <div class="stat-value orange" id="cnt-camera">0</div>
-      </div>
-      <div class="stat-card" style="grid-column:span 2">
-        <div>
-          <div class="stat-label">문 현재 상태</div>
-          <div id="door-state-badge" class="door-pill unknown" style="margin-top:4px">— 확인 중</div>
+  </div>
+
+  <!-- ── 오른쪽 열: 탭 바 + 탭 패널 ── -->
+  <div class="adv-right-col">
+
+    <!-- 탭 바 -->
+    <div class="adv-tab-bar">
+      <button class="adv-tab active" id="atab-monitor" onclick="switchAdvTab('monitor')">
+        📊 현황
+      </button>
+      <button class="adv-tab" id="atab-settings" onclick="switchAdvTab('settings')">
+        ⚙️ 설정
+      </button>
+      <button class="adv-tab" id="atab-logs" onclick="switchAdvTab('logs')">
+        📋 로그 <span class="tab-badge" id="log-new-badge" style="display:none">0</span>
+      </button>
+    </div>
+
+    <!-- ── 현황 탭 ── -->
+    <div class="adv-panel active" id="adv-monitor">
+      <div class="stats-row">
+        <div class="stat-card">
+          <div><div class="stat-label">체류 초과</div><div class="stat-sublabel">overstay</div></div>
+          <div class="stat-value red"   id="cnt-overstay">0</div>
         </div>
-        <div class="stat-value blue" id="cnt-total">0</div>
+        <div class="stat-card">
+          <div><div class="stat-label">미주문 착석</div><div class="stat-sublabel">unordered</div></div>
+          <div class="stat-value yellow" id="cnt-unordered">0</div>
+        </div>
+        <div class="stat-card">
+          <div><div class="stat-label">쓰러짐</div><div class="stat-sublabel">fallen</div></div>
+          <div class="stat-value red"   id="cnt-fallen">0</div>
+        </div>
+        <div class="stat-card">
+          <div><div class="stat-label">잔류물</div><div class="stat-sublabel">residue</div></div>
+          <div class="stat-value orange" id="cnt-residue">0</div>
+        </div>
+      </div>
+      <div class="stats-row" style="margin-top:-4px">
+        <div class="stat-card">
+          <div><div class="stat-label">문 장기 개방</div></div>
+          <div class="stat-value blue" id="cnt-door">0</div>
+        </div>
+        <div class="stat-card">
+          <div><div class="stat-label">카메라 장애</div></div>
+          <div class="stat-value orange" id="cnt-camera">0</div>
+        </div>
+        <div class="stat-card" style="grid-column:span 2">
+          <div>
+            <div class="stat-label">문 현재 상태</div>
+            <div id="door-state-badge" class="door-pill unknown" style="margin-top:4px">— 확인 중</div>
+          </div>
+          <div class="stat-value blue" id="cnt-total">0</div>
+        </div>
+      </div>
+      <div class="surface-summary">
+        <h2>지금 청소가 필요한가요?
+          <a href="/surfaces">감시할 곳 설정 →</a>
+        </h2>
+        <div id="surface-main-health" role="status">감지기 연결 확인 중...</div>
+        <div id="surface-main-message" role="status"></div>
+        <div id="surface-main-cards"></div>
       </div>
     </div>
 
-    <!-- 표면 감시 요약 -->
-    <div class="surface-summary">
-      <h2>지금 청소가 필요한가요?
-        <a href="/surfaces">감시할 곳 설정 →</a>
-      </h2>
-      <div id="surface-main-health" role="status">감지기 연결 확인 중...</div>
-      <div id="surface-main-message" role="status"></div>
-      <div id="surface-main-cards"></div>
-    </div>
+    <!-- ── 설정 탭 ── -->
+    <div class="adv-panel" id="adv-settings">
 
-    <!-- 라이브 이벤트 피드 링크 -->
-    <div style="text-align:center; padding:16px 0; color:var(--muted); font-size:13px">
-      실시간 이벤트 로그는
-      <a href="#" onclick="switchAdvTab('logs');return false" style="color:var(--accent)">로그 탭</a>에서 확인하세요.
-    </div>
-  </div>
+      <!-- 설정 모드 서브 토글 -->
+      <div class="settings-mode-bar">
+        <button class="smode-btn active" id="smode-simple" onclick="setSettingsMode('simple')">⚡ 간단 설정</button>
+        <button class="smode-btn" id="smode-full"   onclick="setSettingsMode('full')">🔧 고급 설정</button>
+      </div>
 
-  <!-- ── 설정 탭 ── -->
-  <div class="adv-panel" id="adv-settings">
-
-    <!-- 설정 모드 서브 토글 -->
-    <div class="settings-mode-bar">
-      <button class="smode-btn active" id="smode-simple" onclick="setSettingsMode('simple')">⚡ 간단 설정</button>
-      <button class="smode-btn" id="smode-full"   onclick="setSettingsMode('full')">🔧 고급 설정</button>
-    </div>
+      <!-- 스크롤 영역 -->
+      <div class="settings-scroll">
 
     <!-- ─ 간단 설정 ─ -->
     <div id="simple-settings" class="simple-settings">
@@ -808,7 +1011,7 @@ details.neu-accordion[open] > summary { color: var(--accent); }
       <div class="preset-card neu-raised">
         <div>
           <div class="preset-title">⏱ 체류·착석 관리</div>
-          <div class="preset-subtitle">장기 체류 및 미주문 착석 감지 강도 — 높을수록 빠르게 경고</div>
+          <div class="preset-subtitle">프리셋으로 한 번에 맞추거나, 아래 슬라이더로 매장에 맞게 조절하세요</div>
         </div>
         <div class="preset-btn-group" id="pbtn-dwell">
           <button class="preset-btn" onclick="applyPreset('dwell',0)">매우 관대</button>
@@ -817,6 +1020,45 @@ details.neu-accordion[open] > summary { color: var(--accent); }
           <button class="preset-btn" onclick="applyPreset('dwell',3)">엄격</button>
           <button class="preset-btn" onclick="applyPreset('dwell',4)">매우 엄격</button>
         </div>
+
+        <!-- 장기 체류 한도 (10분 눈금) -->
+        <div class="time-setting">
+          <div class="time-setting-head">
+            <span class="time-setting-label">장기 체류 한도</span>
+            <span class="time-setting-val" id="tval-dwell_limit_seconds">1시간</span>
+          </div>
+          <input type="range" class="setting-input" id="tslide-dwell_limit_seconds"
+                 min="600" max="28800" step="600" value="3600"
+                 oninput="onTimeSlider('dwell_limit_seconds', this.value)">
+          <div class="time-setting-foot">
+            <span class="time-range-hint">10분 ~ 8시간 · 10분 단위</span>
+            <label class="time-manual">범위 밖 직접 입력
+              <input type="number" class="setting-input time-manual-input" id="tman-dwell_limit_seconds"
+                     min="1" max="1440" step="1" onchange="onTimeManual('dwell_limit_seconds', this.value)">
+              분
+            </label>
+          </div>
+        </div>
+
+        <!-- 미주문 착석 유예 (1분 눈금 — 실제 운영값이 2~10분대라 10분 눈금으로는 조절 불가) -->
+        <div class="time-setting">
+          <div class="time-setting-head">
+            <span class="time-setting-label">미주문 착석 유예</span>
+            <span class="time-setting-val" id="tval-unordered_grace_seconds">5분</span>
+          </div>
+          <input type="range" class="setting-input" id="tslide-unordered_grace_seconds"
+                 min="60" max="1800" step="60" value="300"
+                 oninput="onTimeSlider('unordered_grace_seconds', this.value)">
+          <div class="time-setting-foot">
+            <span class="time-range-hint">1분 ~ 30분 · 1분 단위</span>
+            <label class="time-manual">범위 밖 직접 입력
+              <input type="number" class="setting-input time-manual-input" id="tman-unordered_grace_seconds"
+                     min="1" max="60" step="1" onchange="onTimeManual('unordered_grace_seconds', this.value)">
+              분
+            </label>
+          </div>
+        </div>
+
         <div class="preset-desc" id="pdesc-dwell">로딩 중...</div>
       </div>
 
@@ -1140,11 +1382,6 @@ details.neu-accordion[open] > summary { color: var(--accent); }
             <label class="toggle"><input type="checkbox" id="cfg-show_furniture" checked><span class="toggle-slider"></span></label>
             <span></span>
           </div>
-          <div class="setting-row">
-            <div><div class="setting-label">개발: Tier 2 강제 실행</div><div class="setting-desc">tier2_always — surface 활성 중에도 Tier 2 항상 실행</div></div>
-            <label class="toggle"><input type="checkbox" id="cfg-tier2_always"><span class="toggle-slider"></span></label>
-            <span></span>
-          </div>
         </div>
       </details>
 
@@ -1206,44 +1443,64 @@ details.neu-accordion[open] > summary { color: var(--accent); }
         </div>
       </details>
 
+      <!-- 개발자 설정 (최적화 우회·테스트용) -->
+      <details class="neu-accordion dev-accordion">
+        <summary>🛠 개발자 설정</summary>
+        <div class="accordion-body">
+          <div style="font-size:11px;color:var(--orange);margin-bottom:10px;padding:6px 10px;border-radius:6px;background:rgba(249,115,22,.08)">
+            ⚠ 이 설정들은 성능 최적화를 무시하거나 비정상 동작을 강제합니다. 테스트·디버깅 외에는 끄세요.
+          </div>
+          <div class="setting-row">
+            <div><div class="setting-label">Tier 2 강제 실행</div><div class="setting-desc">tier2_always — surface 감지 활성 중에도 Tier 2 항상 추론</div></div>
+            <label class="toggle"><input type="checkbox" id="cfg-tier2_always"><span class="toggle-slider"></span></label>
+            <span></span>
+          </div>
+        </div>
+      </details>
+
     </div><!-- /settings-wrap -->
     </div><!-- /full-settings -->
-    <div class="save-bar">
-      <span class="save-status" id="save-status"></span>
-      <button class="neu-btn" onclick="loadSettings()">초기화</button>
-      <button class="neu-btn primary" onclick="saveSettings()">설정 저장</button>
-    </div>
-  </div><!-- /adv-settings -->
 
-  <!-- ── 로그 탭 ── -->
-  <div class="adv-panel" id="adv-logs">
-    <div class="log-toolbar">
-      <select id="log-select" class="neu-select" title="로그 파일 선택"></select>
-      <div class="level-filter-group">
-        <label><input type="checkbox" class="level-filter" value="INFO"  checked> INFO</label>
-        <label><input type="checkbox" class="level-filter" value="WARN"  checked> WARN</label>
-        <label><input type="checkbox" class="level-filter" value="ERROR" checked> ERROR</label>
-      </div>
-      <label style="display:flex;align-items:center;gap:4px;font-size:12px;cursor:pointer">
-        <input type="checkbox" id="auto-scroll" checked> 자동 스크롤
-      </label>
-      <span id="new-badge" class="badge-count" style="display:none">0</span>
-      <button class="neu-btn sm" onclick="exportCSV()" style="margin-left:auto">CSV 내보내기</button>
-    </div>
-    <div class="conn-bar">
-      <span class="conn-dot" id="conn-dot"></span>
-      <span id="conn-label">연결 중</span>
-      <span id="footer-file" style="margin-left:8px"></span>
-      <span id="footer-count" style="margin-left:auto"></span>
-    </div>
-    <div id="event-list">
-      <div class="empty-state" id="empty-msg">
-        <span>⏳</span>
-        <span>이벤트를 기다리는 중...</span>
-      </div>
-    </div>
-  </div><!-- /adv-logs -->
+      </div><!-- /settings-scroll -->
 
+      <div class="save-bar">
+        <span class="save-status" id="save-status"></span>
+        <button class="neu-btn" onclick="loadSettings()">초기화</button>
+        <button class="neu-btn primary" onclick="saveSettings()">설정 저장</button>
+      </div>
+    </div><!-- /adv-settings -->
+
+    <!-- ── 로그 탭 ── -->
+    <div class="adv-panel" id="adv-logs">
+      <div class="log-toolbar">
+        <select id="log-select" class="neu-select" title="로그 파일 선택"></select>
+        <div class="level-filter-group">
+          <label><input type="checkbox" class="level-filter" value="INFO"  checked> INFO</label>
+          <label><input type="checkbox" class="level-filter" value="WARN"  checked> WARN</label>
+          <label><input type="checkbox" class="level-filter" value="ERROR" checked> ERROR</label>
+        </div>
+        <label style="display:flex;align-items:center;gap:4px;font-size:12px;cursor:pointer">
+          <input type="checkbox" id="auto-scroll" checked> 자동 스크롤
+        </label>
+        <span id="new-badge" class="badge-count" style="display:none">0</span>
+        <button class="neu-btn sm" onclick="exportCSV()" style="margin-left:auto">CSV 내보내기</button>
+      </div>
+      <div class="conn-bar">
+        <span class="conn-dot" id="conn-dot"></span>
+        <span id="conn-label">연결 중</span>
+        <span id="footer-file" style="margin-left:8px"></span>
+        <span id="footer-count" style="margin-left:auto"></span>
+      </div>
+      <div id="event-list">
+        <div class="empty-state" id="empty-msg">
+          <span>⏳</span>
+          <span>이벤트를 기다리는 중...</span>
+        </div>
+      </div>
+    </div><!-- /adv-logs -->
+
+  </div><!-- /adv-right-col -->
+</div><!-- /adv-main-grid -->
 </div><!-- /panel-advanced -->
 
 <!-- ══ 표면 감시 스크립트 (기존 유지) ════════════════════════════════════════ -->
@@ -1322,7 +1579,9 @@ details.neu-accordion[open] > summary { color: var(--accent); }
 <!-- ══ 메인 스크립트 ══════════════════════════════════════════════════════════ -->
 <script>
 const MAX_ROWS   = 500;
-const MAX_ALERTS = 5;
+/* 데스크탑 2열 레이아웃에서 알림 열이 세로 공간을 모두 쓰므로 5개는 너무 적습니다.
+   넘치는 분량은 알림 목록 안에서만 스크롤됩니다. */
+const MAX_ALERTS = 12;
 const WARN_EVENTS = new Set(["camera_whiteout","camera_blackout","camera_frozen","camera_stalled"]);
 const CAMERA_OK   = new Set(["camera_ok"]);
 
@@ -1379,6 +1638,14 @@ function setMode(mode) {
   document.getElementById("panel-advanced").style.display = mode === "advanced" ? "" : "none";
   document.getElementById("btn-easy").classList.toggle("active",     mode === "easy");
   document.getElementById("btn-advanced").classList.toggle("active", mode === "advanced");
+  /* 카메라 패널을 활성 모드 슬롯으로 이동 (스트림 img 재사용 — 이중 연결 없음) */
+  const camPanel = document.getElementById("stream-container");
+  const easySlot = document.getElementById("easy-stream-slot");
+  const advSlot  = document.getElementById("adv-stream-slot");
+  if (camPanel) {
+    if (mode === "easy"     && easySlot && camPanel.parentNode !== easySlot) easySlot.insertBefore(camPanel, easySlot.firstChild);
+    if (mode === "advanced" && advSlot  && camPanel.parentNode !== advSlot)  advSlot.appendChild(camPanel);
+  }
   if (mode === "advanced" && currentAdvTab === "settings") loadSettings();
 }
 
@@ -1408,12 +1675,16 @@ function switchAdvTab(name) {
   }
 }
 
-/* ── 간단 모드 카드 업데이트 ────────────────────────────────────────────────── */
+/* ── 간단 모드 카드 + 고급 모드 칩 동기화 ──────────────────────────────────── */
 function updateCardState(id, state, text) {
   const card = document.getElementById("card-" + id);
   const label = document.getElementById("cs-" + id);
   if (card)  card.dataset.state = state;
   if (label) label.textContent  = text;
+  /* 고급 모드 칩: id에서 "-easy" 접미사를 제거해 chip- 요소 찾기 */
+  const chipKey = id.replace(/-easy$/, "");
+  const chip = document.getElementById("chip-" + chipKey);
+  if (chip) chip.dataset.state = state;
 }
 
 function updateEasyCards() {
@@ -1458,14 +1729,20 @@ function clearAlerts() {
 
 /* ── 이벤트 카운트 ──────────────────────────────────────────────────────────── */
 function updateCounts() {
-  document.getElementById("cnt-overstay").textContent = counts.overstay;
+  document.getElementById("cnt-overstay").textContent  = counts.overstay;
   document.getElementById("cnt-unordered").textContent = counts.unordered;
-  document.getElementById("cnt-fallen").textContent = counts.fallen;
-  document.getElementById("cnt-camera").textContent = counts.camera;
-  document.getElementById("cnt-door").textContent = counts.door;
-  document.getElementById("cnt-residue").textContent = counts.residue;
-  document.getElementById("cnt-total").textContent = counts.total;
+  document.getElementById("cnt-fallen").textContent    = counts.fallen;
+  document.getElementById("cnt-camera").textContent    = counts.camera;
+  document.getElementById("cnt-door").textContent      = counts.door;
+  document.getElementById("cnt-residue").textContent   = counts.residue;
+  document.getElementById("cnt-total").textContent     = counts.total;
   footerCount.textContent = `총 ${counts.total}건`;
+  /* 고급 모드 칩 카운트 업데이트 */
+  [["overstay",counts.overstay],["unordered",counts.unordered],["fallen",counts.fallen],
+   ["camera",counts.camera],["door",counts.door],["residue",counts.residue]].forEach(([k,v]) => {
+    const el = document.getElementById("chip-cnt-" + k);
+    if (el) el.textContent = v;
+  });
   updateEasyCards();
 }
 
@@ -1728,6 +2005,7 @@ async function loadSettings() {
       "show_animal","show_food","show_drink","show_furniture","tier2_always"
     ];
     keys.forEach(k => { if (cfg[k] !== undefined) setCfgVal(k, cfg[k]); });
+    renderAllTimeSettings();
     updateRoiSummary();
     if (cfg.stream_port) portInput.value = cfg.stream_port;
     document.getElementById("save-status").textContent = "";
@@ -2050,6 +2328,8 @@ function syncCfgToSimple() {
   updatePresetDesc("dwell",   detectPresetLevel("dwell"));
   updatePresetDesc("residue", detectPresetLevel("residue"));
   updatePresetDesc("camera",  detectPresetLevel("camera"));
+
+  renderAllTimeSettings();
 }
 
 /* 간단 설정 값 → 고급 cfg 입력란에 반영 */
@@ -2057,6 +2337,62 @@ function syncSimpleToCfg(key, val) {
   setCfgVal(key, val);
   if (key === "door_open_seconds") updateDoorDesc(val);
 }
+
+/* ── 시간 설정: 고정 눈금 슬라이더 + 범위 밖 직접 입력 ──────────────────────
+   step을 설정마다 다르게 둔 이유: 체류 한도는 시간 단위라 10분 눈금이 적절하지만,
+   미주문 유예는 실제 운영값이 2~10분대라 10분 눈금이면 조절 자체가 불가능합니다.
+   슬라이더 범위를 벗어나는 값(예: 24시간 체류 허용)은 옆의 직접 입력란으로 넣으며,
+   이때 슬라이더는 끝에 고정된 채 주황색으로 "실제 값과 다름"을 표시합니다.
+   실제 저장은 항상 cfg- 입력란을 거치므로 saveSettings()는 수정할 필요가 없습니다. */
+const TIME_SETTINGS = {
+  dwell_limit_seconds:     { min: 600, max: 28800, step: 600, manualMax: 1440 },
+  unordered_grace_seconds: { min: 60,  max: 1800,  step: 60,  manualMax: 60   },
+};
+
+function fmtDuration(sec) {
+  const m = Math.round(sec / 60);
+  if (m < 60) return `${m}분`;
+  const h = Math.floor(m / 60), mm = m % 60;
+  return mm === 0 ? `${h}시간` : `${h}시간 ${mm}분`;
+}
+
+function onTimeSlider(key, val) {
+  setCfgVal(key, parseInt(val, 10));
+  renderTimeSetting(key);
+}
+
+function onTimeManual(key, minutes) {
+  const spec = TIME_SETTINGS[key];
+  let m = Math.round(parseFloat(minutes));
+  if (!isFinite(m) || m < 1) m = 1;
+  if (m > spec.manualMax) m = spec.manualMax;
+  setCfgVal(key, m * 60);
+  renderTimeSetting(key);
+}
+
+/* cfg- 입력란의 현재 값 → 슬라이더·표시·직접입력란 동기화 */
+function renderTimeSetting(key) {
+  const spec = TIME_SETTINGS[key];
+  if (!spec) return;
+  const sec = parseFloat(document.getElementById("cfg-" + key)?.value);
+  if (!isFinite(sec)) return;
+  const inRange = sec >= spec.min && sec <= spec.max;
+  const slider = document.getElementById("tslide-" + key);
+  const label  = document.getElementById("tval-"   + key);
+  const manual = document.getElementById("tman-"   + key);
+  if (slider) {
+    slider.value = inRange ? sec : (sec < spec.min ? spec.min : spec.max);
+    slider.classList.toggle("out-of-range", !inRange);
+  }
+  if (label) {
+    label.textContent = fmtDuration(sec);
+    label.classList.toggle("out-of-range", !inRange);
+  }
+  /* 타이핑 중인 칸은 건드리지 않습니다 — 입력 도중 커서가 튀는 것을 막습니다. */
+  if (manual && document.activeElement !== manual) manual.value = Math.round(sec / 60);
+}
+
+function renderAllTimeSettings() { Object.keys(TIME_SETTINGS).forEach(renderTimeSetting); }
 
 /* ── 프리셋 데이터 ─────────────────────────────────────────────────────────── */
 const PRESETS = {
@@ -2089,6 +2425,7 @@ function applyPreset(category, level) {
   Object.entries(preset).forEach(([k, v]) => setCfgVal(k, v));
   setPresetLevel(category, level);
   updatePresetDesc(category, level);
+  renderAllTimeSettings(); /* 프리셋이 덮어쓴 시간 값을 슬라이더에 반영 */
 }
 
 function setPresetLevel(category, level) {
@@ -2122,11 +2459,9 @@ function updatePresetDesc(category, level) {
   if (!p) return;
   let desc = "";
   if (category === "dwell") {
-    const h = Math.floor(p.dwell_limit_seconds / 3600);
-    const m = Math.round((p.dwell_limit_seconds % 3600) / 60);
-    const timeStr = h > 0 ? (m > 0 ? `${h}시간 ${m}분` : `${h}시간`) : `${m}분`;
-    const gm = Math.round(p.unordered_grace_seconds / 60);
-    desc = `<strong>체류 한도 ${timeStr}</strong> · 미주문 유예 ${gm}분 · 쓰러짐 판정 ${p.fall_hold_seconds}초 유지`;
+    /* 체류 한도·미주문 유예는 위 슬라이더가 실시간으로 보여주므로 여기서는 생략합니다.
+       슬라이더를 움직인 뒤에도 이 설명이 어긋나지 않도록, 프리셋만 바꾸는 값만 남깁니다. */
+    desc = `프리셋이 함께 설정: 쓰러짐 판정 <strong>${p.fall_hold_seconds}초</strong> 유지 · bbox 비율 ${p.fall_aspect_ratio_kp} / ${p.fall_aspect_ratio_nokp}`;
   } else if (category === "residue") {
     desc = `<strong>휘도 차 임계값 ${p.residue_diff_threshold}</strong> · 최소 ${p.residue_min_blocks}블록 이상 · 확정 ${p.residue_confirm_seconds}초 · 해소 ${p.residue_clear_seconds}초`;
   } else if (category === "camera") {
