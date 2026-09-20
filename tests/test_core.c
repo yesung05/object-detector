@@ -2089,42 +2089,81 @@ static void vanish_track(Track *t) {
     t->box.x1 = 400; t->box.y1 = 300; t->box.x2 = 460; t->box.y2 = 460;
 }
 
-static void test_vanish_requires_closed_door(void) {
-    /* 문이 열렸으면 정상 퇴장이므로 아무 말도 하지 않아야 합니다. */
+static void test_vanish_at_door_uses_door_state(void) {
+    /* 문 앞에서 사라짐: 문이 열렸으면 정상 퇴장, 닫힌 채였으면 나갈 수 없었다는 강한 신호. */
     RulesEngine re; Track t; VanishEvidence ev; EventLog el;
     ASSERT_TRUE(rules_init(&re, 8, NULL, NULL, 0) == 0);
     event_log_open(&el, ":memory:", LOG_INFO, 0);
+    ev.near_door = 1; ev.near_edge = 1;   /* 문이 화면 끝에 있는 흔한 배치 */
+
     vanish_track(&t);
-    ev.door_can_exit = 1; ev.residue_at_spot = 1; ev.near_edge = 0;
-    EXPECT_INT_EQ(rules_check_vanish(&re, &t, &ev, 120.0, &el), 0);
+    ev.door_can_exit = 1; ev.residue_at_spot = 1;
+    EXPECT_INT_EQ(rules_check_vanish(&re, &t, &ev, 120.0, &el), 0);  /* 나갔음 */
     EXPECT_INT_EQ(t.vanish_warned, 0);
 
-    /* 문이 닫힌 채였으면 나갈 수 없었다는 뜻 — 경고 */
+    /* 문이 닫힌 채였으면 가장자리여도 경고해야 합니다 — 여기가 쓰러지면 가장 위험한 곳입니다. */
+    vanish_track(&t);
     ev.door_can_exit = 0; ev.residue_at_spot = 0;
     EXPECT_INT_EQ(rules_check_vanish(&re, &t, &ev, 120.0, &el), 1);
-    EXPECT_INT_EQ(t.vanish_warned, 1);
-    /* 중복 발화 없음 */
-    EXPECT_INT_EQ(rules_check_vanish(&re, &t, &ev, 130.0, &el), 0);
+    EXPECT_INT_EQ(rules_check_vanish(&re, &t, &ev, 130.0, &el), 0);  /* 중복 발화 없음 */
+
+    /* 문 상태를 모르면(감지 꺼짐) 나간 것인지 알 수 없으므로 잔류가 있어야 합니다. */
+    vanish_track(&t);
+    ev.door_can_exit = -1; ev.residue_at_spot = 0;
+    EXPECT_INT_EQ(rules_check_vanish(&re, &t, &ev, 120.0, &el), 0);
+    vanish_track(&t);
+    ev.residue_at_spot = 1;
+    EXPECT_INT_EQ(rules_check_vanish(&re, &t, &ev, 120.0, &el), 1);
     rules_destroy(&re); event_log_close(&el);
 }
 
-static void test_vanish_escalates_only_with_residue(void) {
-    /* 문 앞에서 쓰러진 경우: 가장자리라도 문이 닫혀 있으면 잡아야 하고,
-       그 자리에 잔류가 있을 때만 ERROR 로 올라가야 합니다. */
+static void test_vanish_ignores_walk_off_frame_edge(void) {
+    /* 문이 아닌 화면 가장자리에서 사라진 경우 — 화각 밖으로 걸어 나갔을 수 있습니다.
+       문이 닫혀 있다는 사실만으로는 구분되지 않습니다(카메라가 매장 전체를 못 덮음).
+       잔류 흔적이 있을 때만 말해야 오탐이 쏟아지지 않습니다. */
+    RulesEngine re; Track t; VanishEvidence ev; EventLog el;
+    ASSERT_TRUE(rules_init(&re, 8, NULL, NULL, 0) == 0);
+    event_log_open(&el, ":memory:", LOG_INFO, 0);
+    ev.near_door = 0; ev.near_edge = 1; ev.door_can_exit = 0;  /* 문은 닫혀 있었음 */
+
+    vanish_track(&t);
+    ev.residue_at_spot = 0;
+    EXPECT_INT_EQ(rules_check_vanish(&re, &t, &ev, 120.0, &el), 0);  /* 그냥 나간 것 */
+    EXPECT_INT_EQ(t.vanish_warned, 0);
+
+    vanish_track(&t);
+    ev.residue_at_spot = 1;                                          /* 뭔가 남았다 */
+    EXPECT_INT_EQ(rules_check_vanish(&re, &t, &ev, 120.0, &el), 1);
+    rules_destroy(&re); event_log_close(&el);
+}
+
+static void test_vanish_interior_and_escalation(void) {
+    /* 화면 한가운데 — 나갈 곳이 없는데 사라졌으므로 가장 강한 신호입니다.
+       ERROR 승격은 잔류가 확인될 때만 합니다. */
     RulesEngine re; Track t; VanishEvidence ev; EventLog el;
     ASSERT_TRUE(rules_init(&re, 8, NULL, NULL, 0) == 0);
     event_log_open(&el, ":memory:", LOG_INFO, 0);
     vanish_track(&t);
-    ev.door_can_exit = 0; ev.residue_at_spot = 0; ev.near_edge = 1; /* 문 앞 = 가장자리 */
+    ev.near_door = 0; ev.near_edge = 0; ev.door_can_exit = 0; ev.residue_at_spot = 0;
 
-    EXPECT_INT_EQ(rules_check_vanish(&re, &t, &ev, 120.0, &el), 1); /* 가장자리여도 경고 */
-    EXPECT_INT_EQ(rules_check_vanish(&re, &t, &ev, 130.0, &el), 0); /* 잔류 없음 → 승격 안 함 */
+    EXPECT_INT_EQ(rules_check_vanish(&re, &t, &ev, 120.0, &el), 1);
+    EXPECT_INT_EQ(rules_check_vanish(&re, &t, &ev, 130.0, &el), 0);  /* 잔류 없음 → 승격 안 함 */
     EXPECT_INT_EQ(t.vanish_escalated, 0);
 
     ev.residue_at_spot = 1;
-    EXPECT_INT_EQ(rules_check_vanish(&re, &t, &ev, 140.0, &el), 2); /* 잔류 확인 → 승격 */
+    EXPECT_INT_EQ(rules_check_vanish(&re, &t, &ev, 140.0, &el), 2);
     EXPECT_INT_EQ(t.vanish_escalated, 1);
     EXPECT_TRUE(event_log_count(&el, LOG_ERROR) > 0);
+
+    /* 칸막이가 많은 매장용 옵션: 화면 안쪽에서도 잔류를 요구 */
+    {
+        RulesConfig rc = re.config;
+        rc.vanish_require_residue = 1;
+        rules_update_config(&re, &rc);
+        vanish_track(&t);
+        ev.residue_at_spot = 0;
+        EXPECT_INT_EQ(rules_check_vanish(&re, &t, &ev, 200.0, &el), 0);
+    }
     rules_destroy(&re); event_log_close(&el);
 }
 
@@ -2134,7 +2173,7 @@ static void test_vanish_ignores_weak_and_brief_tracks(void) {
     RulesEngine re; Track t; VanishEvidence ev; EventLog el;
     ASSERT_TRUE(rules_init(&re, 8, NULL, NULL, 0) == 0);
     event_log_open(&el, ":memory:", LOG_INFO, 0);
-    ev.door_can_exit = 0; ev.residue_at_spot = 1; ev.near_edge = 0;
+    ev.door_can_exit = 0; ev.residue_at_spot = 1; ev.near_edge = 0; ev.near_door = 0;
 
     vanish_track(&t); t.dwell_seconds = 1.0;               /* 너무 짧게 추적됨 */
     EXPECT_INT_EQ(rules_check_vanish(&re, &t, &ev, 120.0, &el), 0);
@@ -2154,7 +2193,7 @@ static void test_vanish_clears_on_reappear(void) {
     ASSERT_TRUE(rules_init(&re, 8, NULL, NULL, 0) == 0);
     event_log_open(&el, ":memory:", LOG_INFO, 0);
     vanish_track(&t);
-    ev.door_can_exit = 0; ev.residue_at_spot = 1; ev.near_edge = 0;
+    ev.door_can_exit = 0; ev.residue_at_spot = 1; ev.near_edge = 0; ev.near_door = 0;
     EXPECT_INT_EQ(rules_check_vanish(&re, &t, &ev, 120.0, &el), 1);
     EXPECT_INT_EQ(rules_check_vanish(&re, &t, &ev, 125.0, &el), 2);
 
@@ -2331,8 +2370,9 @@ int main(void) {
     RUN_TEST(test_throttle_levels_and_hysteresis);
     RUN_TEST(test_throttle_actions_per_level);
     RUN_TEST(test_throttle_needs_baseline_before_deciding);
-    RUN_TEST(test_vanish_requires_closed_door);
-    RUN_TEST(test_vanish_escalates_only_with_residue);
+    RUN_TEST(test_vanish_at_door_uses_door_state);
+    RUN_TEST(test_vanish_ignores_walk_off_frame_edge);
+    RUN_TEST(test_vanish_interior_and_escalation);
     RUN_TEST(test_vanish_ignores_weak_and_brief_tracks);
     RUN_TEST(test_vanish_clears_on_reappear);
     RUN_TEST(test_netaccess_subnet_and_pin_header);

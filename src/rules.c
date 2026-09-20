@@ -47,6 +47,7 @@ static const RulesConfig DEFAULT_RULES = {
     3.0,     /* vanish_min_dwell_seconds */
     0.35f,   /* vanish_min_score */
     0.08f,   /* vanish_edge_margin */
+    0,       /* vanish_require_residue */
 };
 
 int rules_init(RulesEngine *re, size_t capacity, const RulesConfig *config,
@@ -336,11 +337,26 @@ int rules_check_vanish(RulesEngine *re, Track *t, const VanishEvidence *ev,
     if (t->dwell_seconds < re->config.vanish_min_dwell_seconds) return 0;
     if (t->box.score < re->config.vanish_min_score) return 0;
 
-    /* 문이 열렸으면 정상 퇴장으로 봅니다. 문 정보가 아예 없을 때만 가장자리로 판단하는데,
-     * 가장자리 규칙을 문 정보가 있을 때도 쓰면 출입문 앞에서 쓰러진 경우 —
-     * 가장 위험한 위치 — 가 통째로 사각지대가 됩니다. */
-    if (ev->door_can_exit == 1) return 0;
-    if (ev->door_can_exit < 0 && ev->near_edge) return 0;
+    /*
+     * 어디서 사라졌는지에 따라 판단이 완전히 달라집니다.
+     *
+     *   출입문 근처   문이 열렸으면 나간 것이고, 닫힌 채였으면 나갈 수 없었다는 강한 신호입니다.
+     *   다른 가장자리 화각 밖으로 걸어 나갔을 수 있어 구분이 불가능합니다. 문이 닫혀 있어도
+     *                 마찬가지입니다 — 카메라가 매장 전체를 덮지 못하면 문을 쓰지 않고도
+     *                 시야에서 사라질 수 있습니다. 그 자리에 뭔가 남아 있을 때만 말합니다.
+     *   화면 안쪽     나갈 곳이 없는데 사라졌습니다. 가장 강한 신호입니다.
+     */
+    if (ev->near_door) {
+        if (ev->door_can_exit == 1) return 0;                  /* 문이 열렸다 — 정상 퇴장 */
+        /* 문 상태를 모르면 나간 것인지 알 수 없으므로 잔류 흔적을 요구합니다. */
+        if (ev->door_can_exit < 0 && ev->residue_at_spot != 1) return 0;
+    } else if (ev->near_edge) {
+        if (ev->residue_at_spot != 1) return 0;
+    } else if (re->config.vanish_require_residue && ev->residue_at_spot != 1) {
+        /* 칸막이·기둥이 많은 매장에서는 화면 안쪽에서도 사람이 정상적으로 자주 가려집니다.
+         * 그런 배치에서는 이 옵션으로 잔류 흔적을 항상 요구하게 둡니다. */
+        return 0;
+    }
 
     cx = (t->box.x1 + t->box.x2) * 0.5f;
     cy = (t->box.y1 + t->box.y2) * 0.5f;
@@ -349,8 +365,10 @@ int rules_check_vanish(RulesEngine *re, Track *t, const VanishEvidence *ev,
         t->vanish_warned = 1;
         snprintf(msg, sizeof(msg),
                  "person_unaccounted track=%d last=%.0f,%.0f score=%.2f dwell=%.0fs "
-                 "gone=%.0fs door=%s residue=%s",
+                 "gone=%.0fs where=%s door=%s residue=%s",
                  t->id, cx, cy, t->box.score, t->dwell_seconds, gone,
+                 ev->near_door ? "door" : ev->near_edge ? "frame_edge" : "interior",
+                 ev->door_can_exit == 1 ? "opened" :
                  ev->door_can_exit == 0 ? "closed" : "unknown",
                  ev->residue_at_spot == 1 ? "yes" :
                  ev->residue_at_spot == 0 ? "no" : "unknown");
