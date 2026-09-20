@@ -55,6 +55,10 @@ typedef struct {
     double clear_seconds;            /* residue_clear_seconds */
     double baseline_refresh_seconds; /* residue_baseline_refresh_seconds */
     float  global_change_ratio;      /* residue_global_change_ratio */
+    /* 자동 기준 캡처: 기준이 없을 때 사람 없음·화면 정지가 auto_quiet_seconds 지속되면
+       현재 gray 를 기준으로 삼습니다. 설치 직후 "대시보드에서 캡처하세요" 단계를 없앱니다. */
+    int    auto_enabled;             /* residue_auto_capture (기본 1) */
+    double auto_quiet_seconds;       /* residue_auto_quiet_seconds (기본 15) */
 } ResidueConfig;
 
 typedef struct {
@@ -74,6 +78,12 @@ typedef struct {
     int      blocks_x, blocks_y;
 
     ResidueRegion regions[RESIDUE_MAX_REGIONS];
+
+    /* 자동 캡처 런타임 (residue_auto_init) */
+    int    auto_phase;           /* 0=비활성 1=대기 2=기준 있음 */
+    double auto_quiet_since;     /* 조건 시작 시각, 0=미충족 */
+    double auto_wait_seconds;    /* 대시보드 표시용 */
+    int    size_mismatch_logged; /* 기준 크기 불일치 경고를 한 번만 남기기 위한 래치 */
 } ResidueMonitor;
 
 /*
@@ -109,5 +119,15 @@ int residue_evaluate(ResidueMonitor *r,
  * 조명 변화 강제 갱신 및 안전 시점 자동 갱신에 쓰입니다.
  */
 int residue_refresh_baseline(ResidueMonitor *r, const GrayBuf *gray, double now);
+
+/*
+ * 기준이 없을 때 자동으로 기준을 잡습니다. residue_evaluate 앞에서 매 프레임 호출합니다.
+ *
+ * motion_ratio: 이번 프레임의 변화 픽셀 비율(gray_analyze 결과). 0.002 미만이면 정지로 봅니다.
+ * 기준을 잡으면 1 을 반환하고 baseline_ready=1 이 됩니다. 이 모듈은 gray 만 가지므로
+ * 파일은 쓰지 않습니다 — 호출자가 원본 RGB 를 raw_rgb_save 로 저장하면 재시작 후에도 남습니다.
+ */
+int residue_auto_init(ResidueMonitor *r, const GrayBuf *gray,
+                      int person_count, int camera_ok, double motion_ratio, double now);
 
 #endif /* RESIDUE_H */

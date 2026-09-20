@@ -205,10 +205,55 @@ int residue_evaluate(ResidueMonitor *r,
         r->blocks_y = bh;
     }
 
-    /* 기준 크기와 현재 버퍼 크기가 다르면 판정 불가 */
-    if (r->baseline_w != bw || r->baseline_h != bh) return 0;
-
     int ds = gray->downsample; /* 블록 → 원본 픽셀 변환 계수 */
+
+    /*
+     * 파일에서 읽은 기준은 원본 해상도(예: 1280×720)인데 gray 는 다운샘플(160×90)입니다.
+     * 예전에는 여기서 크기가 달라 매 프레임 조용히 0 을 반환했고, 파일 기준이 있는
+     * 설치에서 잔류물 감지가 한 번도 동작하지 않았습니다. 정확히 ds 배이면 gray 와
+     * 같은 방식(블록 중앙 점 샘플, gray_buf_update_luma 참조)으로 한 번 축소해 이어 씁니다.
+     */
+    if (r->baseline_w != bw || r->baseline_h != bh) {
+        if (ds > 0 && r->baseline_w == bw * ds && r->baseline_h == bh * ds) {
+            uint8_t *small = (uint8_t *)malloc((size_t)bw * bh);
+            int by, bx;
+            if (!small) return 0;
+            for (by = 0; by < bh; ++by) {
+                int sy = by * ds + ds / 2;
+                if (sy >= r->baseline_h) sy = r->baseline_h - 1;
+                for (bx = 0; bx < bw; ++bx) {
+                    int sx = bx * ds + ds / 2;
+                    if (sx >= r->baseline_w) sx = r->baseline_w - 1;
+                    small[by * bw + bx] = r->baseline[(size_t)sy * r->baseline_w + sx];
+                }
+            }
+            free(r->baseline);
+            r->baseline       = small; /* ResidueMonitor 소유 — residue_destroy 가 free */
+            r->baseline_w     = bw;
+            r->baseline_h     = bh;
+            r->baseline_stamp = now;
+            if (elog) {
+                char msg[128];
+                snprintf(msg, sizeof(msg),
+                         "residue_baseline_downsampled %dx%d->%dx%d ds=%d",
+                         bw * ds, bh * ds, bw, bh, ds);
+                event_log_write(elog, LOG_INFO, "residue", msg);
+            }
+        } else {
+            /* 배수가 아니면 복구 불가 — 기준을 버려 자동 캡처가 다시 잡게 합니다.
+               이전처럼 조용히 0 을 돌려주면 감지가 죽은 것을 아무도 모릅니다. */
+            if (elog && !r->size_mismatch_logged) {
+                char msg[160];
+                snprintf(msg, sizeof(msg),
+                         "residue_baseline_size_mismatch ref=%dx%d gray=%dx%d — 기준 폐기, 자동 캡처 대기",
+                         r->baseline_w, r->baseline_h, bw, bh);
+                event_log_write(elog, LOG_WARN, "residue", msg);
+                r->size_mismatch_logged = 1;
+            }
+            r->baseline_ready = 0;
+            return 0;
+        }
+    }
 
     /* ─── 1단계: 후보 블록 산출 ─────────────────────────────────────────── */
     int candidate_count = 0;
@@ -435,4 +480,29 @@ next_block:;
     free(stk_x);
     free(stk_y);
     return confirmed_this_frame;
+}
+
+int residue_auto_init(ResidueMonitor *r, const GrayBuf *gray,
+                      int person_count, int camera_ok, double motion_ratio, double now) {
+    if (!r || !gray || !gray->data) return 0;
+    if (!r->config.enabled || !r->config.auto_enabled) { r->auto_phase = 0; return 0; }
+    if (r->baseline_ready) { r->auto_phase = 2; r->auto_wait_seconds = 0.0; return 0; }
+    r->auto_phase = 1;
+
+    /* 사람이 있거나 화면이 움직이거나 카메라가 비정상이면 처음부터 다시 셉니다.
+       0.002 = 720p 다운샘플 8(14,400픽셀) 기준 약 29픽셀 — 센서 노이즈 위, 사람 움직임 아래. */
+    if (person_count > 0 || !camera_ok || motion_ratio >= 0.002) {
+        r->auto_quiet_since  = 0.0;
+        r->auto_wait_seconds = 0.0;
+        return 0;
+    }
+    if (r->auto_quiet_since <= 0.0) r->auto_quiet_since = now;
+    r->auto_wait_seconds = now - r->auto_quiet_since;
+    if (r->auto_wait_seconds < r->config.auto_quiet_seconds) return 0;
+
+    if (residue_refresh_baseline(r, gray, now) != 0) return 0;
+    r->auto_quiet_since  = 0.0;
+    r->auto_wait_seconds = 0.0;
+    r->auto_phase = 2;
+    return 1;
 }

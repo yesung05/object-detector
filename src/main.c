@@ -183,6 +183,17 @@ typedef struct {
     time_t residue_ref_mtime;
     double residue_ref_check_time;
 
+    /* 보안·개인정보 (config: stream_privacy_mode, privacy_unlock_max_seconds, access_pin) */
+    int    privacy_mode;
+    int    privacy_unlock_max;
+    char   access_pin[64];
+    int    privacy_was_active;       /* 전환 로그용 */
+    int    door_stall_logged;        /* door.auto_stalled 0→1 전환을 한 번만 기록 */
+    int    door_band_logged;         /* band_valid 측정 결과를 측정당 한 번만 기록 */
+    /* 표면 자동 캡처 설정은 surface_monitor 로 넘기고, 문·잔류물은 각 모니터 구조체가 가집니다. */
+    int    surface_auto_capture;
+    double surface_auto_quiet;
+
     /* 회전 프레임 쓰러짐 감지: YOLO가 수평 자세를 놓쳤을 때 90° 회전 프레임으로
      * 재탐지합니다. 회전된 누운 사람이 서있는 사람처럼 보여 탐지됩니다.
      * 회전 버퍼는 첫 프레임에서 1회 할당, 이후 재사용합니다. */
@@ -734,6 +745,58 @@ static void apply_slot_config(AppContext *app, const Config *cfg) {
                             (long)app->perf_log_interval, 10, 3600);
 }
 
+/* 보안·개인정보 설정. 시작 시와 hot-reload 양쪽에서 호출합니다.
+ * PIN 은 config.json 에 평문입니다 — 파일을 읽을 수 있는 사람은 이미 기기를 장악한 셈이라
+ * 해시로 얻는 것이 없고, 대시보드 서버(8080)도 같은 파일에서 같은 값을 읽어야 합니다. */
+static void apply_security_config(AppContext *app, const Config *cfg) {
+    const char *pin = NULL;
+    app->privacy_mode       = (int)config_long(cfg, "stream_privacy_mode", 1, 0, 1);
+    app->privacy_unlock_max = (int)config_long(cfg, "privacy_unlock_max_seconds", 600, 30, 3600);
+    if (config_get(cfg, "access_pin", &pin) == 0 && pin)
+        snprintf(app->access_pin, sizeof(app->access_pin), "%s", pin);
+    else
+        app->access_pin[0] = '\0';
+    stream_set_privacy_mode(app->privacy_mode);
+    stream_set_privacy_unlock_max(app->privacy_unlock_max);
+    stream_set_access_pin(app->access_pin);
+}
+
+/* 자동 기준 캡처 설정 — 문·잔류물·표면 공통. */
+static void apply_auto_capture_config(AppContext *app, const Config *cfg) {
+    app->door.auto_enabled           = (int)config_long(cfg, "door_auto_capture", 1, 0, 1);
+    app->door.auto_quiet_seconds     = (double)config_float(cfg, "door_auto_quiet_seconds", 20.0f, 5.0f, 600.0f);
+    app->door.auto_open_hold_seconds = (double)config_float(cfg, "door_auto_open_hold_seconds", 1.0f, 0.2f, 10.0f);
+    app->door.auto_open_min_l1       = config_float(cfg, "door_auto_open_l1", 25.0f, 5.0f, 120.0f);
+    {
+        /* 비율이 바뀌면 밴드 영역 자체가 달라지므로 유효성을 다시 재야 합니다. */
+        float ratio = config_float(cfg, "door_band_ratio", 0.3f, 0.0f, 0.8f);
+        if (ratio != app->door.band_ratio) {
+            app->door.band_ratio = ratio;
+            app->door.band_valid = -1;
+        }
+    }
+    app->residue.config.auto_enabled       = (int)config_long(cfg, "residue_auto_capture", 1, 0, 1);
+    app->residue.config.auto_quiet_seconds = (double)config_float(cfg, "residue_auto_quiet_seconds", 15.0f, 3.0f, 600.0f);
+    app->surface_auto_capture = (int)config_long(cfg, "surface_auto_capture", 1, 0, 1);
+    app->surface_auto_quiet   = (double)config_float(cfg, "surface_auto_quiet_seconds", 10.0f, 3.0f, 600.0f);
+    if (app->surface_monitor)
+        surface_monitor_set_auto_capture(app->surface_monitor, app->surface_auto_capture, app->surface_auto_quiet);
+}
+
+/* 활성 트랙 bbox 를 GrayRect 배열로 모읍니다. 문·잔류물 자동 캡처와 잔류물 판정이 공유합니다. */
+static int collect_person_rects(const AppContext *app, GrayRect *out, int max) {
+    int n = 0;
+    size_t i;
+    for (i = 0; i < app->tracks.count && n < max; ++i) {
+        const Track *t = &app->tracks.items[i];
+        if (!t->active) continue;
+        out[n].x1 = t->box.x1; out[n].y1 = t->box.y1;
+        out[n].x2 = t->box.x2; out[n].y2 = t->box.y2;
+        n++;
+    }
+    return n;
+}
+
 /* 키오스크 ROI 를 rules 설정에 채웁니다. 미설정이면 roi_kiosk_set = 0 이 되어
  * 주문 상태 전환 자체가 비활성화됩니다(호출자가 로그로 알립니다). */
 static void apply_roi_kiosk(RulesConfig *rc, const Config *cfg) {
@@ -817,6 +880,16 @@ static void reload_config(AppContext *app) {
 
     apply_residue_config(app, &cfg);
     apply_slot_config(app, &cfg);
+    {
+        int prev_privacy = app->privacy_mode;
+        apply_security_config(app, &cfg);
+        apply_auto_capture_config(app, &cfg);
+        if (prev_privacy != app->privacy_mode) {
+            char msg[96];
+            snprintf(msg, sizeof(msg), "stream_privacy_mode=%d (config reload)", app->privacy_mode);
+            event_log_write(&app->event_log, LOG_INFO, "access", msg);
+        }
+    }
 
     /* Tier 2 바운딩 박스 표시 카테고리 — 체크박스로 토글 가능 */
     {
@@ -988,6 +1061,10 @@ static int process_frame(RgbFrame *frame, void *opaque,
         reload_residue_reference(app);
     }
 
+    /* 이번 프레임의 변화 픽셀 비율 — 아래 gray_analyze 블록에서 채우고 잔류물 자동 캡처가 읽습니다.
+       1.0 으로 시작하는 이유: 아직 못 계산했으면 "움직임 있음"으로 취급해 캡처를 미룹니다. */
+    double motion_ratio = 1.0;
+
     /* 첫 프레임에서 HUD FPS 계산 기준 시각을 기록합니다. */
     if (app->hud_start_time == 0.0)
         app->hud_start_time = now;
@@ -1104,6 +1181,8 @@ static int process_frame(RgbFrame *frame, void *opaque,
                      app->gray_ref_ready ? app->gray_ref : NULL,
                      8, app->cam_health.config.motion_threshold,
                      app->block_min_changed, &stats, want_map ? &map : NULL);
+        if (app->gray_ready && stats.pixels > 0)
+            motion_ratio = (double)stats.changed_motion / (double)stats.pixels;
 
         /* 카메라 장애 상태가 바뀔 때마다 이벤트를 남깁니다. */
         if (camera_health_update(&app->cam_health, &stats, &cam_state) > 0) {
@@ -1452,17 +1531,44 @@ static int process_frame(RgbFrame *frame, void *opaque,
         if (app->stream_port > 0)
             stream_set_door_enabled(1);
     }
+    /* 사람 bbox — 문 판정·문 자동 캡처·잔류물이 모두 씁니다. door_check 가 가림 여부를
+       판단해야 하므로 판정보다 먼저 수집합니다. */
+    GrayRect person_rects[64];
+    int pcount = collect_person_rects(app, person_rects, 64);
+    int cam_ok = app->cam_health.state == CAM_OK;
+
     if (app->door.enabled && (app->door.ref_closed_rgb || app->door.ref_open_rgb)) {
         int changed = 0;
         int state;
         started = platform_monotonic_seconds();
         state = door_check(&app->door,
                            frame->data, frame->width, frame->height,
-                           frame->stride, &changed);
+                           frame->stride, person_rects, pcount, &changed);
         app->door_seconds += platform_monotonic_seconds() - started;
-        /* 현재 문 상태를 stream 서버에 전달 — /door/state API로 실시간 조회 가능 */
+        /* 현재 문 상태를 stream 서버에 전달 — /status API로 실시간 조회 가능 */
         if (app->stream_port > 0)
             stream_set_door_state(state);
+
+        /* 밴드 측정 결과는 측정될 때 한 번만 남깁니다. 무효 판정은 "사람이 지나가는 동안
+           문 상태를 알 수 없다"는 실질적 기능 축소라 WARN 으로 올립니다. */
+        if (app->door.band_valid >= 0 && !app->door_band_logged) {
+            char msg[240];
+            if (app->door.band_valid)
+                snprintf(msg, sizeof(msg),
+                         "door_band_ok signal=%.1f ratio=%.2f — 사람이 문을 가려도 상단 %d%% 로 판정합니다",
+                         app->door.band_signal, app->door.band_ratio,
+                         (int)(app->door.band_ratio * 100.0f + 0.5f));
+            else
+                snprintf(msg, sizeof(msg),
+                         "door_band_no_signal signal=%.1f — ROI 상단 %d%% 가 열림·닫힘 간에 거의 같습니다"
+                         "(문틀 위 상인방을 포함했을 가능성). 사람이 가리는 동안 문 판정을 보류합니다",
+                         app->door.band_signal, (int)(app->door.band_ratio * 100.0f + 0.5f));
+            event_log_write(&app->event_log,
+                            app->door.band_valid ? LOG_INFO : LOG_WARN, "door", msg);
+            app->door_band_logged = 1;
+        } else if (app->door.band_valid < 0) {
+            app->door_band_logged = 0;
+        }
 
         if (state == 1) {
             /* 열린 상태 — 지속 시간 누적 */
@@ -1493,24 +1599,71 @@ static int process_frame(RgbFrame *frame, void *opaque,
         }
     }
 
+    /* 문 기준 자동 캡처. door_check 와 같은 이유로 그리기 전에, 실제 픽셀로 실행합니다.
+       저장에 성공하면 door.c 가 메모리에 바로 설치하므로 mtime 캐시만 맞춰 2초 뒤
+       reload_door_references 가 같은 파일을 다시 읽지 않게 합니다. */
+    if (app->door.enabled) {
+        int saved = door_auto_update(&app->door, frame->data, frame->width, frame->height,
+                                     frame->stride, person_rects, pcount, cam_ok, now,
+                                     app->door_closed_path[0] ? app->door_closed_path : NULL,
+                                     app->door_open_path[0]   ? app->door_open_path   : NULL);
+        if (saved > 0) {
+            char msg[720];
+            const char *path = saved == 1 ? app->door_closed_path : app->door_open_path;
+            snprintf(msg, sizeof(msg), "door_auto_capture saved=%s %dx%d path=%s",
+                     saved == 1 ? "closed" : "open", frame->width, frame->height, path);
+            event_log_write(&app->event_log, LOG_INFO, "door", msg);
+            if (saved == 1) app->door_closed_mtime = door_ref_mtime(app->door_closed_path);
+            else            app->door_open_mtime   = door_ref_mtime(app->door_open_path);
+        } else if (saved < 0) {
+            event_log_write(&app->event_log, LOG_WARN, "door",
+                            "door_auto_capture save failed — 디스크·경로 확인, quiet 시간 뒤 재시도");
+        }
+        /* 정체는 조용히 두면 "감지가 켜져 있는데 아무 일도 안 일어나는" 상태로 남습니다.
+           원인 후보를 메시지에 적어 스텝 디버깅 없이 바로 손보게 합니다. */
+        if (app->door.auto_stalled && !app->door_stall_logged) {
+            char msg[240];
+            snprintf(msg, sizeof(msg),
+                     "door_auto_capture stalled — %.0f초 동안 닫힘 기준을 잡지 못했습니다. "
+                     "ROI 안에 계속 움직임이나 사람이 잡히는 중입니다(유리문이면 유리 대신 문틀·손잡이만 포함하도록 ROI를 좁히세요)",
+                     app->door.auto_quiet_seconds * 6.0);
+            event_log_write(&app->event_log, LOG_WARN, "door", msg);
+            app->door_stall_logged = 1;
+        } else if (!app->door.auto_stalled) {
+            app->door_stall_logged = 0;
+        }
+    }
+
     /* 잔류물 감지: 기준 이미지 대비 지속적 픽셀 변화를 판정합니다.
      *
      * 그리기보다 먼저 실행하는 이유: door_check()와 같습니다 — 박스·HUD 픽셀이
      * 기준 이미지 비교에 섞이면 없던 변화가 생겨납니다 (설계 문서 "반드시 지킬 3가지" #1). */
     surface_process(app,frame,now);
-    if (!surface_monitor_enabled(app->surface_monitor) && app->residue.config.enabled && app->residue.baseline_ready) {
-        /* 사람 bbox 배열 구성 */
-        GrayRect person_rects[64];
-        int pcount = 0;
-        for (size_t pi = 0;
-             pi < app->tracks.count && pcount < 64; ++pi) {
-            if (!app->tracks.items[pi].active) continue;
-            person_rects[pcount].x1 = app->tracks.items[pi].box.x1;
-            person_rects[pcount].y1 = app->tracks.items[pi].box.y1;
-            person_rects[pcount].x2 = app->tracks.items[pi].box.x2;
-            person_rects[pcount].y2 = app->tracks.items[pi].box.y2;
-            pcount++;
+    /* 잔류물 기준 자동 캡처: 기준이 없고 사람 없음·화면 정지가 유지되면 현재 gray 를 기준으로.
+       gray 만 가진 residue 는 파일을 못 쓰므로 여기서 원본 RGB 를 같은 raw 형식으로 저장해
+       재시작 후에도 남고 대시보드 미리보기에도 보이게 합니다. */
+    if (!surface_monitor_enabled(app->surface_monitor) && app->residue.config.enabled &&
+        residue_auto_init(&app->residue, &app->gray, pcount, cam_ok, motion_ratio, now)) {
+        char msg[720];
+        int rc = app->residue_ref_path[0]
+               ? raw_rgb_save(app->residue_ref_path, frame->data, frame->width, frame->height, frame->stride)
+               : 0;
+        snprintf(msg, sizeof(msg), "residue_baseline_auto_captured %dx%d file=%s",
+                 app->residue.baseline_w, app->residue.baseline_h,
+                 rc == 0 ? (app->residue_ref_path[0] ? app->residue_ref_path : "(none)") : "SAVE FAILED");
+        event_log_write(&app->event_log, rc == 0 ? LOG_INFO : LOG_WARN, "residue", msg);
+        if (rc == 0 && app->residue_ref_path[0]) {
+            /* 방금 쓴 파일을 2초 뒤 reload_residue_reference 가 다시 읽어 기준을 리셋하지 않도록 */
+#if defined(_WIN32)
+            struct _stat rst;
+            app->residue_ref_mtime = (_stat(app->residue_ref_path, &rst) == 0) ? rst.st_mtime : 0;
+#else
+            struct stat rst;
+            app->residue_ref_mtime = (stat(app->residue_ref_path, &rst) == 0) ? (time_t)rst.st_mtime : 0;
+#endif
         }
+    }
+    if (!surface_monitor_enabled(app->surface_monitor) && app->residue.config.enabled && app->residue.baseline_ready) {
         /* 가구 bbox 배열 구성 (Tier 2 결과에서 chair/dining_table만 수집) */
         GrayRect furn_rects[16];
         int fcount = 0;
@@ -1586,6 +1739,61 @@ static int process_frame(RgbFrame *frame, void *opaque,
         app->perf_gate_l3_base  = app->gate_l3_hits;
         app->perf_inf_runs_base = app->inference_runs;
         app->perf_obj_runs_base = app->obj_inference_runs;
+    }
+
+    /* 대시보드 /status 집계 — 문·잔류물·자동 캡처 진행 상태. 값 몇 개 복사라 매 프레임 갱신합니다. */
+    if (app->stream_port > 0) {
+        StreamStatus st;
+        memset(&st, 0, sizeof(st));
+        st.door_enabled       = app->door.enabled;
+        st.door_state         = (app->door.enabled && (app->door.ref_closed_rgb || app->door.ref_open_rgb))
+                              ? app->door.last_state : -1;
+        st.door_auto_phase    = app->door.auto_phase;
+        st.door_auto_stalled  = app->door.auto_stalled;
+        st.door_roi_set       = app->door.roi_w > 0 && app->door.roi_h > 0;
+        st.door_band_valid    = app->door.band_valid;
+        st.door_band_active   = app->door.band_active;
+        st.door_band_signal   = app->door.band_signal;
+        st.door_closed_ready  = app->door.ref_closed_rgb != NULL;
+        st.door_open_ready    = app->door.ref_open_rgb != NULL;
+        st.door_auto_wait     = app->door.auto_wait_seconds;
+        st.residue_enabled    = app->residue.config.enabled;
+        st.residue_ready      = app->residue.baseline_ready;
+        st.residue_auto_phase = app->residue.auto_phase;
+        st.residue_auto_wait  = app->residue.auto_wait_seconds;
+        stream_set_status(&st);
+    }
+
+    /*
+     * 개인정보 보호 모드: 분석은 위에서 모두 끝났으므로 여기서 실제 픽셀을 지우고
+     * 그 위에 박스·스켈레톤·HUD 만 그립니다. stream_push / preview / 출력 파일이
+     * 전부 이 버퍼를 소비하므로 원본 영상은 프로세스 밖으로 한 바이트도 나가지 않습니다.
+     * 관찰자가 없어도 지우는 이유: stream_push 는 /snapshot 용으로 1fps 로 계속 복사합니다.
+     * 이 버퍼는 다음 프레임에 디코더가 새로 채우므로 지워도 이후 분석에 영향이 없습니다.
+     */
+    {
+        int privacy = app->stream_port > 0 && stream_privacy_active();
+        /* 스트림 서버 스레드가 쌓아 둔 접근 로그(잠금 해제·거부 등)를 여기서 회수합니다 — SQLite 준비문은
+           main 스레드 전용이라 클라이언트 스레드가 직접 쓸 수 없습니다. 아래 전환 로그보다 먼저 비우는
+           이유: "unlocked by X" 가 "privacy view inactive" 뒤에 찍히면 원인과 결과가 뒤집혀 보입니다.
+           stream_privacy_active() 가 타임아웃 재잠금을 큐에 넣는 경우도 같은 이유로 이 순서여야 합니다. */
+        if (app->stream_port > 0) {
+            int lvl;
+            char amsg[256];
+            while (stream_pop_access_log(&lvl, amsg, sizeof(amsg)))
+                event_log_write(&app->event_log, lvl ? LOG_WARN : LOG_INFO, "access", amsg);
+        }
+        if (privacy != app->privacy_was_active) {
+            event_log_write(&app->event_log, LOG_INFO, "access",
+                            privacy ? "privacy view active — 스트림에 감지 결과만 표시"
+                                    : "privacy view inactive — 스트림에 실제 영상 표시");
+            app->privacy_was_active = privacy;
+        }
+        if (privacy) {
+            int y;
+            for (y = 0; y < frame->height; y++)
+                memset(frame->data + (size_t)y * frame->stride, 0x24, (size_t)frame->width * 3);
+        }
     }
 
     /*
@@ -1960,6 +2168,8 @@ int main(int argc, char **argv) {
         app.door.roi_h          = (int)config_long (&cfg, "door_roi_h",         0,    0, 9999);
         apply_residue_config(&app, &cfg);
         apply_slot_config(&app, &cfg);
+        apply_security_config(&app, &cfg);
+        apply_auto_capture_config(&app, &cfg); /* surface_monitor 는 아직 없음 — 생성 직후 다시 넘깁니다 */
         if (!args.stream_port_set)
             app.stream_port = (int)config_long(&cfg, "stream_port", 0, 1024, 65535);
         config_destroy(&cfg);
@@ -2120,6 +2330,7 @@ int main(int argc, char **argv) {
         app.surface_monitor=surface_monitor_create(surface_dir);
         if(!app.surface_monitor||detection_list_init(&app.surface_detections,args.detector.max_candidates)!=0){
             fprintf(stderr,"surface monitor allocation failed\n");goto done;}
+        surface_monitor_set_auto_capture(app.surface_monitor, app.surface_auto_capture, app.surface_auto_quiet);
         surface_reload(&app,platform_monotonic_seconds());
     }
     if (app.stream_port > 0) {
@@ -2127,6 +2338,26 @@ int main(int argc, char **argv) {
             fprintf(stderr, "stream: failed to start on port %d\n", app.stream_port);
         /* 시작 즉시 door 활성 상태를 대시보드에 노출 — process_frame 첫 호출을 기다리지 않음 */
         stream_set_door_enabled(app.door.enabled);
+        {
+            char msg[200];
+            snprintf(msg, sizeof(msg),
+                     "stream port=%d privacy=%s pin=%s unlock_max=%ds — 서브넷 밖 거부, 변경은 %s",
+                     app.stream_port, app.privacy_mode ? "on" : "off",
+                     app.access_pin[0] ? "set" : "off", app.privacy_unlock_max,
+                     app.access_pin[0] ? "PIN 필요(localhost 제외)" : "같은 서브넷이면 허용(PIN 미설정)");
+            event_log_write(&app.event_log, LOG_INFO, "access", msg);
+        }
+    }
+    {
+        char msg[220];
+        snprintf(msg, sizeof(msg),
+                 "auto_capture door=%s(quiet=%.0fs hold=%.1fs l1>=%.0f band=%.0f%%) residue=%s(quiet=%.0fs) surface=%s(quiet=%.0fs)",
+                 app.door.auto_enabled ? "on" : "off", app.door.auto_quiet_seconds,
+                 app.door.auto_open_hold_seconds, app.door.auto_open_min_l1,
+                 app.door.band_ratio * 100.0f,
+                 app.residue.config.auto_enabled ? "on" : "off", app.residue.config.auto_quiet_seconds,
+                 app.surface_auto_capture ? "on" : "off", app.surface_auto_quiet);
+        event_log_write(&app.event_log, LOG_INFO, "startup", msg);
     }
 
     /* 문 여닫이 기준 이미지 로드 — 닫힘/열림 기준 각각 로드합니다.
@@ -2158,9 +2389,11 @@ int main(int argc, char **argv) {
             fprintf(stderr, "residue: clean reference loaded %dx%d\n",
                     app.residue.baseline_w, app.residue.baseline_h);
         else
-            event_log_write(&app.event_log, LOG_WARN, "residue",
-                            "residue_baseline_missing — 기준 이미지 없음. "
-                            "대시보드에서 청결 상태를 캡처하세요.");
+            event_log_write(&app.event_log,
+                            app.residue.config.auto_enabled ? LOG_INFO : LOG_WARN, "residue",
+                            app.residue.config.auto_enabled
+                              ? "residue_baseline_missing — 사람 없고 화면이 멈추면 자동으로 기준을 잡습니다"
+                              : "residue_baseline_missing — 기준 이미지 없음. 대시보드에서 청결 상태를 캡처하세요.");
         {
 #if defined(_WIN32)
             struct _stat rst;
