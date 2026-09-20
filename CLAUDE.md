@@ -110,6 +110,9 @@ media_process()          — FFmpeg 디코딩 루프, 프레임마다 FrameCallb
   └─ process_frame()     — 추론 주기 판단, 추적기 조율 (main.c)
        ├─ detector_run() — letterbox 전처리 → ONNX 추론 → NMS (detector_ort.c, postprocess.c)
        ├─ tracker_update/reset() — SAD 패치 추적 (tracker.c)
+       ├─ door_check() / door_auto_update() — 문 상태 판정 + 닫힘→열림 기준 자동 캡처 (door.c)
+       ├─ residue_auto_init() / residue_evaluate() — 잔류물 (residue.c; surface 모니터 활성 시 전체 건너뜀)
+       ├─ [privacy] stream_privacy_active() 이면 프레임을 단색으로 채움 — 이 아래로는 실제 픽셀이 없음
        └─ draw_detections() — RGB 버퍼 위에 직접 그리기 (draw.c)
 ```
 
@@ -129,6 +132,8 @@ media_process()          — FFmpeg 디코딩 루프, 프레임마다 FrameCallb
 | `include/media.h` | `RgbFrame`, `FrameCallback`, `MediaOptions`, `media_process()` |
 | `include/tracker.h` | `LightTracker` (opaque), `tracker_create/reset/update/destroy` |
 | `include/platform.h` | `platform_monotonic_seconds()`, `platform_process_cpu_seconds()` |
+| `include/netaccess.h` | `NetTier`, `NetAccess`, `netaccess_evaluate()` — 8080/8081 두 서버가 공유하는 접근 판정 |
+| `include/stream.h` | MJPEG 서버 + `StreamStatus`, privacy/PIN setter, 접근 로그 mailbox (`stream_pop_access_log`) |
 
 `Detector`와 `LightTracker`는 opaque 타입입니다. 내부 멤버는 각각 `detector_ort.c`와 `tracker.c`에만 노출됩니다.
 
@@ -151,3 +156,7 @@ YOLO 출력 텐서 형태가 고정(`output_value` 미리 생성)이면 재사�
 ### 보안 주의사항
 
 `--output`과 `--input` 경로에 대한 로컬 파일 검증이 없습니다. FFmpeg는 `rtmp://`, `rtsp://`, `http://` 등 네트워크 URL을 투명하게 처리하므로, URL을 넘기면 영상이 외부로 전송될 수 있습니다. 이 소프트웨어는 실제 업체 기기에 설치되므로 경로 검증 로직 추가가 필요합니다.
+
+**네트워크 접근 제어 (`src/netaccess.c`, 8080/8081 공용)**: 두 HTTP 서버는 `INADDR_ANY`에 바인드합니다. 요청은 `localhost`(무제한, 개발 환경) / `lan`(연결된 인터페이스와 같은 서브넷 — 읽기 허용, POST는 `access_pin` 필요; 사설 대역 검사가 아니라 넷마스크 기준) / `denied`(403)로 판정되며, 허용된 변경과 거부는 이벤트 로그에 `module=access`로 남습니다(8081은 mailbox → main 스레드, 8080은 최신 `logs\*.db`에 직접 INSERT). PIN은 IP당 5회 실패 시 10분 잠금. `stream_privacy_mode=1`(기본)이면 `main.c`가 그리기 직전에 프레임을 단색으로 채워 스트림·스냅샷·출력 파일에는 박스·스켈레톤만 나가고, 저장된 기준 사진(`/door/preview`, `/surface/reference`)은 403, `door/save`·`residue/save`는 409로 막힙니다. 설정 작업은 `POST /privacy/unlock?seconds=N`으로 시간 제한 해제하며 타임아웃은 서버가 강제합니다. 전부 평문 HTTP이므로 같은 LAN의 스니핑은 막지 못합니다 — 매장 Wi-Fi를 손님용과 분리하는 것이 실질적 방어선입니다.
+
+**기준 이미지 자동 캡처**: 문(`door_auto_capture`)·잔류물(`residue_auto_capture`)·표면(`surface_auto_capture`)은 기준이 없을 때 사람 없음·화면 정지 조건이 일정 시간 유지되면 스스로 기준을 잡습니다(기본 on). 진행 상태는 `GET /status`와 대시보드 설정 탭에 표시됩니다. 문 자동 캡처는 "아무도 없을 때의 문 = 닫힘"을 전제하므로 문을 열어 두는 매장에서는 꺼야 합니다.
