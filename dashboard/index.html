@@ -1,363 +1,736 @@
 <!DOCTYPE html>
-<html lang="ko">
+<html lang="ko" data-theme="light" data-mode="easy">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>HUNIK 관리 대시보드</title>
+<title>무인 매장 모니터링 시스템</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700&display=swap" rel="stylesheet">
 <style>
-  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
-  :root {
-    --bg:      #0f1117;
-    --surface: #1a1d27;
-    --border:  #2a2d3a;
-    --text:    #e2e4ec;
-    --muted:   #6b7280;
-    --green:   #22c55e;
-    --yellow:  #eab308;
-    --orange:  #f97316;
-    --red:     #ef4444;
-    --blue:    #3b82f6;
-  }
+/* ── 테마 변수 (라이트 기본) ── */
+:root {
+  --bg:           #e8ecf1;
+  --surface:      #e8ecf1;
+  --text:         #2d3748;
+  --muted:        #718096;
+  --sh-light:     #ffffff;
+  --sh-dark:      #c5cad2;
+  --green:        #34c78a;
+  --yellow:       #eab308;
+  --orange:       #f97316;
+  --red:          #e8445a;
+  --accent:       #4f8ef7;
+  --accent-glow:  rgba(79,142,247,.25);
+  --border:       rgba(0,0,0,.07);
+}
+[data-theme="dark"] {
+  --bg:           #2d3142;
+  --surface:      #2d3142;
+  --text:         #e0e4f0;
+  --muted:        #9aa5b4;
+  --sh-light:     #3d4260;
+  --sh-dark:      #1d2030;
+  --green:        #51d99a;
+  --yellow:       #f5c842;
+  --orange:       #fb923c;
+  --red:          #ff6b7a;
+  --accent:       #6fa8ff;
+  --accent-glow:  rgba(111,168,255,.25);
+  --border:       rgba(255,255,255,.06);
+}
 
-  body {
-    background: var(--bg);
-    color: var(--text);
-    font-family: 'Segoe UI', system-ui, sans-serif;
-    font-size: 14px;
-    min-height: 100vh;
-    display: flex;
-    flex-direction: column;
-  }
+/* ── 뉴모피즘 공통 ── */
+.neu-raised {
+  background: var(--bg);
+  box-shadow: -5px -5px 12px var(--sh-light), 5px 5px 12px var(--sh-dark);
+  border-radius: 14px;
+}
+.neu-inset {
+  background: var(--bg);
+  box-shadow: inset -3px -3px 7px var(--sh-light), inset 3px 3px 7px var(--sh-dark);
+  border-radius: 10px;
+}
+.neu-btn {
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'Noto Sans KR', sans-serif;
+  font-size: 13px;
+  font-weight: 500;
+  border: none;
+  border-radius: 10px;
+  padding: 8px 16px;
+  cursor: pointer;
+  box-shadow: -3px -3px 8px var(--sh-light), 3px 3px 8px var(--sh-dark);
+  transition: box-shadow .15s, color .15s;
+  white-space: nowrap;
+}
+.neu-btn:hover { color: var(--accent); }
+.neu-btn:active, .neu-btn.pressed {
+  box-shadow: inset -2px -2px 5px var(--sh-light), inset 2px 2px 5px var(--sh-dark);
+}
+.neu-btn.primary {
+  background: var(--accent);
+  color: #fff;
+  box-shadow: -3px -3px 8px var(--sh-light), 3px 3px 8px var(--sh-dark), 0 0 12px var(--accent-glow);
+}
+.neu-btn.primary:hover { opacity: .9; }
+.neu-btn.sm { padding: 5px 10px; font-size: 12px; border-radius: 8px; }
 
-  /* ── 헤더 ── */
-  header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 14px 20px;
-    background: var(--surface);
-    gap: 12px;
-  }
-  header h1 { font-size: 16px; font-weight: 600; letter-spacing: .02em; }
-  .header-right { display: flex; align-items: center; gap: 16px; }
+/* ── 입력 (눌린 뉴모피즘) ── */
+.neu-input, input[type="number"].neu-input, input[type="range"].neu-input,
+.setting-input {
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'Noto Sans KR', sans-serif;
+  font-size: 13px;
+  border: none;
+  border-radius: 8px;
+  padding: 7px 10px;
+  width: 100%;
+  box-shadow: inset -2px -2px 5px var(--sh-light), inset 2px 2px 5px var(--sh-dark);
+  outline: none;
+  transition: box-shadow .15s;
+}
+.setting-input:focus, .neu-input:focus {
+  box-shadow: inset -1px -1px 3px var(--sh-light), inset 1px 1px 3px var(--sh-dark),
+              0 0 0 2px var(--accent);
+}
+input[type="range"].setting-input {
+  -webkit-appearance: none; height: 6px; padding: 0; cursor: pointer;
+}
+input[type="range"].setting-input::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 18px; height: 18px; border-radius: 50%;
+  background: var(--accent);
+  box-shadow: -1px -1px 3px var(--sh-light), 1px 1px 3px var(--sh-dark);
+  cursor: pointer;
+}
+select.neu-select, select {
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'Noto Sans KR', sans-serif;
+  font-size: 12px;
+  border: none;
+  border-radius: 8px;
+  padding: 6px 10px;
+  cursor: pointer;
+  box-shadow: inset -2px -2px 5px var(--sh-light), inset 2px 2px 5px var(--sh-dark);
+  outline: none;
+  max-width: 240px;
+}
 
-  .cam-badge { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 500; }
-  .cam-dot {
-    width: 8px; height: 8px; border-radius: 50%;
-    background: var(--green); box-shadow: 0 0 6px var(--green);
-  }
-  .cam-dot.warn  { background: var(--orange); box-shadow: 0 0 6px var(--orange); }
-  .cam-dot.error { background: var(--red);    box-shadow: 0 0 6px var(--red);    }
+/* ── 토글 스위치 ── */
+.toggle { position: relative; display: inline-block; width: 48px; height: 26px; flex-shrink: 0; }
+.toggle input { opacity: 0; width: 0; height: 0; }
+.toggle-slider {
+  position: absolute; cursor: pointer; inset: 0; border-radius: 26px;
+  background: var(--bg);
+  box-shadow: inset -2px -2px 5px var(--sh-light), inset 2px 2px 5px var(--sh-dark);
+  transition: .2s;
+}
+.toggle-slider::before {
+  content: ""; position: absolute;
+  width: 20px; height: 20px; left: 3px; top: 3px;
+  border-radius: 50%;
+  background: var(--muted);
+  box-shadow: -1px -1px 3px var(--sh-light), 1px 1px 3px var(--sh-dark);
+  transition: .2s;
+}
+.toggle input:checked + .toggle-slider::before {
+  transform: translateX(22px);
+  background: var(--accent);
+  box-shadow: 0 0 6px var(--accent-glow);
+}
 
-  select {
-    background: var(--bg);
-    color: var(--text); padding: 4px 8px; border-radius: 6px; font-size: 12px; cursor: pointer;
-  }
+/* ── 기본 레이아웃 ── */
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'Noto Sans KR', sans-serif;
+  font-size: 14px;
+  min-height: 100vh;
+  transition: background .3s, color .3s;
+}
 
-  /* ── 메인 레이아웃 ── */
-  main {
-    display: grid;
-    grid-template-columns: 220px 1fr;
-    grid-template-rows: auto 1fr;
-    flex: 1;
-    overflow: hidden;
-  }
+/* ── 헤더 ── */
+header {
+  position: sticky; top: 0; z-index: 100;
+  display: flex; align-items: center;
+  padding: 0 24px;
+  height: 64px;
+  background: var(--bg);
+  box-shadow: 0 4px 14px var(--sh-dark), 0 1px 3px var(--sh-light);
+  gap: 16px;
+}
+.brand {
+  display: flex; align-items: center; gap: 12px; flex-shrink: 0;
+}
+.logo-hex {
+  width: 36px; height: 40px; flex-shrink: 0;
+}
+.brand-text { line-height: 1.2; }
+.brand-ko {
+  font-size: 15px; font-weight: 700; color: var(--text);
+  letter-spacing: -.01em;
+}
+.brand-en {
+  font-size: 9px; font-weight: 500; color: var(--muted);
+  letter-spacing: .12em;
+}
+.header-spacer { flex: 1; }
+.header-right {
+  display: flex; align-items: center; gap: 12px; flex-shrink: 0;
+}
+.cam-badge {
+  display: flex; align-items: center; gap: 7px;
+  font-size: 12px; font-weight: 500; color: var(--muted);
+}
+.cam-dot {
+  width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0;
+  background: var(--green); box-shadow: 0 0 6px var(--green);
+  transition: background .3s, box-shadow .3s;
+}
+.cam-dot.warn  { background: var(--orange); box-shadow: 0 0 6px var(--orange); }
+.cam-dot.error { background: var(--red);    box-shadow: 0 0 6px var(--red); }
+.header-sep { width: 1px; height: 24px; background: var(--border); }
+.theme-btn {
+  background: none; border: none; cursor: pointer;
+  font-size: 18px; padding: 4px 6px; border-radius: 8px;
+  box-shadow: -2px -2px 5px var(--sh-light), 2px 2px 5px var(--sh-dark);
+  line-height: 1; color: var(--text);
+  transition: box-shadow .15s;
+}
+.theme-btn:active {
+  box-shadow: inset -1px -1px 3px var(--sh-light), inset 1px 1px 3px var(--sh-dark);
+}
+.mode-toggle {
+  display: flex;
+  box-shadow: inset -2px -2px 5px var(--sh-light), inset 2px 2px 5px var(--sh-dark);
+  border-radius: 10px;
+  overflow: hidden;
+}
+.mode-btn {
+  background: transparent; border: none; color: var(--muted);
+  font-family: 'Noto Sans KR', sans-serif;
+  font-size: 12px; font-weight: 700;
+  padding: 6px 14px; cursor: pointer;
+  transition: color .15s, background .15s;
+}
+.mode-btn.active {
+  background: var(--accent); color: #fff;
+  box-shadow: none;
+}
 
-  /* ── 카메라 프레임 ── */
-  .camera-panel {
-    grid-column: 2;
-    background: #000;
-    display: flex; align-items: center; justify-content: center;
-    height: 420px; position: relative; overflow: hidden;
-  }
-  .camera-panel img { max-height: 100%; max-width: 100%; object-fit: contain; display: block; }
-  .camera-offline {
-    color: var(--muted); font-size: 12px; text-align: center;
-    display: flex; flex-direction: column; gap: 6px; align-items: center;
-  }
-  .stream-port-form {
-    display: flex; gap: 6px; align-items: center;
-    position: absolute; top: 8px; right: 8px;
-  }
-  .stream-port-form input {
-    background: rgba(0,0,0,.6);
-    color: var(--text); padding: 3px 6px; border-radius: 4px;
-    font-size: 11px; width: 70px; text-align: center;
-  }
-  .btn {
-    background: var(--surface);
-    color: var(--text); padding: 3px 8px; border-radius: 4px;
-    font-size: 11px; cursor: pointer;
-  }
-  .btn:hover { background: var(--border); }
-  .btn.primary { background: var(--blue); border-color: var(--blue); color: #fff; }
-  .btn.primary:hover { opacity: .85; }
-  .btn.success { background: var(--green); border-color: var(--green); color: #000; }
-  .btn.success:hover { opacity: .85; }
+/* ── 모드 패널 ── */
+.mode-panel { max-width: 960px; margin: 0 auto; padding: 20px 16px 32px; }
 
-  /* ── 사이드바 ── */
-  aside {
-    grid-row: 1 / 3;
-    background: var(--surface);
-    padding: 16px; display: flex; flex-direction: column; gap: 10px; overflow-y: auto;
-  }
-  aside h2 {
-    font-size: 11px; font-weight: 600; text-transform: uppercase;
-    letter-spacing: .08em; color: var(--muted); margin-bottom: 4px;
-  }
-  .stat-card {
-    background: var(--bg);
-    border-radius: 8px; padding: 12px 14px;
-    display: flex; align-items: center; justify-content: space-between; gap: 8px;
-  }
-  .stat-label { font-size: 12px; color: var(--muted); }
-  .stat-value { font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; }
-  .stat-value.green  { color: var(--green); }
-  .stat-value.yellow { color: var(--yellow); }
-  .stat-value.orange { color: var(--orange); }
-  .stat-value.red    { color: var(--red); }
-  .stat-value.blue   { color: var(--blue); }
-  .divider { border: none; margin: 4px 0; }
+/* ── 간단 모드: 카메라 ── */
+.easy-stream {
+  margin-bottom: 20px;
+}
+.camera-panel {
+  background: #000;
+  border-radius: 16px;
+  overflow: hidden;
+  position: relative;
+  min-height: 240px;
+  display: flex; align-items: center; justify-content: center;
+  box-shadow: -6px -6px 14px var(--sh-light), 6px 6px 14px var(--sh-dark);
+}
+.camera-panel img { max-width: 100%; max-height: 420px; display: block; object-fit: contain; }
+.camera-offline {
+  color: #888; font-size: 13px; text-align: center;
+  display: flex; flex-direction: column; gap: 10px; align-items: center;
+  padding: 32px;
+}
+.cam-reconnect {
+  background: rgba(255,255,255,.1); border: 1px solid rgba(255,255,255,.2);
+  color: #ccc; font-size: 12px; font-family: 'Noto Sans KR', sans-serif;
+  padding: 5px 14px; border-radius: 8px; cursor: pointer;
+}
+.cam-reconnect:hover { background: rgba(255,255,255,.2); }
 
-  /* ── 탭 영역 ── */
-  .feed-area { display: flex; flex-direction: column; overflow: hidden; }
-  .tab-bar {
-    display: flex; align-items: center; gap: 0;
-    background: var(--surface); padding: 0 12px;
-  }
-  .tab-btn {
-    background: none; border: none; color: var(--muted);
-    padding: 10px 14px; font-size: 13px; font-weight: 600; cursor: pointer;
-    border-radius: 6px;
-  }
-  .tab-btn.active { color: var(--text); background: rgba(59,130,246,0.1); }
-  .tab-btn:hover:not(.active) { color: var(--text); }
-  .tab-extra { margin-left: auto; display: flex; align-items: center; gap: 8px; padding: 6px 0; }
+/* ── 간단 모드: 상태 카드 그리드 ── */
+.status-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 14px;
+  margin-bottom: 20px;
+}
+.status-card {
+  background: var(--bg);
+  box-shadow: -5px -5px 12px var(--sh-light), 5px 5px 12px var(--sh-dark);
+  border-radius: 16px;
+  padding: 20px 14px;
+  display: flex; flex-direction: column; align-items: center;
+  gap: 6px; text-align: center;
+  transition: box-shadow .3s;
+  cursor: default;
+}
+.card-icon { font-size: 28px; line-height: 1; }
+.card-name { font-size: 12px; font-weight: 700; color: var(--muted); }
+.card-status-text { font-size: 13px; font-weight: 500; color: var(--green); }
+.status-card[data-state="warn"]   .card-status-text { color: var(--orange); }
+.status-card[data-state="danger"] .card-status-text { color: var(--red); }
+.status-card[data-state="warn"] {
+  box-shadow: -4px -4px 10px var(--sh-light), 4px 4px 10px var(--sh-dark),
+              inset 0 0 0 2px rgba(249,115,22,.25);
+}
+.status-card[data-state="danger"] {
+  box-shadow: -4px -4px 10px var(--sh-light), 4px 4px 10px var(--sh-dark),
+              inset 0 0 0 2px rgba(232,68,90,.35);
+}
 
-  .tab-panel { display: none; flex: 1; overflow: hidden; flex-direction: column; }
-  .tab-panel.active { display: flex; }
+/* ── 간단 모드: 최근 알림 ── */
+.alerts-section {
+  padding: 16px 18px;
+}
+.alerts-header {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 12px;
+}
+.alerts-header h2 { font-size: 14px; font-weight: 700; }
+.alerts-clear { font-size: 11px; color: var(--muted); cursor: pointer; }
+.alerts-clear:hover { color: var(--accent); }
+.alert-item {
+  display: flex; align-items: flex-start; gap: 10px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+  animation: slide-in .2s ease;
+}
+.alert-item:last-child { border-bottom: none; }
+.alert-dot {
+  width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; margin-top: 4px;
+}
+.alert-dot.warn   { background: var(--orange); }
+.alert-dot.danger { background: var(--red); }
+.alert-dot.info   { background: var(--accent); }
+.alert-msg { font-size: 13px; flex: 1; }
+.alert-ts  { font-size: 11px; color: var(--muted); white-space: nowrap; }
+.alert-empty { font-size: 13px; color: var(--muted); padding: 16px 0; text-align: center; }
 
-  /* ── 이벤트 피드 ── */
-  #event-list {
-    flex: 1; overflow-y: auto; padding: 8px 12px;
-    display: flex; flex-direction: column; gap: 4px;
-  }
-  .event-row {
-    display: grid;
-    grid-template-columns: 140px 50px 80px 1fr;
-    align-items: center; gap: 8px; padding: 7px 10px;
-    border-radius: 6px;
-    font-size: 12px; font-variant-numeric: tabular-nums;
-    animation: slide-in .2s ease;
-  }
-  @keyframes slide-in { from { opacity:0; transform:translateY(-4px); } to { opacity:1; transform:translateY(0); } }
-  .event-row:hover { background: var(--surface); }
-  .event-ts   { color: var(--muted); }
-  .event-level {
-    font-size: 10px; font-weight: 700; padding: 2px 6px;
-    border-radius: 4px; text-align: center; width: fit-content;
-  }
-  .level-INFO  { background: #1e3a5f; color: var(--blue); }
-  .level-WARN  { background: #3d2a00; color: var(--orange); }
-  .level-ERROR { background: #3d0000; color: var(--red); }
-  .event-module { color: var(--muted); font-size: 11px; }
-  .event-msg    { color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* ── 고급 모드 탭 바 ── */
+.adv-tab-bar {
+  display: flex; gap: 4px;
+  margin-bottom: 16px;
+  background: var(--bg);
+  box-shadow: inset -2px -2px 6px var(--sh-light), inset 2px 2px 6px var(--sh-dark);
+  border-radius: 12px;
+  padding: 4px;
+}
+.adv-tab {
+  flex: 1; background: transparent; border: none;
+  font-family: 'Noto Sans KR', sans-serif;
+  font-size: 13px; font-weight: 700; color: var(--muted);
+  padding: 9px 0; border-radius: 9px; cursor: pointer;
+  transition: background .2s, color .2s, box-shadow .2s;
+}
+.adv-tab.active {
+  background: var(--accent); color: #fff;
+  box-shadow: -2px -2px 6px var(--sh-light), 2px 2px 6px var(--sh-dark);
+}
+.adv-tab .tab-badge {
+  display: inline-block; margin-left: 5px;
+  background: var(--red); color: #fff;
+  font-size: 10px; font-weight: 700;
+  padding: 1px 5px; border-radius: 8px; vertical-align: middle;
+}
+.adv-panel { display: none; }
+.adv-panel.active { display: block; }
 
-  /* ── 설정 탭 ── */
-  #settings-panel {
-    flex: 1; overflow-y: auto; padding: 16px 20px;
-    display: flex; flex-direction: column; gap: 20px;
-  }
-  .settings-section { display: flex; flex-direction: column; gap: 10px; }
-  .settings-section h3 {
-    font-size: 11px; font-weight: 600; text-transform: uppercase;
-    letter-spacing: .08em; color: var(--muted); padding-bottom: 6px;
-  }
-  .setting-row {
-    display: grid; grid-template-columns: 200px 1fr auto;
-    align-items: center; gap: 12px;
-  }
-  .setting-label { font-size: 13px; }
-  .setting-desc  { font-size: 11px; color: var(--muted); margin-top: 2px; }
-  .setting-input {
-    background: var(--bg);
-    color: var(--text); padding: 5px 8px; border-radius: 6px;
-    font-size: 13px; width: 100%;
-  }
-  .setting-input:focus { outline: none; }
-  .setting-value-display { font-size: 12px; color: var(--muted); min-width: 50px; text-align: right; }
+/* ── 고급: 모니터링 탭 ── */
+.stats-row {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 10px;
+  margin-bottom: 16px;
+}
+.stat-card {
+  background: var(--bg);
+  box-shadow: -4px -4px 10px var(--sh-light), 4px 4px 10px var(--sh-dark);
+  border-radius: 12px;
+  padding: 12px 14px;
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+}
+.stat-label  { font-size: 11px; color: var(--muted); font-weight: 500; }
+.stat-sublabel { font-size: 10px; color: var(--muted); margin-top: 2px; }
+.stat-value  { font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; flex-shrink: 0; }
+.stat-value.green  { color: var(--green); }
+.stat-value.yellow { color: var(--yellow); }
+.stat-value.orange { color: var(--orange); }
+.stat-value.red    { color: var(--red); }
+.stat-value.blue   { color: var(--accent); }
 
-  /* 토글 스위치 */
-  .toggle { position: relative; display: inline-block; width: 40px; height: 22px; }
-  .toggle input { opacity: 0; width: 0; height: 0; }
-  .toggle-slider {
-    position: absolute; cursor: pointer; inset: 0;
-    background: var(--border); border-radius: 22px; transition: .2s;
-  }
-  .toggle-slider::before {
-    content: ""; position: absolute;
-    width: 16px; height: 16px; left: 3px; top: 3px;
-    background: white; border-radius: 50%; transition: .2s;
-  }
-  .toggle input:checked + .toggle-slider { background: var(--blue); }
-  .toggle input:checked + .toggle-slider::before { transform: translateX(18px); }
+.door-pill {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 4px 12px; border-radius: 20px;
+  font-size: 12px; font-weight: 700;
+  background: var(--bg);
+  box-shadow: inset -1px -1px 3px var(--sh-light), inset 1px 1px 3px var(--sh-dark);
+}
+.door-pill.open   { color: var(--orange); }
+.door-pill.closed { color: var(--green); }
+.door-pill.unknown { color: var(--muted); }
 
-  /* 문 여닫이 섹션 */
-  .door-preview-area {
-    display: flex; gap: 12px; align-items: flex-start; flex-wrap: wrap;
-  }
-  .door-preview-img {
-    width: 200px; height: 120px; object-fit: contain;
-    background: #000; border-radius: 6px;
-    display: block;
-  }
-  .door-preview-placeholder {
-    width: 200px; height: 120px;
-    background: var(--bg);
-    border-radius: 6px; display: flex; align-items: center; justify-content: center;
-    color: var(--muted); font-size: 12px;
-  }
-  .door-actions { display: flex; flex-direction: column; gap: 8px; }
-  .door-status { font-size: 12px; color: var(--muted); }
+/* ── 고급: 표면 요약 ── */
+.surface-summary {
+  background: var(--bg);
+  box-shadow: -4px -4px 10px var(--sh-light), 4px 4px 10px var(--sh-dark);
+  border-radius: 12px;
+  padding: 14px 18px;
+  margin-bottom: 16px;
+}
+.surface-summary h2 { font-size: 14px; font-weight: 700; margin-bottom: 6px; }
+.surface-summary a  { color: var(--accent); font-size: 12px; text-decoration: none; margin-left: 10px; }
+#surface-main-health { font-size: 13px; color: var(--muted); margin-bottom: 4px; }
+#surface-main-message { font-size: 13px; color: var(--yellow); white-space: pre-wrap; }
+#surface-main-cards {
+  max-height: 220px; overflow: auto;
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 8px;
+  margin-top: 8px;
+}
+.surface-main-card {
+  padding: 10px 12px; border-radius: 8px;
+  border: 1px solid var(--border);
+  font-size: 12px; background: var(--bg);
+}
+.surface-verdict { font-size: 18px; font-weight: 800; }
+.surface-main-card[data-state="ok"]   .surface-verdict { color: var(--green); }
+.surface-main-card[data-state="alert"].surface-verdict { color: var(--orange); }
+.surface-main-card[data-state="wait"] .surface-verdict { color: var(--muted); }
+.surface-main-card p { margin: 3px 0; }
 
-  .save-bar {
-    padding: 12px 20px;
-    background: var(--surface); display: flex; align-items: center;
-    justify-content: flex-end; gap: 10px;
-  }
-  .save-status { font-size: 12px; color: var(--muted); }
+/* ── 고급: 이벤트 피드 ── */
+.feed-header {
+  display: flex; align-items: center; gap: 10px;
+  margin-bottom: 8px; flex-wrap: wrap;
+}
+.feed-header h3 { font-size: 13px; font-weight: 700; }
+.badge-count {
+  background: var(--red); color: #fff;
+  font-size: 10px; font-weight: 700;
+  padding: 2px 7px; border-radius: 10px; min-width: 22px; text-align: center;
+}
+.feed-controls-right { margin-left: auto; display: flex; align-items: center; gap: 10px; }
+#event-list {
+  background: var(--bg);
+  box-shadow: inset -3px -3px 8px var(--sh-light), inset 3px 3px 8px var(--sh-dark);
+  border-radius: 12px;
+  padding: 8px;
+  height: 320px;
+  overflow-y: auto;
+  display: flex; flex-direction: column; gap: 3px;
+}
+.event-row {
+  display: grid;
+  grid-template-columns: 150px 50px 80px 1fr;
+  align-items: center; gap: 8px;
+  padding: 6px 10px; border-radius: 8px;
+  font-size: 12px; font-variant-numeric: tabular-nums;
+  animation: slide-in .2s ease;
+  transition: background .1s;
+}
+.event-row:hover { background: var(--border); }
+@keyframes slide-in { from { opacity:0; transform:translateY(-4px); } to { opacity:1; } }
+.event-ts     { color: var(--muted); }
+.event-level  { font-size: 10px; font-weight: 700; padding: 2px 5px; border-radius: 4px; text-align: center; }
+.level-INFO   { background: rgba(79,142,247,.15); color: var(--accent); }
+.level-WARN   { background: rgba(249,115,22,.15);  color: var(--orange); }
+.level-ERROR  { background: rgba(232,68,90,.15);   color: var(--red); }
+.event-module { color: var(--muted); font-size: 11px; }
+.event-msg    { color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.empty-state  { flex: 1; display: flex; align-items: center; justify-content: center; color: var(--muted); font-size: 13px; flex-direction: column; gap: 8px; }
 
-  /* ── 상태 표시줄 ── */
-  footer {
-    padding: 6px 16px; background: var(--surface);
-    font-size: 11px; color: var(--muted);
-    display: flex; gap: 16px; align-items: center;
-  }
-  .conn-dot { width: 6px; height: 6px; border-radius: 50%; display: inline-block; margin-right: 4px; background: var(--muted); }
-  .conn-dot.connected { background: var(--green); }
+/* ── 고급: 설정 탭 아코디언 ── */
+.settings-wrap {
+  display: flex; flex-direction: column; gap: 10px;
+  padding-bottom: 16px;
+}
+details.neu-accordion {
+  background: var(--bg);
+  box-shadow: -4px -4px 10px var(--sh-light), 4px 4px 10px var(--sh-dark);
+  border-radius: 12px; overflow: hidden;
+}
+details.neu-accordion > summary {
+  padding: 14px 18px;
+  font-weight: 700; font-size: 12px;
+  text-transform: uppercase; letter-spacing: .08em;
+  color: var(--muted);
+  cursor: pointer; user-select: none; list-style: none;
+  display: flex; align-items: center; justify-content: space-between;
+}
+details.neu-accordion > summary::-webkit-details-marker { display: none; }
+details.neu-accordion > summary::after {
+  content: '▼'; font-size: 9px; transition: transform .2s;
+}
+details.neu-accordion[open] > summary::after { transform: rotate(180deg); }
+details.neu-accordion[open] > summary { color: var(--accent); }
+.accordion-body {
+  padding: 14px 18px 18px;
+  display: flex; flex-direction: column; gap: 12px;
+  border-top: 1px solid var(--border);
+}
+.setting-row {
+  display: grid; grid-template-columns: 220px 1fr auto;
+  align-items: center; gap: 12px;
+}
+.setting-label { font-size: 13px; font-weight: 500; }
+.setting-desc  { font-size: 11px; color: var(--muted); margin-top: 2px; }
+.setting-value-display { font-size: 12px; color: var(--muted); min-width: 48px; text-align: right; }
+.save-bar {
+  position: sticky; bottom: 0;
+  padding: 14px 18px;
+  background: var(--bg);
+  box-shadow: 0 -4px 12px var(--sh-dark);
+  display: flex; align-items: center; justify-content: flex-end; gap: 10px;
+  margin-top: 8px; border-radius: 0 0 12px 12px;
+}
+.save-status { font-size: 12px; color: var(--muted); flex: 1; }
 
-  .empty-state { flex: 1; display: flex; align-items: center; justify-content: center; color: var(--muted); font-size: 13px; flex-direction: column; gap: 8px; }
+/* ── 고급: 로그 탭 ── */
+.log-toolbar {
+  display: flex; align-items: center; gap: 10px;
+  flex-wrap: wrap;
+  padding: 12px;
+  background: var(--bg);
+  box-shadow: -4px -4px 10px var(--sh-light), 4px 4px 10px var(--sh-dark);
+  border-radius: 12px;
+  margin-bottom: 12px;
+}
+.level-filter-group { display: flex; gap: 8px; align-items: center; }
+.level-filter-group label {
+  display: flex; align-items: center; gap: 4px;
+  font-size: 12px; font-weight: 500; cursor: pointer;
+}
+.conn-bar {
+  display: flex; align-items: center; gap: 10px;
+  font-size: 11px; color: var(--muted);
+  padding: 6px 12px;
+}
+.conn-dot {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: var(--muted); display: inline-block;
+  transition: background .3s;
+}
+.conn-dot.connected { background: var(--green); }
 
-  ::-webkit-scrollbar { width: 6px; }
-  ::-webkit-scrollbar-track { background: transparent; }
-  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+/* 문 캡처 */
+.door-preview-area {
+  display: flex; gap: 12px; align-items: flex-start; flex-wrap: wrap;
+}
+.door-preview-img {
+  width: 180px; height: 110px; object-fit: contain;
+  border-radius: 8px; display: block;
+  box-shadow: inset -2px -2px 5px var(--sh-light), inset 2px 2px 5px var(--sh-dark);
+}
+.door-preview-placeholder {
+  width: 180px; height: 110px; border-radius: 8px;
+  box-shadow: inset -2px -2px 5px var(--sh-light), inset 2px 2px 5px var(--sh-dark);
+  display: flex; align-items: center; justify-content: center;
+  color: var(--muted); font-size: 12px;
+}
+.door-actions { display: flex; flex-direction: column; gap: 8px; }
+.door-status { font-size: 11px; color: var(--muted); line-height: 1.5; }
+#roi-picker-wrap { display:none; position:relative; max-width:460px; border-radius:10px; overflow:hidden; }
+#roi-canvas { display:block; width:100%; cursor:crosshair; }
+.roi-actions { padding: 8px; background: var(--bg); display: flex; gap: 8px; align-items: center; }
+#roi-summary { margin-top: 8px; padding: 8px 12px; border-radius: 8px; font-size: 12px; background: var(--border); }
+.roi-hint { font-size: 11px; color: var(--muted); }
 
-  .badge-count { background: var(--blue); color: #fff; font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 10px; min-width: 20px; text-align: center; }
-  .surface-summary{padding:12px 16px;border-bottom:1px solid var(--border);background:var(--surface)}
-  .surface-summary h2{font-size:15px;margin:0 0 8px}.surface-summary a{color:#67d7c4}
-  #surface-main-cards{max-height:300px;overflow:auto;display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px}.surface-main-card{padding:12px;border:1px solid var(--border);border-radius:8px;font-size:13px}
-  .surface-verdict{font-size:22px;font-weight:800}.surface-main-card[data-state="ok"] .surface-verdict{color:#67d7a0}.surface-main-card[data-state="alert"] .surface-verdict{color:#ffb074}.surface-main-card[data-state="wait"] .surface-verdict{color:#d4d9e2}
-  .surface-main-card p{margin:4px 0}.surface-main-card progress{width:130px;margin-right:8px}
-  #surface-main-message{font-size:13px;color:#ffd47e;white-space:pre-wrap}
+/* ── 스크롤바 ── */
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--sh-dark); border-radius: 3px; }
+
+/* ── 반응형 ── */
+@media (max-width: 600px) {
+  .status-grid { grid-template-columns: repeat(2, 1fr); }
+  .stats-row   { grid-template-columns: repeat(2, 1fr); }
+  .setting-row { grid-template-columns: 1fr; }
+  .brand-en    { display: none; }
+  .cam-badge span:last-child { display: none; }
+  .mode-panel  { padding: 12px 10px 24px; }
+}
+@media (max-width: 400px) {
+  .status-grid { grid-template-columns: 1fr 1fr; gap: 10px; }
+}
 </style>
 </head>
 <body>
-<a href="/surfaces" style="display:block;padding:10px 20px;color:#67d7c4;background:#18232b">표면 감시 설정 · 바닥 / 테이블 / 벽 →</a>
 
+<!-- ══ 헤더 ══════════════════════════════════════════════════════════════════ -->
 <header>
-  <h1>HUNIK 관리 대시보드</h1>
+  <div class="brand">
+    <svg class="logo-hex" viewBox="0 0 30 34" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <polygon points="15,1 29,8.7 29,25.3 15,33 1,25.3 1,8.7" fill="var(--accent)" opacity=".9"/>
+      <text x="15" y="22" text-anchor="middle" fill="white" font-size="13" font-weight="700" font-family="'Noto Sans KR',sans-serif">H</text>
+    </svg>
+    <div class="brand-text">
+      <div class="brand-ko">무인 매장 모니터링 시스템</div>
+      <div class="brand-en">HUNIK UNMANNED STORE MONITOR</div>
+    </div>
+  </div>
+  <div class="header-spacer"></div>
   <div class="header-right">
     <div class="cam-badge">
       <div class="cam-dot" id="cam-dot"></div>
       <span id="cam-label">카메라 확인 중</span>
     </div>
-    <select id="log-select" title="로그 파일 선택"></select>
+    <div class="header-sep"></div>
+    <button class="theme-btn" id="theme-btn" onclick="toggleTheme()" title="테마 전환">☀</button>
+    <div class="mode-toggle">
+      <button class="mode-btn active" id="btn-easy" onclick="setMode('easy')">간단</button>
+      <button class="mode-btn" id="btn-advanced" onclick="setMode('advanced')">고급</button>
+    </div>
   </div>
 </header>
 
-<main>
-  <!-- 통계 사이드바 -->
-  <aside>
-    <h2>오늘 이벤트</h2>
-    <div class="stat-card">
-      <div><div class="stat-label">체류 초과</div><div class="stat-label" style="font-size:10px">overstay</div></div>
-      <div class="stat-value red" id="cnt-overstay">0</div>
-    </div>
-    <div class="stat-card">
-      <div><div class="stat-label">미주문 착석</div><div class="stat-label" style="font-size:10px">unordered_seated</div></div>
-      <div class="stat-value yellow" id="cnt-unordered">0</div>
-    </div>
-    <div class="stat-card">
-      <div><div class="stat-label">쓰러짐</div><div class="stat-label" style="font-size:10px">person_fallen</div></div>
-      <div class="stat-value red" id="cnt-fallen">0</div>
-    </div>
-    <div class="stat-card">
-      <div><div class="stat-label">문 현재 상태</div><div class="stat-label" style="font-size:10px">door state</div></div>
-      <div class="stat-value" id="door-state-badge" style="font-size:13px;font-weight:700;color:var(--muted)">—</div>
-    </div>
-    <div class="stat-card">
-      <div><div class="stat-label">문 장기 개방</div><div class="stat-label" style="font-size:10px">방치 횟수</div></div>
-      <div class="stat-value blue" id="cnt-door">0</div>
-    </div>
-    <hr class="divider">
-    <div class="stat-card">
-      <div><div class="stat-label">잔류물 감지</div><div class="stat-label" style="font-size:10px">trash·spill</div></div>
-      <div class="stat-value orange" id="cnt-residue">0</div>
-    </div>
-    <hr class="divider">
-    <div class="stat-card">
-      <div><div class="stat-label">카메라 장애</div><div class="stat-label" style="font-size:10px">whiteout·blackout·frozen</div></div>
-      <div class="stat-value orange" id="cnt-camera">0</div>
-    </div>
-    <hr class="divider">
-    <div class="stat-card">
-      <div><div class="stat-label">전체 이벤트</div></div>
-      <div class="stat-value blue" id="cnt-total">0</div>
-    </div>
-  </aside>
+<!-- ══ 간단 모드 ═════════════════════════════════════════════════════════════ -->
+<div id="panel-easy" class="mode-panel">
 
-  <!-- 카메라 프레임 -->
-  <section class="camera-panel" id="camera-panel">
-    <div class="camera-offline" id="cam-offline">
-      <span>📷</span>
-      <span>detector 미실행 또는 --stream-port 미설정</span>
+  <!-- 카메라 스트림 -->
+  <div class="easy-stream">
+    <div class="camera-panel" id="camera-panel">
+      <div class="camera-offline" id="cam-offline">
+        <span style="font-size:36px">📷</span>
+        <span>detector 미실행 또는 스트림 포트 미설정</span>
+        <button class="cam-reconnect" onclick="connectStream()">재연결</button>
+      </div>
+      <img id="stream-img" src="" alt="카메라 피드" style="display:none"
+           onerror="onStreamError()" onload="onStreamLoad()">
     </div>
-    <img id="stream-img" src="" alt="카메라" style="display:none"
-         onerror="onStreamError()" onload="onStreamLoad()">
-    <div class="stream-port-form">
-      <input id="port-input" type="number" value="8081" min="1024" max="65535" placeholder="포트">
-      <button class="btn" onclick="connectStream()">연결</button>
-      <button class="btn" onclick="disconnectStream()">끊기</button>
-    </div>
-  </section>
+  </div>
 
-  <!-- 탭 영역 -->
-  <section class="feed-area">
+  <!-- 상태 카드 3×2 -->
+  <div class="status-grid">
+    <div class="status-card" id="card-overstay" data-state="normal">
+      <div class="card-icon">⏱️</div>
+      <div class="card-name">장기 체류</div>
+      <div class="card-status-text" id="cs-overstay">이상 없음</div>
+    </div>
+    <div class="status-card" id="card-unordered" data-state="normal">
+      <div class="card-icon">🪑</div>
+      <div class="card-name">미주문 착석</div>
+      <div class="card-status-text" id="cs-unordered">이상 없음</div>
+    </div>
+    <div class="status-card" id="card-fallen" data-state="normal">
+      <div class="card-icon">🚨</div>
+      <div class="card-name">응급 상황</div>
+      <div class="card-status-text" id="cs-fallen">이상 없음</div>
+    </div>
+    <div class="status-card" id="card-door" data-state="normal">
+      <div class="card-icon">🚪</div>
+      <div class="card-name">출입문</div>
+      <div class="card-status-text" id="cs-door">확인 중</div>
+    </div>
+    <div class="status-card" id="card-residue" data-state="normal">
+      <div class="card-icon">🧹</div>
+      <div class="card-name">잔류물</div>
+      <div class="card-status-text" id="cs-residue">이상 없음</div>
+    </div>
+    <div class="status-card" id="card-camera-easy" data-state="normal">
+      <div class="card-icon">📷</div>
+      <div class="card-name">카메라</div>
+      <div class="card-status-text" id="cs-camera">정상</div>
+    </div>
+  </div>
+
+  <!-- 최근 알림 -->
+  <div class="alerts-section neu-raised">
+    <div class="alerts-header">
+      <h2>최근 알림</h2>
+      <span class="alerts-clear" onclick="clearAlerts()">지우기</span>
+    </div>
+    <div id="alert-list">
+      <div class="alert-empty" id="alert-empty">감지된 알림이 없습니다.</div>
+    </div>
+  </div>
+</div>
+
+<!-- ══ 고급 모드 ═════════════════════════════════════════════════════════════ -->
+<div id="panel-advanced" class="mode-panel" style="display:none">
+
+  <!-- 탭 바 -->
+  <div class="adv-tab-bar">
+    <button class="adv-tab active" id="atab-monitor" onclick="switchAdvTab('monitor')">
+      📊 현황
+    </button>
+    <button class="adv-tab" id="atab-settings" onclick="switchAdvTab('settings')">
+      ⚙️ 설정
+    </button>
+    <button class="adv-tab" id="atab-logs" onclick="switchAdvTab('logs')">
+      📋 로그 <span class="tab-badge" id="log-new-badge" style="display:none">0</span>
+    </button>
+  </div>
+
+  <!-- ── 현황 탭 ── -->
+  <div class="adv-panel active" id="adv-monitor">
+    <!-- 통계 카드 -->
+    <div class="stats-row">
+      <div class="stat-card">
+        <div><div class="stat-label">체류 초과</div><div class="stat-sublabel">overstay</div></div>
+        <div class="stat-value red"   id="cnt-overstay">0</div>
+      </div>
+      <div class="stat-card">
+        <div><div class="stat-label">미주문 착석</div><div class="stat-sublabel">unordered</div></div>
+        <div class="stat-value yellow" id="cnt-unordered">0</div>
+      </div>
+      <div class="stat-card">
+        <div><div class="stat-label">쓰러짐</div><div class="stat-sublabel">fallen</div></div>
+        <div class="stat-value red"   id="cnt-fallen">0</div>
+      </div>
+      <div class="stat-card">
+        <div><div class="stat-label">잔류물</div><div class="stat-sublabel">residue</div></div>
+        <div class="stat-value orange" id="cnt-residue">0</div>
+      </div>
+    </div>
+    <div class="stats-row" style="margin-top:-4px">
+      <div class="stat-card">
+        <div><div class="stat-label">문 장기 개방</div></div>
+        <div class="stat-value blue" id="cnt-door">0</div>
+      </div>
+      <div class="stat-card">
+        <div><div class="stat-label">카메라 장애</div></div>
+        <div class="stat-value orange" id="cnt-camera">0</div>
+      </div>
+      <div class="stat-card" style="grid-column:span 2">
+        <div>
+          <div class="stat-label">문 현재 상태</div>
+          <div id="door-state-badge" class="door-pill unknown" style="margin-top:4px">— 확인 중</div>
+        </div>
+        <div class="stat-value blue" id="cnt-total">0</div>
+      </div>
+    </div>
+
+    <!-- 표면 감시 요약 -->
     <div class="surface-summary">
-      <h2>지금 청소가 필요한가요? <a href="/surfaces" style="font-size:12px;margin-left:12px">감시할 곳 설정 →</a></h2>
+      <h2>지금 청소가 필요한가요?
+        <a href="/surfaces">감시할 곳 설정 →</a>
+      </h2>
       <div id="surface-main-health" role="status">감지기 연결 확인 중...</div>
       <div id="surface-main-message" role="status"></div>
       <div id="surface-main-cards"></div>
     </div>
-    <div class="tab-bar">
-      <button class="tab-btn active" onclick="switchTab('feed',this)">실시간 이벤트</button>
-      <button class="tab-btn" onclick="switchTab('settings',this)">설정</button>
-      <div class="tab-extra" id="feed-extra">
-        <span id="new-badge" class="badge-count" style="display:none">0</span>
-        <label style="font-size:12px; color:var(--muted); display:flex; align-items:center; gap:4px; cursor:pointer;">
-          <input type="checkbox" id="auto-scroll" checked> 자동 스크롤
-        </label>
-      </div>
+
+    <!-- 라이브 이벤트 피드 링크 -->
+    <div style="text-align:center; padding:16px 0; color:var(--muted); font-size:13px">
+      실시간 이벤트 로그는
+      <a href="#" onclick="switchAdvTab('logs');return false" style="color:var(--accent)">로그 탭</a>에서 확인하세요.
     </div>
+  </div>
 
-    <!-- 이벤트 피드 패널 -->
-    <div class="tab-panel active" id="tab-feed">
-      <div id="event-list">
-        <div class="empty-state" id="empty-msg">
-          <span>⏳</span>
-          <span>이벤트를 기다리는 중...</span>
-        </div>
-      </div>
-    </div>
+  <!-- ── 설정 탭 ── -->
+  <div class="adv-panel" id="adv-settings">
+    <!-- 스트림 포트 (hidden → actual number input in 고급 section) -->
+    <div class="settings-wrap">
 
-    <!-- 설정 패널 -->
-    <div class="tab-panel" id="tab-settings">
-      <div id="settings-panel">
-
-        <!-- 모션 게이트 -->
-        <div class="settings-section">
-          <h3>모션 게이트</h3>
+      <!-- 감지 기본 -->
+      <details class="neu-accordion" open>
+        <summary>감지 기본</summary>
+        <div class="accordion-body">
           <div class="setting-row">
             <div><div class="setting-label">모션 게이트 활성화</div><div class="setting-desc">변화 없으면 YOLO 추론 생략</div></div>
             <label class="toggle"><input type="checkbox" id="cfg-motion_gate" checked><span class="toggle-slider"></span></label>
@@ -369,45 +742,42 @@
             <span class="setting-value-display" id="disp-motion_ratio_threshold">0.004</span>
           </div>
           <div class="setting-row">
-            <div><div class="setting-label">강제 갱신 주기(초)</div><div class="setting-desc">idle_refresh_seconds</div></div>
+            <div><div class="setting-label">강제 갱신 주기 (초)</div><div class="setting-desc">idle_refresh_seconds</div></div>
             <input type="number" class="setting-input" id="cfg-idle_refresh_seconds" min="1" max="3600" value="10">
             <span></span>
           </div>
-        </div>
-
-        <!-- 체류 감지 -->
-        <div class="settings-section">
-          <h3>체류 감지</h3>
           <div class="setting-row">
-            <div><div class="setting-label">체류 초과 한도(초)</div><div class="setting-desc">dwell_limit_seconds</div></div>
+            <div><div class="setting-label">체류 초과 한도 (초)</div><div class="setting-desc">dwell_limit_seconds</div></div>
             <input type="number" class="setting-input" id="cfg-dwell_limit_seconds" min="60" max="86400" value="3600">
             <span></span>
           </div>
           <div class="setting-row">
-            <div><div class="setting-label">미주문 유예(초)</div><div class="setting-desc">unordered_grace_seconds</div></div>
+            <div><div class="setting-label">미주문 유예 (초)</div><div class="setting-desc">unordered_grace_seconds</div></div>
             <input type="number" class="setting-input" id="cfg-unordered_grace_seconds" min="10" max="3600" value="300">
             <span></span>
           </div>
           <div class="setting-row">
-            <div><div class="setting-label">쓰러짐 유지(초)</div><div class="setting-desc">fall_hold_seconds — 기본 5. 낮추면 민감해지나 청소·물건 줍기 오탐 증가</div></div>
+            <div><div class="setting-label">쓰러짐 유지 (초)</div><div class="setting-desc">fall_hold_seconds</div></div>
             <input type="range" class="setting-input" id="cfg-fall_hold_seconds" min="1" max="30" step="0.5" value="5" oninput="syncDisplay(this)">
             <span class="setting-value-display" id="disp-fall_hold_seconds">5</span>
           </div>
           <div class="setting-row">
-            <div><div class="setting-label">bbox 가로세로 비 (keypoint)</div><div class="setting-desc">fall_aspect_ratio_kp — 기본 1.3. 사선 CCTV 화각 기준. 머리 위치 추적으로 YOLO 미탐지 시에도 보조 감지</div></div>
+            <div><div class="setting-label">bbox 비율 (keypoint)</div><div class="setting-desc">fall_aspect_ratio_kp</div></div>
             <input type="range" class="setting-input" id="cfg-fall_aspect_ratio_kp" min="1.0" max="3.0" step="0.1" value="1.3" oninput="syncDisplay(this)">
             <span class="setting-value-display" id="disp-fall_aspect_ratio_kp">1.3</span>
           </div>
           <div class="setting-row">
-            <div><div class="setting-label">bbox 가로세로 비 (keypoint 없음)</div><div class="setting-desc">fall_aspect_ratio_nokp — 기본 1.6. keypoint 미탐지 시 적용. 머리 추적이 주 감지를 대신함</div></div>
+            <div><div class="setting-label">bbox 비율 (keypoint 없음)</div><div class="setting-desc">fall_aspect_ratio_nokp</div></div>
             <input type="range" class="setting-input" id="cfg-fall_aspect_ratio_nokp" min="1.2" max="4.0" step="0.1" value="1.6" oninput="syncDisplay(this)">
             <span class="setting-value-display" id="disp-fall_aspect_ratio_nokp">1.6</span>
           </div>
         </div>
+      </details>
 
-        <!-- 카메라 장애 -->
-        <div class="settings-section">
-          <h3>카메라 장애 감지</h3>
+      <!-- 카메라 장애 -->
+      <details class="neu-accordion">
+        <summary>카메라 장애 감지</summary>
+        <div class="accordion-body">
           <div class="setting-row">
             <div><div class="setting-label">암전 임계 밝기</div><div class="setting-desc">luma_black_threshold (0-255)</div></div>
             <input type="range" class="setting-input" id="cfg-luma_black_threshold" min="0" max="80" step="1" value="40" oninput="syncDisplay(this)">
@@ -424,33 +794,35 @@
             <span></span>
           </div>
         </div>
+      </details>
 
-        <!-- 문 여닫이 -->
-        <div class="settings-section">
-          <h3>문 여닫이 감지</h3>
+      <!-- 출입문 -->
+      <details class="neu-accordion">
+        <summary>출입문 감지</summary>
+        <div class="accordion-body">
           <div class="setting-row">
             <div><div class="setting-label">문 감지 활성화</div><div class="setting-desc">door_enabled</div></div>
             <label class="toggle"><input type="checkbox" id="cfg-door_enabled"><span class="toggle-slider"></span></label>
             <span></span>
           </div>
           <div class="setting-row">
-            <div><div class="setting-label">차이 임계값</div><div class="setting-desc">door_diff_threshold (픽셀 비율, 단일 기준만 사용 시)</div></div>
+            <div><div class="setting-label">차이 임계값</div><div class="setting-desc">door_diff_threshold</div></div>
             <input type="range" class="setting-input" id="cfg-door_diff_threshold" min="0.01" max="0.3" step="0.01" value="0.05" oninput="syncDisplay(this)">
             <span class="setting-value-display" id="disp-door_diff_threshold">0.05</span>
           </div>
           <div class="setting-row">
-            <div><div class="setting-label">상태 전환 확인 프레임</div><div class="setting-desc">door_confirm_frames — 같은 상태가 연속 관측된 횟수</div></div>
+            <div><div class="setting-label">확인 프레임</div><div class="setting-desc">door_confirm_frames</div></div>
             <input type="number" class="setting-input" id="cfg-door_confirm_frames" min="1" max="300" value="5">
             <span></span>
           </div>
           <div class="setting-row">
-            <div><div class="setting-label">개방 유지 시간</div><div class="setting-desc">door_open_seconds — 이 시간(초) 이상 열려 있어야 이벤트 발생</div></div>
+            <div><div class="setting-label">개방 유지 시간 (초)</div><div class="setting-desc">door_open_seconds</div></div>
             <input type="range" class="setting-input" id="cfg-door_open_seconds" min="5" max="300" step="5" value="30" oninput="syncDisplay(this)">
             <span class="setting-value-display" id="disp-door_open_seconds">30</span>
           </div>
           <div class="setting-row">
-            <div><div class="setting-label">ROI (x, y, 너비, 높이)</div><div class="setting-desc">0,0,0,0 이면 전체 프레임 — 아래 선택기로 지정 가능</div></div>
-            <div style="display:grid; grid-template-columns:1fr 1fr 1fr 1fr; gap:6px;">
+            <div><div class="setting-label">ROI (x, y, 너비, 높이)</div><div class="setting-desc">0,0,0,0 이면 전체 프레임</div></div>
+            <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:6px">
               <input type="number" class="setting-input" id="cfg-door_roi_x" min="0" value="0" placeholder="x">
               <input type="number" class="setting-input" id="cfg-door_roi_y" min="0" value="0" placeholder="y">
               <input type="number" class="setting-input" id="cfg-door_roi_w" min="0" value="0" placeholder="너비">
@@ -458,123 +830,115 @@
             </div>
             <span></span>
           </div>
-          <div style="margin-top:8px;">
-            <div class="setting-label" style="margin-bottom:6px;">ROI 드래그 선택기</div>
-            <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:6px;">
-              <button class="btn" onclick="openRoiPicker()">1. 현재 화면 불러오기</button>
-              <button class="btn" onclick="clearRoi()" style="font-size:11px">ROI 초기화</button>
-              <span class="door-status" id="roi-hint">문짝과 문틀만 포함하도록 드래그하세요. 사람·통로·창문은 제외하세요.</span>
+          <div>
+            <div class="setting-label" style="margin-bottom:6px">ROI 드래그 선택기</div>
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:6px">
+              <button class="neu-btn sm" onclick="openRoiPicker()">1. 현재 화면 불러오기</button>
+              <button class="neu-btn sm" onclick="clearRoi()">ROI 초기화</button>
+              <span class="roi-hint" id="roi-hint">문짝과 문틀만 포함하도록 드래그하세요.</span>
             </div>
-            <div id="roi-picker-wrap" style="display:none; position:relative; max-width:480px; border-radius:6px; overflow:hidden; background:var(--surface)">
-              <canvas id="roi-canvas" style="display:block; width:100%; cursor:crosshair;"></canvas>
-              <div style="padding:8px; background:var(--surface); display:flex; gap:8px; align-items:center;">
-                <button class="btn success" id="roi-save-btn" disabled onclick="roiSave()" style="font-weight:700;">3. ROI 저장 및 적용</button>
-                <span id="roi-save-hint" style="font-size:11px; color:var(--muted)">드래그로 영역 선택 후 저장하세요.</span>
+            <div id="roi-picker-wrap">
+              <canvas id="roi-canvas"></canvas>
+              <div class="roi-actions">
+                <button class="neu-btn sm primary" id="roi-save-btn" disabled onclick="roiSave()">3. ROI 저장 및 적용</button>
+                <span id="roi-save-hint" class="roi-hint">드래그로 영역 선택 후 저장하세요.</span>
               </div>
             </div>
           </div>
-          <div id="roi-summary" class="door-status" style="margin-top:8px; padding:8px; border-radius:5px; background:var(--bg)">
-            ROI를 지정하지 않았습니다. 현재는 화면 전체를 비교하므로 오탐 가능성이 높습니다.
-          </div>
-          <div class="door-status" style="margin-top:6px; line-height:1.5;">
-            설정 순서: ① 현재 화면 불러오기 → ② 문짝/문틀만 드래그 → ③ ROI 저장 및 적용 → ④ 사람이 없는 상태에서 닫힘·열림 기준 이미지를 각각 캡처합니다. 저장 후 detector가 최대 2초 내 반영합니다.
-          </div>
-
-          <!-- 기준 이미지 캡처 -->
-          <div style="margin-top:8px;">
-            <div class="setting-label" style="margin-bottom:8px;">닫힌 상태 기준 이미지</div>
+          <div id="roi-summary" class="door-status">ROI를 지정하지 않았습니다.</div>
+          <div style="margin-top:8px">
+            <div class="setting-label" style="margin-bottom:8px">닫힌 상태 기준 이미지</div>
             <div class="door-preview-area">
               <div>
                 <img id="door-preview-closed" class="door-preview-img" src="" alt="" style="display:none">
                 <div class="door-preview-placeholder" id="door-ph-closed">캡처 없음</div>
               </div>
               <div class="door-actions">
-                <button class="btn primary" onclick="captureDoorRef('closed')">닫힌 상태 캡처</button>
-                <button class="btn" onclick="refreshDoorPreview('closed')">미리보기 갱신</button>
+                <button class="neu-btn sm primary" onclick="captureDoorRef('closed')">닫힌 상태 캡처</button>
+                <button class="neu-btn sm" onclick="refreshDoorPreview('closed')">미리보기 갱신</button>
               </div>
             </div>
-            <div class="setting-label" style="margin-bottom:8px;margin-top:12px;">열린 상태 기준 이미지</div>
+            <div class="setting-label" style="margin:12px 0 8px">열린 상태 기준 이미지</div>
             <div class="door-preview-area">
               <div>
                 <img id="door-preview-open" class="door-preview-img" src="" alt="" style="display:none">
                 <div class="door-preview-placeholder" id="door-ph-open">캡처 없음</div>
               </div>
               <div class="door-actions">
-                <button class="btn primary" onclick="captureDoorRef('open')">열린 상태 캡처</button>
-                <button class="btn" onclick="refreshDoorPreview('open')">미리보기 갱신</button>
+                <button class="neu-btn sm primary" onclick="captureDoorRef('open')">열린 상태 캡처</button>
+                <button class="neu-btn sm" onclick="refreshDoorPreview('open')">미리보기 갱신</button>
               </div>
             </div>
-            <div class="door-status" id="door-status" style="margin-top:6px;">detector 스트림 포트로 캡처합니다.</div>
+            <div class="door-status" id="door-status" style="margin-top:6px">detector 스트림 포트로 캡처합니다.</div>
           </div>
         </div>
+      </details>
 
-        <!-- 잔류물 감지 -->
-        <div class="settings-section">
-          <h3>잔류물 감지 (바닥 흘림 · 방치된 쓰레기)</h3>
+      <!-- 잔류물 -->
+      <details class="neu-accordion">
+        <summary>잔류물 감지</summary>
+        <div class="accordion-body">
           <div class="setting-row">
             <div><div class="setting-label">잔류물 감지 활성화</div><div class="setting-desc">residue_enabled</div></div>
             <label class="toggle"><input type="checkbox" id="cfg-residue_enabled" checked><span class="toggle-slider"></span></label>
             <span></span>
           </div>
           <div class="setting-row">
-            <div><div class="setting-label">블록 평균 휘도 차 임계값</div><div class="setting-desc">residue_diff_threshold — 기본 18. 낮추면 민감해지고 조명 노이즈에 취약</div></div>
+            <div><div class="setting-label">블록 휘도 차 임계값</div><div class="setting-desc">residue_diff_threshold</div></div>
             <input type="range" class="setting-input" id="cfg-residue_diff_threshold" min="5" max="60" step="1" value="18" oninput="syncDisplay(this)">
             <span class="setting-value-display" id="disp-residue_diff_threshold">18</span>
           </div>
           <div class="setting-row">
-            <div><div class="setting-label">최소 블록 수</div><div class="setting-desc">residue_min_blocks — 1블록=64×64px. 이 미만 영역 폐기</div></div>
+            <div><div class="setting-label">최소 블록 수</div><div class="setting-desc">residue_min_blocks</div></div>
             <input type="number" class="setting-input" id="cfg-residue_min_blocks" min="1" max="64" value="3">
             <span></span>
           </div>
           <div class="setting-row">
-            <div><div class="setting-label">사람 여유 블록</div><div class="setting-desc">residue_person_margin_blocks — bbox 경계 흔들림 흡수</div></div>
+            <div><div class="setting-label">사람 여유 블록</div><div class="setting-desc">residue_person_margin_blocks</div></div>
             <input type="number" class="setting-input" id="cfg-residue_person_margin_blocks" min="0" max="8" value="1">
             <span></span>
           </div>
           <div class="setting-row">
-            <div><div class="setting-label">이벤트 확정 시간 (초)</div><div class="setting-desc">residue_confirm_seconds — 기본 60. 손님이 물건을 잠시 놓는 정상 행동과 구분</div></div>
+            <div><div class="setting-label">이벤트 확정 시간 (초)</div><div class="setting-desc">residue_confirm_seconds</div></div>
             <input type="range" class="setting-input" id="cfg-residue_confirm_seconds" min="10" max="300" step="5" value="60" oninput="syncDisplay(this)">
             <span class="setting-value-display" id="disp-residue_confirm_seconds">60</span>
           </div>
           <div class="setting-row">
-            <div><div class="setting-label">해소 확정 시간 (초)</div><div class="setting-desc">residue_clear_seconds — 이 시간 미관측 시 잔류 해소로 판정</div></div>
+            <div><div class="setting-label">해소 확정 시간 (초)</div><div class="setting-desc">residue_clear_seconds</div></div>
             <input type="range" class="setting-input" id="cfg-residue_clear_seconds" min="5" max="60" step="1" value="10" oninput="syncDisplay(this)">
             <span class="setting-value-display" id="disp-residue_clear_seconds">10</span>
           </div>
           <div class="setting-row">
-            <div><div class="setting-label">기준 자동 갱신 주기 (초)</div><div class="setting-desc">residue_baseline_refresh_seconds — 안전 시점(사람 없음+후보 없음)에만 갱신</div></div>
+            <div><div class="setting-label">기준 갱신 주기 (초)</div><div class="setting-desc">residue_baseline_refresh_seconds</div></div>
             <input type="range" class="setting-input" id="cfg-residue_baseline_refresh_seconds" min="60" max="1800" step="30" value="300" oninput="syncDisplay(this)">
             <span class="setting-value-display" id="disp-residue_baseline_refresh_seconds">300</span>
           </div>
           <div class="setting-row">
-            <div><div class="setting-label">전역 변화 가드 비율</div><div class="setting-desc">residue_global_change_ratio — 이 비율 초과 시 조명 변화로 해석, 기준 강제 갱신</div></div>
+            <div><div class="setting-label">전역 변화 가드 비율</div><div class="setting-desc">residue_global_change_ratio</div></div>
             <input type="range" class="setting-input" id="cfg-residue_global_change_ratio" min="0.2" max="0.9" step="0.05" value="0.5" oninput="syncDisplay(this)">
             <span class="setting-value-display" id="disp-residue_global_change_ratio">0.50</span>
           </div>
-          <!-- 청결 기준 이미지 캡처 -->
-          <div style="margin-top:8px;">
-            <div class="setting-label" style="margin-bottom:8px;">청결 상태 기준 이미지</div>
-            <div class="door-status" style="margin-bottom:6px; line-height:1.5;">
-              설치 후 매장이 청결한 상태에서 한 번 캡처하세요. 사람이 없는 상태에서 캡처하면 정확도가 높아집니다.
-              저장 후 detector가 최대 2초 내 반영합니다.
-            </div>
+          <div>
+            <div class="setting-label" style="margin-bottom:8px">청결 상태 기준 이미지</div>
             <div class="door-preview-area">
               <div>
                 <img id="residue-preview-img" class="door-preview-img" src="" alt="" style="display:none">
                 <div class="door-preview-placeholder" id="residue-preview-ph">캡처 없음</div>
               </div>
               <div class="door-actions">
-                <button class="btn primary" onclick="captureResidueRef()">청결 상태 캡처</button>
-                <button class="btn" onclick="refreshResiduePreview()">미리보기 갱신</button>
+                <button class="neu-btn sm primary" onclick="captureResidueRef()">청결 상태 캡처</button>
+                <button class="neu-btn sm" onclick="refreshResiduePreview()">미리보기 갱신</button>
               </div>
             </div>
-            <div class="door-status" id="residue-status" style="margin-top:6px;">detector 스트림 포트로 캡처합니다.</div>
+            <div class="door-status" id="residue-status" style="margin-top:6px">detector 스트림 포트로 캡처합니다.</div>
           </div>
         </div>
+      </details>
 
-        <!-- Tier 2 바운딩 박스 표시 -->
-        <div class="settings-section">
-          <h3>Tier 2 바운딩 박스 표시</h3>
+      <!-- Tier 2 -->
+      <details class="neu-accordion">
+        <summary>Tier 2 바운딩 박스</summary>
+        <div class="accordion-body">
           <div class="setting-row">
             <div><div class="setting-label">동물 (고양이·강아지)</div><div class="setting-desc">show_animal — 빨강 박스</div></div>
             <label class="toggle"><input type="checkbox" id="cfg-show_animal" checked><span class="toggle-slider"></span></label>
@@ -591,79 +955,116 @@
             <span></span>
           </div>
           <div class="setting-row">
-            <div><div class="setting-label">가구 (의자·테이블)</div><div class="setting-desc">show_furniture — 회청 박스. SlotMonitor 확인용</div></div>
+            <div><div class="setting-label">가구 (의자·테이블)</div><div class="setting-desc">show_furniture — 회청 박스</div></div>
             <label class="toggle"><input type="checkbox" id="cfg-show_furniture" checked><span class="toggle-slider"></span></label>
             <span></span>
           </div>
-        </div>
-
-        <!-- 슬롯 모니터 -->
-        <div class="settings-section">
-          <h3>슬롯 모니터 (테이블·의자 청결)</h3>
           <div class="setting-row">
-            <div><div class="setting-label">경고 시간 (초)</div><div class="setting-desc">slot_warn_seconds — 기본 60. 물건 방치 경고까지 대기 시간</div></div>
+            <div><div class="setting-label">개발: Tier 2 강제 실행</div><div class="setting-desc">tier2_always — surface 활성 중에도 Tier 2 항상 실행</div></div>
+            <label class="toggle"><input type="checkbox" id="cfg-tier2_always"><span class="toggle-slider"></span></label>
+            <span></span>
+          </div>
+        </div>
+      </details>
+
+      <!-- 슬롯 모니터 -->
+      <details class="neu-accordion">
+        <summary>슬롯 모니터 (테이블·의자 청결)</summary>
+        <div class="accordion-body">
+          <div class="setting-row">
+            <div><div class="setting-label">경고 시간 (초)</div><div class="setting-desc">slot_warn_seconds</div></div>
             <input type="range" class="setting-input" id="cfg-slot_warn_seconds" min="10" max="600" step="5" value="60" oninput="syncDisplay(this)">
             <span class="setting-value-display" id="disp-slot_warn_seconds">60</span>
           </div>
           <div class="setting-row">
-            <div><div class="setting-label">긴급 시간 (초)</div><div class="setting-desc">slot_urgent_seconds — 기본 300. 이 시간 초과 시 긴급 이벤트 발화</div></div>
+            <div><div class="setting-label">긴급 시간 (초)</div><div class="setting-desc">slot_urgent_seconds</div></div>
             <input type="range" class="setting-input" id="cfg-slot_urgent_seconds" min="60" max="3600" step="30" value="300" oninput="syncDisplay(this)">
             <span class="setting-value-display" id="disp-slot_urgent_seconds">300</span>
           </div>
           <div class="setting-row">
-            <div><div class="setting-label">슬롯 유지 시간 (초)</div><div class="setting-desc">slot_ttl_seconds — Tier 2 미탐지 후 슬롯 만료까지 대기</div></div>
+            <div><div class="setting-label">슬롯 유지 시간 (초)</div><div class="setting-desc">slot_ttl_seconds</div></div>
             <input type="number" class="setting-input" id="cfg-slot_ttl_seconds" min="10" max="3600" value="120">
             <span></span>
           </div>
           <div class="setting-row">
-            <div><div class="setting-label">블록 휘도 차 임계값</div><div class="setting-desc">slot_dirty_threshold — 기본 20. 낮추면 민감, 높이면 둔감</div></div>
+            <div><div class="setting-label">블록 휘도 차</div><div class="setting-desc">slot_dirty_threshold</div></div>
             <input type="range" class="setting-input" id="cfg-slot_dirty_threshold" min="5" max="80" step="1" value="20" oninput="syncDisplay(this)">
             <span class="setting-value-display" id="disp-slot_dirty_threshold">20</span>
           </div>
           <div class="setting-row">
-            <div><div class="setting-label">최소 오염 블록 수</div><div class="setting-desc">slot_min_dirty_blocks — 기본 2. 1블록=8×8px. 노이즈 필터</div></div>
+            <div><div class="setting-label">최소 오염 블록</div><div class="setting-desc">slot_min_dirty_blocks</div></div>
             <input type="number" class="setting-input" id="cfg-slot_min_dirty_blocks" min="1" max="32" value="2">
             <span></span>
           </div>
         </div>
+      </details>
 
-        <!-- 성능 로그 -->
-        <div class="settings-section">
-          <h3>성능 모니터링</h3>
-          <div class="setting-row">
-            <div><div class="setting-label">성능 로그 주기 (초)</div><div class="setting-desc">perf_log_interval_seconds — 기본 60. CPU·메모리·FPS를 별도 DB에 기록</div></div>
-            <input type="range" class="setting-input" id="cfg-perf_log_interval_seconds" min="10" max="600" step="10" value="60" oninput="syncDisplay(this)">
-            <span class="setting-value-display" id="disp-perf_log_interval_seconds">60</span>
-          </div>
-        </div>
-
-        <!-- 스트림 -->
-        <div class="settings-section">
-          <h3>스트림</h3>
+      <!-- 고급 -->
+      <details class="neu-accordion">
+        <summary>고급 / 시스템</summary>
+        <div class="accordion-body">
           <div class="setting-row">
             <div><div class="setting-label">스트림 포트</div><div class="setting-desc">stream_port (detector --stream-port와 동일)</div></div>
             <input type="number" class="setting-input" id="cfg-stream_port" min="1024" max="65535" value="8081">
             <span></span>
           </div>
+          <div class="setting-row">
+            <div><div class="setting-label">성능 로그 주기 (초)</div><div class="setting-desc">perf_log_interval_seconds</div></div>
+            <input type="range" class="setting-input" id="cfg-perf_log_interval_seconds" min="10" max="600" step="10" value="60" oninput="syncDisplay(this)">
+            <span class="setting-value-display" id="disp-perf_log_interval_seconds">60</span>
+          </div>
+          <div class="setting-row">
+            <div><div class="setting-label">스트림 연결 포트 (뷰어)</div><div class="setting-desc">카메라 피드 수동 연결 포트</div></div>
+            <input type="number" class="setting-input" id="port-input" min="1024" max="65535" value="8081">
+            <span></span>
+          </div>
+          <div style="display:flex;gap:8px">
+            <button class="neu-btn sm" onclick="connectStream()">스트림 연결</button>
+            <button class="neu-btn sm" onclick="disconnectStream()">스트림 끊기</button>
+          </div>
         </div>
+      </details>
 
+    </div><!-- /settings-wrap -->
+    <div class="save-bar">
+      <span class="save-status" id="save-status"></span>
+      <button class="neu-btn" onclick="loadSettings()">초기화</button>
+      <button class="neu-btn primary" onclick="saveSettings()">설정 저장</button>
+    </div>
+  </div><!-- /adv-settings -->
+
+  <!-- ── 로그 탭 ── -->
+  <div class="adv-panel" id="adv-logs">
+    <div class="log-toolbar">
+      <select id="log-select" class="neu-select" title="로그 파일 선택"></select>
+      <div class="level-filter-group">
+        <label><input type="checkbox" class="level-filter" value="INFO"  checked> INFO</label>
+        <label><input type="checkbox" class="level-filter" value="WARN"  checked> WARN</label>
+        <label><input type="checkbox" class="level-filter" value="ERROR" checked> ERROR</label>
       </div>
-
-      <div class="save-bar">
-        <span class="save-status" id="save-status"></span>
-        <button class="btn" onclick="loadSettings()">초기화</button>
-        <button class="btn success" onclick="saveSettings()">설정 저장</button>
+      <label style="display:flex;align-items:center;gap:4px;font-size:12px;cursor:pointer">
+        <input type="checkbox" id="auto-scroll" checked> 자동 스크롤
+      </label>
+      <span id="new-badge" class="badge-count" style="display:none">0</span>
+      <button class="neu-btn sm" onclick="exportCSV()" style="margin-left:auto">CSV 내보내기</button>
+    </div>
+    <div class="conn-bar">
+      <span class="conn-dot" id="conn-dot"></span>
+      <span id="conn-label">연결 중</span>
+      <span id="footer-file" style="margin-left:8px"></span>
+      <span id="footer-count" style="margin-left:auto"></span>
+    </div>
+    <div id="event-list">
+      <div class="empty-state" id="empty-msg">
+        <span>⏳</span>
+        <span>이벤트를 기다리는 중...</span>
       </div>
     </div>
-  </section>
-</main>
+  </div><!-- /adv-logs -->
 
-<footer>
-  <span><span class="conn-dot" id="conn-dot"></span><span id="conn-label">연결 중</span></span>
-  <span id="footer-file"></span>
-  <span id="footer-count"></span>
-</footer>
+</div><!-- /panel-advanced -->
 
+<!-- ══ 표면 감시 스크립트 (기존 유지) ════════════════════════════════════════ -->
 <script id="surface-main-script">
 (() => {
   const el=id=>document.getElementById(id);
@@ -675,14 +1076,14 @@
     if(!enabled)return ['wait','감시 꺼짐','감시할 곳 설정에서 켜 주세요.'];
     if(stale||s.age>3)return ['wait','화면 확인 필요','새 영상이 들어오지 않아 지금 상태를 알 수 없어요.'];
     const candidates=s.candidates||[];
-    if(candidates.some(c=>c.animal))return ['alert','동물 확인 필요','동물로 의심되는 모습이 보여요. 직접 확인해 주세요.'];
-    if(candidates.some(c=>c.alert))return ['alert','청소 확인 필요','남겨진 물건이나 오염이 의심돼요. 직접 확인해 주세요.'];
-    if(s.capturing)return ['wait','깨끗한 모습 기억 중',`잠시 비켜 주세요. 자동으로 등록하고 있어요. (${s.capture_count}/5)`];
-    if(!s.baseline)return ['wait','처음 설정이 필요해요','깨끗하게 정리한 뒤 아래 등록 버튼을 눌러 주세요.'];
+    if(candidates.some(c=>c.animal))return ['alert','동물 확인 필요','동물로 의심되는 모습이 보여요.'];
+    if(candidates.some(c=>c.alert))return ['alert','청소 확인 필요','남겨진 물건이나 오염이 의심돼요.'];
+    if(s.capturing)return ['wait','깨끗한 모습 기억 중',`자동으로 등록하고 있어요. (${s.capture_count}/5)`];
+    if(!s.baseline)return ['wait','처음 설정이 필요해요','깨끗하게 정리한 뒤 등록 버튼을 눌러 주세요.'];
     if(s.quality===2)return ['wait','가려져서 안 보여요','사람이나 물건이 비키면 다시 확인할게요.'];
-    if(s.quality!==0)return ['wait','화면 확인 필요','카메라 화면이나 조명이 바뀌었는지 확인해 주세요.'];
-    if(s.layout_changed)return ['wait','물건 위치가 바뀌었어요','원래 있던 물건의 위치를 확인해 주세요.'];
-    if(s.occupancy==='occupied')return ['wait','사람이 사용 중이에요','사람이 떠난 뒤 청소가 필요한지 확인할게요.'];
+    if(s.quality!==0)return ['wait','화면 확인 필요','카메라 화면이나 조명이 바뀌었는지 확인하세요.'];
+    if(s.layout_changed)return ['wait','물건 위치가 바뀌었어요','원래 있던 물건의 위치를 확인하세요.'];
+    if(s.occupancy==='occupied')return ['wait','사람이 사용 중이에요','사람이 떠난 뒤 확인할게요.'];
     if(s.occupancy==='departure_pending')return ['wait','잠시 기다리는 중','사람이 떠났는지 확인하고 있어요.'];
     if(s.occupancy!=='vacant'||candidates.length)return ['wait','확인 중','변화가 보여서 조금 더 지켜보고 있어요.'];
     return ['ok','이상 없음','현재 화면에서 청소가 필요한 변화는 감지되지 않았어요.'];
@@ -694,14 +1095,14 @@
   }
   async function capture(s,revision,endpoint){
     if(pending)return;
-    if(!confirm(`${s.id}: 평소 비치물만 남기고 쓰레기·오염을 치웠나요? 현재 모습을 정상 기준으로 등록합니다. 기존 기준은 교체됩니다.`))return;
+    if(!confirm(`${s.id}: 평소 비치물만 남기고 쓰레기·오염을 치웠나요? 현재 모습을 정상 기준으로 등록합니다.`))return;
     pending=true;message.textContent='등록 요청을 확인하고 있습니다...';
     try{
       const config=await request('/api/surfaces');
       const live=await request(endpoint+'/surface/status');
-      if(endpoint!==base()||!config.enabled||!live.enabled||config.revision!==revision||live.revision!==revision||!config.surfaces.some(v=>v.id===s.id))throw Error('설정이 변경되었거나 아직 적용 중입니다. 상태 갱신 후 다시 눌러 주세요.');
+      if(endpoint!==base()||!config.enabled||!live.enabled||config.revision!==revision||live.revision!==revision||!config.surfaces.some(v=>v.id===s.id))throw Error('설정이 변경되었거나 아직 적용 중입니다.');
       await request(endpoint+'/surface/capture?id='+encodeURIComponent(s.id)+'&empty=0',{method:'POST'});
-      message.textContent=`${s.id}: 등록 요청됨. 사람이 영역을 가리지 않도록 잠시 비켜 주세요. 아래에서 진행 상황을 확인할 수 있습니다.`;
+      message.textContent=`${s.id}: 등록 요청됨.`;
     }catch(e){message.textContent='등록하지 못했습니다: '+e.message;}finally{pending=false;poll();}
   }
   async function poll(){
@@ -710,7 +1111,10 @@
       const data=await request(endpoint+'/surface/status');if(endpoint!==base())return;
       if(lastBase!==endpoint||lastFrame!==data.frame_time){lastFrame=data.frame_time;lastBase=endpoint;lastChange=Date.now();}
       const stale=!Number.isFinite(data.frame_time)||Date.now()-lastChange>4000;
-      health.textContent=stale?'카메라 연결을 확인해 주세요. 지금 상태를 알 수 없어요.':!data.enabled?'감시가 꺼져 있어요. ‘감시할 곳 설정’에서 켤 수 있어요.':'자동으로 확인 중 · 쓰레기 종류가 아니라 깨끗할 때와 달라진 모습을 살펴봐요.';
+      health.textContent=stale?'카메라 연결을 확인해 주세요.':!data.enabled?'감시가 꺼져 있어요.':'자동으로 확인 중';
+      /* 간단 모드 잔류물 카드 업데이트 */
+      const hasAlert=(data.surfaces||[]).some(s=>{const c=s.candidates||[];return c.some(x=>x.alert||x.animal);});
+      updateCardState('residue', hasAlert?'warn':'normal', hasAlert?'확인 필요':'이상 없음');
       cards.replaceChildren();
       for(const s of data.surfaces||[]){
         const card=document.createElement('div');card.className='surface-main-card';
@@ -721,29 +1125,53 @@
         if(s.capturing){const progress=document.createElement('progress');progress.max=5;progress.value=s.capture_count;card.append(progress);}
         let controls=card;
         if(s.baseline){controls=document.createElement('details');controls.open=expanded.has(s.id);controls.ontoggle=()=>{if(controls.open)expanded.add(s.id);else expanded.delete(s.id);};const summary=document.createElement('summary');summary.textContent='등록한 모습 보기 · 다시 등록';controls.append(summary);card.append(controls);}
-        const button=document.createElement('button');button.className='btn';button.textContent=s.baseline?'지금 모습으로 다시 등록':'깨끗한 모습 등록';button.disabled=pending||stale||s.age>3||!data.enabled||!!s.capturing;button.onclick=()=>capture(s,data.revision,endpoint);controls.append(button);
-        if(s.baseline&&s.reference){const a=document.createElement('a');a.textContent='기억한 사진 보기';a.href=endpoint+'/surface/reference?file='+encodeURIComponent(s.reference);a.target='_blank';a.rel='noopener';a.style.marginLeft='12px';controls.append(a);}
+        const button=document.createElement('button');button.className='neu-btn sm';button.textContent=s.baseline?'지금 모습으로 다시 등록':'깨끗한 모습 등록';button.disabled=pending||stale||s.age>3||!data.enabled||!!s.capturing;button.onclick=()=>capture(s,data.revision,endpoint);controls.append(button);
+        if(s.baseline&&s.reference){const a=document.createElement('a');a.textContent='기억한 사진 보기';a.href=endpoint+'/surface/reference?file='+encodeURIComponent(s.reference);a.target='_blank';a.rel='noopener';a.style.cssText='margin-left:10px;color:var(--accent);font-size:12px;text-decoration:none';controls.append(a);}
         cards.append(card);
       }
-      if(!(data.surfaces||[]).length)cards.textContent='아직 적용된 영역이 없습니다. ‘영역 설정’에서 먼저 ROI를 지정하세요.';
-    }catch(e){if(endpoint===base()){health.textContent='표면 감시 연결 안 됨 · 감지기 실행 상태와 영상 포트를 확인하세요.';cards.replaceChildren();}}
+      if(!(data.surfaces||[]).length)cards.textContent='아직 적용된 영역이 없습니다. 영역 설정에서 ROI를 지정하세요.';
+    }catch(e){if(endpoint===base()){health.textContent='표면 감시 연결 안 됨';cards.replaceChildren();}}
     finally{loading=false;}
   }
   poll();setInterval(poll,2000);
 })();
 </script>
+
+<!-- ══ 메인 스크립트 ══════════════════════════════════════════════════════════ -->
 <script>
-const MAX_ROWS = 500;
+const MAX_ROWS   = 500;
+const MAX_ALERTS = 5;
 const WARN_EVENTS = new Set(["camera_whiteout","camera_blackout","camera_frozen","camera_stalled"]);
 const CAMERA_OK   = new Set(["camera_ok"]);
 
-let currentFile = "";
-let eventSource = null;
-let counts = { overstay:0, unordered:0, fallen:0, camera:0, door:0, residue:0, total:0 };
-let doorIsOpen = null; /* null=알 수 없음, true=열림, false=닫힘 */
-let newCount = 0;
-let userScrolled = false;
+/* 이벤트 → 한국어 메시지 */
+const EVENT_MSG = {
+  overstay:          { text: "장기 체류 손님 감지",             sev: "warn" },
+  unordered_seated:  { text: "미주문 착석 손님 감지",           sev: "warn" },
+  person_fallen:     { text: "쓰러진 사람 감지 — 즉시 확인 필요", sev: "danger" },
+  door_open:         { text: "출입문이 장시간 열려 있습니다",    sev: "warn" },
+  door_closed:       { text: "출입문이 닫혔습니다",             sev: "info" },
+  residue_trash:     { text: "쓰레기·잔류물 감지",              sev: "warn" },
+  residue_spill:     { text: "액체 흘림 감지",                  sev: "warn" },
+  residue_unknown:   { text: "바닥 변화 감지",                  sev: "warn" },
+  residue_cleared:   { text: "잔류물 해소됨",                   sev: "info" },
+  camera_whiteout:   { text: "카메라 백화 — 렌즈 확인 필요",    sev: "danger" },
+  camera_blackout:   { text: "카메라 암전 — 전원 확인 필요",    sev: "danger" },
+  camera_frozen:     { text: "카메라 정지 — 연결 확인 필요",    sev: "danger" },
+  camera_stalled:    { text: "카메라 신호 없음",                sev: "danger" },
+  camera_ok:         { text: "카메라 정상 복구",                sev: "info" },
+};
 
+let currentFile  = "";
+let eventSource  = null;
+let counts       = { overstay:0, unordered:0, fallen:0, camera:0, door:0, residue:0, total:0 };
+let doorIsOpen   = null;
+let newCount     = 0;
+let logNewCount  = 0;
+let userScrolled = false;
+let currentAdvTab = "monitor";
+
+/* DOM refs */
 const list        = document.getElementById("event-list");
 const emptyMsg    = document.getElementById("empty-msg");
 const autoScroll  = document.getElementById("auto-scroll");
@@ -753,26 +1181,97 @@ const connLabel   = document.getElementById("conn-label");
 const camDot      = document.getElementById("cam-dot");
 const camLabel    = document.getElementById("cam-label");
 const newBadge    = document.getElementById("new-badge");
+const logNewBadge = document.getElementById("log-new-badge");
 const footerFile  = document.getElementById("footer-file");
 const footerCount = document.getElementById("footer-count");
+const streamImg   = document.getElementById("stream-img");
+const camOffline  = document.getElementById("cam-offline");
+const portInput   = document.getElementById("port-input");
+let streamActive  = false;
 
-// ── 탭 전환 ─────────────────────────────────────────────────────────────────
-function switchTab(name, btn) {
-  document.querySelectorAll(".tab-btn").forEach(b => b.classList.remove("active"));
-  document.querySelectorAll(".tab-panel").forEach(p => p.classList.remove("active"));
-  btn.classList.add("active");
-  document.getElementById("tab-" + name).classList.add("active");
-  document.getElementById("feed-extra").style.display = name === "feed" ? "" : "none";
+/* ── 모드 전환 ─────────────────────────────────────────────────────────────── */
+function setMode(mode) {
+  document.documentElement.dataset.mode = mode;
+  localStorage.setItem("dashMode", mode);
+  document.getElementById("panel-easy").style.display     = mode === "easy"     ? "" : "none";
+  document.getElementById("panel-advanced").style.display = mode === "advanced" ? "" : "none";
+  document.getElementById("btn-easy").classList.toggle("active",     mode === "easy");
+  document.getElementById("btn-advanced").classList.toggle("active", mode === "advanced");
+  if (mode === "advanced" && currentAdvTab === "settings") loadSettings();
+}
+
+/* ── 테마 전환 ─────────────────────────────────────────────────────────────── */
+function toggleTheme() {
+  const html = document.documentElement;
+  const next = html.dataset.theme === "dark" ? "light" : "dark";
+  html.dataset.theme = next;
+  localStorage.setItem("dashTheme", next);
+  document.getElementById("theme-btn").textContent = next === "dark" ? "🌙" : "☀";
+}
+
+/* ── 고급 탭 전환 ───────────────────────────────────────────────────────────── */
+function switchAdvTab(name) {
+  currentAdvTab = name;
+  ["monitor","settings","logs"].forEach(t => {
+    document.getElementById("adv-" + t).classList.toggle("active", t === name);
+    document.getElementById("atab-" + t).classList.toggle("active", t === name);
+  });
   if (name === "settings") loadSettings();
+  if (name === "logs") {
+    logNewCount = 0;
+    if (logNewBadge) { logNewBadge.style.display = "none"; logNewBadge.textContent = "0"; }
+  }
 }
 
-// ── 슬라이더 표시값 동기화 ──────────────────────────────────────────────────
-function syncDisplay(el) {
-  const disp = document.getElementById("disp-" + el.id.replace("cfg-",""));
-  if (disp) disp.textContent = el.value;
+/* ── 간단 모드 카드 업데이트 ────────────────────────────────────────────────── */
+function updateCardState(id, state, text) {
+  const card = document.getElementById("card-" + id);
+  const label = document.getElementById("cs-" + id);
+  if (card)  card.dataset.state = state;
+  if (label) label.textContent  = text;
 }
 
-// ── 카운트 갱신 ─────────────────────────────────────────────────────────────
+function updateEasyCards() {
+  updateCardState("overstay",   counts.overstay   > 0 ? "warn"   : "normal", counts.overstay   > 0 ? `${counts.overstay}건 감지됨`   : "이상 없음");
+  updateCardState("unordered",  counts.unordered  > 0 ? "warn"   : "normal", counts.unordered  > 0 ? `${counts.unordered}건 감지됨`  : "이상 없음");
+  updateCardState("fallen",     counts.fallen     > 0 ? "danger" : "normal", counts.fallen     > 0 ? "즉시 확인 필요!"   : "이상 없음");
+  /* door card updated by pollDoorState() */
+  /* residue card updated by surface monitor script */
+  updateCardState("camera-easy",counts.camera     > 0 ? "danger" : "normal", counts.camera     > 0 ? "장애 감지됨"       : "정상");
+}
+
+/* ── 간단 모드 알림 목록 ──────────────────────────────────────────────────── */
+let alertItems = [];
+function appendAlert(e) {
+  const info = EVENT_MSG[e.event || ""] || null;
+  if (!info || info.sev === "info") return; /* 해소 이벤트는 표시 안 함 */
+  const empty = document.getElementById("alert-empty");
+  if (empty) empty.remove();
+
+  const ts = (e.ts || "").replace("T", " ").substring(5, 16); /* MM-DD HH:MM */
+  const item = document.createElement("div");
+  item.className = "alert-item";
+  item.innerHTML = `
+    <div class="alert-dot ${info.sev}"></div>
+    <div class="alert-msg">${info.text}</div>
+    <div class="alert-ts">${ts}</div>`;
+
+  const al = document.getElementById("alert-list");
+  al.insertBefore(item, al.firstChild);
+  alertItems.unshift(item);
+  if (alertItems.length > MAX_ALERTS) {
+    const old = alertItems.pop();
+    if (old.parentNode) old.parentNode.removeChild(old);
+  }
+}
+
+function clearAlerts() {
+  const al = document.getElementById("alert-list");
+  al.innerHTML = '<div class="alert-empty" id="alert-empty">감지된 알림이 없습니다.</div>';
+  alertItems = [];
+}
+
+/* ── 이벤트 카운트 ──────────────────────────────────────────────────────────── */
 function updateCounts() {
   document.getElementById("cnt-overstay").textContent = counts.overstay;
   document.getElementById("cnt-unordered").textContent = counts.unordered;
@@ -782,77 +1281,74 @@ function updateCounts() {
   document.getElementById("cnt-residue").textContent = counts.residue;
   document.getElementById("cnt-total").textContent = counts.total;
   footerCount.textContent = `총 ${counts.total}건`;
-  const badge = document.getElementById("door-state-badge");
-  if (doorIsOpen === true) {
-    badge.textContent = "True (열림)"; badge.style.color = "var(--orange)";
-  } else if (doorIsOpen === false) {
-    badge.textContent = "False (닫힘)"; badge.style.color = "var(--green)";
-  } else {
-    badge.textContent = "—"; badge.style.color = "var(--muted)";
-  }
+  updateEasyCards();
 }
 
 function countEvent(e) {
   counts.total++;
   const ev = e.event || "";
-  if (ev === "overstay") counts.overstay++;
+  if (ev === "overstay")           counts.overstay++;
   else if (ev === "unordered_seated") counts.unordered++;
-  else if (ev === "person_fallen") counts.fallen++;
-  else if (WARN_EVENTS.has(ev)) counts.camera++;
-  else if (ev === "door_open")   { counts.door++; doorIsOpen = true; }
-  else if (ev === "door_closed") { doorIsOpen = false; }
-  else if (ev === "residue_trash" || ev === "residue_spill" || ev === "residue_unknown") counts.residue++;
+  else if (ev === "person_fallen")    counts.fallen++;
+  else if (WARN_EVENTS.has(ev))       counts.camera++;
+  else if (ev === "door_open")      { counts.door++; doorIsOpen = true; }
+  else if (ev === "door_closed")    { doorIsOpen = false; }
+  else if (ev.startsWith("residue_") && ev !== "residue_cleared") counts.residue++;
   updateCounts();
 }
 
-// ── 이벤트 행 ───────────────────────────────────────────────────────────────
-function rowClass(e) {
-  const ev = e.event || "";
-  if (ev === "overstay" || ev === "person_fallen") return "ev-overstay";
-  if (ev === "unordered_seated") return "ev-unordered";
-  if (ev === "door_open") return "ev-door-open";
-  if (WARN_EVENTS.has(ev)) return "ev-camera-warn";
-  if (CAMERA_OK.has(ev)) return "ev-camera-ok";
-  if (ev === "residue_trash" || ev === "residue_unknown") return "ev-residue-trash";
-  if (ev === "residue_spill") return "ev-residue-spill";
-  if (ev === "residue_cleared") return "ev-residue-cleared";
-  return "";
-}
-
-function appendEvent(e, prepend=false) {
+/* ── 이벤트 행 ──────────────────────────────────────────────────────────────── */
+function appendEvent(e, prepend = false) {
   if (emptyMsg.parentNode === list) list.removeChild(emptyMsg);
   while (list.children.length >= MAX_ROWS) list.removeChild(list.firstChild);
 
   const row = document.createElement("div");
-  row.className = "event-row " + rowClass(e);
+  row.className = "event-row";
 
   const level = document.createElement("span");
-  level.className = "event-level level-" + e.level;
-  level.textContent = e.level;
+  level.className = "event-level level-" + (e.level || "INFO");
+  level.textContent = e.level || "INFO";
 
-  const ts  = el("span", "event-ts",     e.ts.replace("T"," "));
-  const mod = el("span", "event-module", e.module);
-  const msg = el("span", "event-msg",    e.message);
-  msg.title = e.message;
+  row.append(
+    mkSpan("event-ts",     (e.ts || "").replace("T", " ")),
+    level,
+    mkSpan("event-module", e.module || ""),
+    mkSpan("event-msg",    e.message || "")
+  );
+  row.lastChild.title = e.message || "";
 
-  row.append(ts, level, mod, msg);
   if (prepend) list.insertBefore(row, list.firstChild);
   else         list.appendChild(row);
+
+  /* 레벨 필터 */
+  const filters = document.querySelectorAll(".level-filter");
+  const activeLevel = new Set([...filters].filter(f => f.checked).map(f => f.value));
+  if (!activeLevel.has(e.level || "INFO")) row.style.display = "none";
+
   return row;
 }
 
-function el(tag, cls, text) {
-  const e = document.createElement(tag);
-  e.className = cls;
-  e.textContent = text;
-  return e;
+function mkSpan(cls, text) {
+  const s = document.createElement("span");
+  s.className = cls; s.textContent = text; return s;
 }
 
-// ── 카메라 상태 ─────────────────────────────────────────────────────────────
+/* ── 레벨 필터 ─────────────────────────────────────────────────────────────── */
+document.querySelectorAll(".level-filter").forEach(cb => {
+  cb.addEventListener("change", () => {
+    const active = new Set([...document.querySelectorAll(".level-filter")].filter(f => f.checked).map(f => f.value));
+    document.querySelectorAll(".event-row").forEach(row => {
+      const lvl = row.querySelector(".event-level");
+      row.style.display = (!lvl || active.has(lvl.textContent)) ? "" : "none";
+    });
+  });
+});
+
+/* ── 카메라 상태 이벤트 ──────────────────────────────────────────────────────── */
 function updateCamState(e) {
   const ev = (e.event || "").toLowerCase();
   if (e.module !== "camera") return;
-  if (ev.includes("whiteout") || ev.includes("blackout") || ev.includes("frozen") || ev.includes("stalled")) {
+  if (["whiteout","blackout","frozen","stalled"].some(k => ev.includes(k))) {
     camDot.className = "cam-dot warn";
     camLabel.textContent = `카메라 장애: ${e.event}`;
   } else if (ev === "ok" || ev === "camera_ok") {
@@ -861,7 +1357,7 @@ function updateCamState(e) {
   }
 }
 
-// ── 자동 스크롤 ─────────────────────────────────────────────────────────────
+/* ── 자동 스크롤 ─────────────────────────────────────────────────────────────── */
 list.addEventListener("scroll", () => {
   const atBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 40;
   userScrolled = !atBottom;
@@ -876,9 +1372,17 @@ function scrollToBottom() {
     newBadge.textContent = newCount > 99 ? "99+" : newCount;
     newBadge.style.display = "";
   }
+  /* 로그 탭 미활성 시 배지 업데이트 */
+  if (currentAdvTab !== "logs") {
+    logNewCount++;
+    if (logNewBadge) {
+      logNewBadge.textContent = logNewCount > 99 ? "99+" : logNewCount;
+      logNewBadge.style.display = "";
+    }
+  }
 }
 
-// ── SSE ─────────────────────────────────────────────────────────────────────
+/* ── SSE ────────────────────────────────────────────────────────────────────── */
 function connect(file) {
   if (eventSource) { eventSource.close(); eventSource = null; }
   setConnState("connecting");
@@ -889,7 +1393,7 @@ function connect(file) {
     try {
       const e = JSON.parse(ev.data);
       if (!e.ts) return;
-      countEvent(e); updateCamState(e); appendEvent(e); scrollToBottom();
+      countEvent(e); updateCamState(e); appendEvent(e); appendAlert(e); scrollToBottom();
     } catch (_) {}
   };
   eventSource.addEventListener("heartbeat", () => {});
@@ -902,35 +1406,38 @@ function setConnState(state) {
   connLabel.textContent = { connecting:"연결 중", connected:"연결됨", disconnected:"연결 끊김" }[state] || state;
 }
 
-// ── 히스토리 ────────────────────────────────────────────────────────────────
+/* ── 히스토리 ───────────────────────────────────────────────────────────────── */
 async function loadHistory(file) {
   list.innerHTML = "";
   list.appendChild(emptyMsg);
   counts = { overstay:0, unordered:0, fallen:0, camera:0, door:0, residue:0, total:0 };
-  doorIsOpen = null;
-  newCount = 0; newBadge.style.display = "none";
-  camDot.className = "cam-dot"; camLabel.textContent = "카메라 확인 중"; updateCounts();
-
+  doorIsOpen = null; newCount = 0; newBadge.style.display = "none";
+  logNewCount = 0; if (logNewBadge) logNewBadge.style.display = "none";
+  camDot.className = "cam-dot"; camLabel.textContent = "카메라 확인 중";
+  alertItems = [];
+  clearAlerts();
+  updateCounts();
   const url = `/api/events/history${file ? "?file=" + encodeURIComponent(file) : ""}`;
   try {
     const res = await fetch(url);
     const events = await res.json();
     if (!Array.isArray(events)) return;
     events.forEach(e => { countEvent(e); updateCamState(e); appendEvent(e); });
+    /* 간단 모드 알림: 최근 5개만 역순으로 */
+    const alertable = events.filter(e => EVENT_MSG[e.event || ""] && EVENT_MSG[e.event].sev !== "info");
+    alertable.slice(-MAX_ALERTS).reverse().forEach(e => appendAlert(e));
     scrollToBottom();
   } catch (_) {}
 }
 
-// ── 로그 파일 목록 ───────────────────────────────────────────────────────────
+/* ── 로그 파일 목록 ─────────────────────────────────────────────────────────── */
 async function loadLogList() {
   try {
     const res = await fetch("/api/logs");
     const files = await res.json();
     logSelect.innerHTML = "";
-    if (files.length === 0) {
-      const opt = document.createElement("option");
-      opt.textContent = "로그 파일 없음 (detector 실행 필요)";
-      logSelect.appendChild(opt);
+    if (!files.length) {
+      logSelect.innerHTML = '<option>로그 파일 없음 (detector 실행 필요)</option>';
       return;
     }
     files.forEach((f, i) => {
@@ -941,9 +1448,7 @@ async function loadLogList() {
     });
     selectFile(files[0]);
   } catch (_) {
-    const opt = document.createElement("option");
-    opt.textContent = "서버 연결 실패";
-    logSelect.appendChild(opt);
+    logSelect.innerHTML = '<option>서버 연결 실패</option>';
   }
 }
 
@@ -956,12 +1461,23 @@ function selectFile(file) {
 
 logSelect.addEventListener("change", () => selectFile(logSelect.value));
 
-// ── 카메라 스트림 ────────────────────────────────────────────────────────────
-const streamImg  = document.getElementById("stream-img");
-const camOffline = document.getElementById("cam-offline");
-const portInput  = document.getElementById("port-input");
-let streamActive = false;
+/* ── CSV 내보내기 ───────────────────────────────────────────────────────────── */
+function exportCSV() {
+  const rows = [...document.querySelectorAll(".event-row")];
+  if (!rows.length) return;
+  const lines = ["타임스탬프,레벨,모듈,메시지"];
+  rows.forEach(r => {
+    const cells = [...r.querySelectorAll("span")].map(s => `"${(s.textContent||"").replace(/"/g,'""')}"`);
+    lines.push(cells.join(","));
+  });
+  const blob = new Blob(["﻿" + lines.join("\n")], { type: "text/csv;charset=utf-8" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `hunik-log-${new Date().toISOString().slice(0,10)}.csv`;
+  a.click();
+}
 
+/* ── 카메라 스트림 ─────────────────────────────────────────────────────────── */
 function connectStream() {
   const port = parseInt(portInput.value, 10) || 8081;
   streamImg.src = `http://${window.location.hostname}:${port}/stream`;
@@ -970,16 +1486,28 @@ function connectStream() {
   streamActive = true;
 }
 function disconnectStream() {
-  streamImg.src = ""; streamImg.style.display = "none"; camOffline.style.display = ""; streamActive = false;
+  streamImg.src = ""; streamImg.style.display = "none";
+  camOffline.style.display = ""; streamActive = false;
 }
 function onStreamError() {
   if (!streamActive) return;
-  camOffline.innerHTML = "<span>📷</span><span>스트림 연결 실패 — detector가 실행 중인지 확인하세요</span>";
-  camOffline.style.display = ""; streamImg.style.display = "none";
+  camOffline.innerHTML = '<span style="font-size:36px">📷</span><span>스트림 연결 실패 — detector 실행 상태 확인</span><button class="cam-reconnect" onclick="connectStream()">재연결</button>';
+  camOffline.style.display = "";
+  streamImg.style.display = "none";
 }
-function onStreamLoad() { camOffline.style.display = "none"; streamImg.style.display = ""; }
+function onStreamLoad() {
+  camOffline.style.display = "none";
+  streamImg.style.display = "";
+  camDot.className = "cam-dot";
+  camLabel.textContent = "카메라 연결됨";
+}
 
-// ── 설정 로드/저장 ───────────────────────────────────────────────────────────
+/* ── 설정 로드/저장 ────────────────────────────────────────────────────────── */
+function syncDisplay(el) {
+  const disp = document.getElementById("disp-" + el.id.replace("cfg-",""));
+  if (disp) disp.textContent = el.value;
+}
+
 function cfgVal(id) {
   const el = document.getElementById("cfg-" + id);
   if (!el) return undefined;
@@ -1005,17 +1533,17 @@ async function loadSettings() {
       "stream_port","motion_gate","motion_ratio_threshold","idle_refresh_seconds",
       "dwell_limit_seconds","unordered_grace_seconds","fall_hold_seconds",
       "luma_black_threshold","luma_white_threshold","frozen_frames_threshold",
-      "door_enabled","door_diff_threshold","door_confirm_frames","door_open_seconds","door_roi_x","door_roi_y","door_roi_w","door_roi_h",
+      "door_enabled","door_diff_threshold","door_confirm_frames","door_open_seconds",
+      "door_roi_x","door_roi_y","door_roi_w","door_roi_h",
       "residue_enabled","residue_diff_threshold","residue_min_blocks","residue_person_margin_blocks",
-      "residue_confirm_seconds","residue_clear_seconds","residue_baseline_refresh_seconds","residue_global_change_ratio",
-      "fall_aspect_ratio_kp","fall_aspect_ratio_nokp",
-      "slot_warn_seconds","slot_urgent_seconds","slot_ttl_seconds","slot_dirty_threshold","slot_min_dirty_blocks",
-      "perf_log_interval_seconds",
-      "show_animal","show_food","show_drink","show_furniture"
+      "residue_confirm_seconds","residue_clear_seconds","residue_baseline_refresh_seconds",
+      "residue_global_change_ratio","fall_aspect_ratio_kp","fall_aspect_ratio_nokp",
+      "slot_warn_seconds","slot_urgent_seconds","slot_ttl_seconds",
+      "slot_dirty_threshold","slot_min_dirty_blocks","perf_log_interval_seconds",
+      "show_animal","show_food","show_drink","show_furniture","tier2_always"
     ];
     keys.forEach(k => { if (cfg[k] !== undefined) setCfgVal(k, cfg[k]); });
     updateRoiSummary();
-    // 스트림 포트를 연결 포트에도 동기화
     if (cfg.stream_port) portInput.value = cfg.stream_port;
     document.getElementById("save-status").textContent = "";
     refreshDoorPreview("closed");
@@ -1027,47 +1555,47 @@ async function loadSettings() {
 
 async function saveSettings() {
   const st = document.getElementById("save-status");
-  st.textContent = "ROI 설정 저장 중...";
-  st.style.color = "var(--muted)";
+  st.textContent = "저장 중..."; st.style.color = "var(--muted)";
   const cfg = {
-    stream_port:              cfgVal("stream_port"),
-    motion_gate:              cfgVal("motion_gate"),
-    motion_ratio_threshold:   cfgVal("motion_ratio_threshold"),
-    idle_refresh_seconds:     cfgVal("idle_refresh_seconds"),
-    dwell_limit_seconds:      cfgVal("dwell_limit_seconds"),
-    unordered_grace_seconds:  cfgVal("unordered_grace_seconds"),
-    fall_hold_seconds:        cfgVal("fall_hold_seconds"),
-    luma_black_threshold:     cfgVal("luma_black_threshold"),
-    luma_white_threshold:     cfgVal("luma_white_threshold"),
-    frozen_frames_threshold:  cfgVal("frozen_frames_threshold"),
-    door_enabled:             cfgVal("door_enabled"),
-    door_diff_threshold:      cfgVal("door_diff_threshold"),
-    door_confirm_frames:      cfgVal("door_confirm_frames"),
-    door_open_seconds:        cfgVal("door_open_seconds"),
-    door_roi_x:               cfgVal("door_roi_x"),
-    door_roi_y:               cfgVal("door_roi_y"),
-    door_roi_w:               cfgVal("door_roi_w"),
-    door_roi_h:               cfgVal("door_roi_h"),
-    residue_enabled:                    cfgVal("residue_enabled"),
-    residue_diff_threshold:             cfgVal("residue_diff_threshold"),
-    residue_min_blocks:                 cfgVal("residue_min_blocks"),
-    residue_person_margin_blocks:       cfgVal("residue_person_margin_blocks"),
-    residue_confirm_seconds:            cfgVal("residue_confirm_seconds"),
-    residue_clear_seconds:              cfgVal("residue_clear_seconds"),
-    residue_baseline_refresh_seconds:   cfgVal("residue_baseline_refresh_seconds"),
-    residue_global_change_ratio:        cfgVal("residue_global_change_ratio"),
-    fall_aspect_ratio_kp:               cfgVal("fall_aspect_ratio_kp"),
-    fall_aspect_ratio_nokp:             cfgVal("fall_aspect_ratio_nokp"),
-    slot_warn_seconds:                  cfgVal("slot_warn_seconds"),
-    slot_urgent_seconds:                cfgVal("slot_urgent_seconds"),
-    slot_ttl_seconds:                   cfgVal("slot_ttl_seconds"),
-    slot_dirty_threshold:               cfgVal("slot_dirty_threshold"),
-    slot_min_dirty_blocks:              cfgVal("slot_min_dirty_blocks"),
-    perf_log_interval_seconds:          cfgVal("perf_log_interval_seconds"),
-    show_animal:                        cfgVal("show_animal"),
-    show_food:                          cfgVal("show_food"),
-    show_drink:                         cfgVal("show_drink"),
-    show_furniture:                     cfgVal("show_furniture"),
+    stream_port:                    cfgVal("stream_port"),
+    motion_gate:                    cfgVal("motion_gate"),
+    motion_ratio_threshold:         cfgVal("motion_ratio_threshold"),
+    idle_refresh_seconds:           cfgVal("idle_refresh_seconds"),
+    dwell_limit_seconds:            cfgVal("dwell_limit_seconds"),
+    unordered_grace_seconds:        cfgVal("unordered_grace_seconds"),
+    fall_hold_seconds:              cfgVal("fall_hold_seconds"),
+    luma_black_threshold:           cfgVal("luma_black_threshold"),
+    luma_white_threshold:           cfgVal("luma_white_threshold"),
+    frozen_frames_threshold:        cfgVal("frozen_frames_threshold"),
+    door_enabled:                   cfgVal("door_enabled"),
+    door_diff_threshold:            cfgVal("door_diff_threshold"),
+    door_confirm_frames:            cfgVal("door_confirm_frames"),
+    door_open_seconds:              cfgVal("door_open_seconds"),
+    door_roi_x:                     cfgVal("door_roi_x"),
+    door_roi_y:                     cfgVal("door_roi_y"),
+    door_roi_w:                     cfgVal("door_roi_w"),
+    door_roi_h:                     cfgVal("door_roi_h"),
+    residue_enabled:                cfgVal("residue_enabled"),
+    residue_diff_threshold:         cfgVal("residue_diff_threshold"),
+    residue_min_blocks:             cfgVal("residue_min_blocks"),
+    residue_person_margin_blocks:   cfgVal("residue_person_margin_blocks"),
+    residue_confirm_seconds:        cfgVal("residue_confirm_seconds"),
+    residue_clear_seconds:          cfgVal("residue_clear_seconds"),
+    residue_baseline_refresh_seconds: cfgVal("residue_baseline_refresh_seconds"),
+    residue_global_change_ratio:    cfgVal("residue_global_change_ratio"),
+    fall_aspect_ratio_kp:           cfgVal("fall_aspect_ratio_kp"),
+    fall_aspect_ratio_nokp:         cfgVal("fall_aspect_ratio_nokp"),
+    slot_warn_seconds:              cfgVal("slot_warn_seconds"),
+    slot_urgent_seconds:            cfgVal("slot_urgent_seconds"),
+    slot_ttl_seconds:               cfgVal("slot_ttl_seconds"),
+    slot_dirty_threshold:           cfgVal("slot_dirty_threshold"),
+    slot_min_dirty_blocks:          cfgVal("slot_min_dirty_blocks"),
+    perf_log_interval_seconds:      cfgVal("perf_log_interval_seconds"),
+    show_animal:                    cfgVal("show_animal"),
+    show_food:                      cfgVal("show_food"),
+    show_drink:                     cfgVal("show_drink"),
+    show_furniture:                 cfgVal("show_furniture"),
+    tier2_always:                   cfgVal("tier2_always"),
   };
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 5000);
@@ -1080,29 +1608,22 @@ async function saveSettings() {
     });
     const json = await res.json();
     if (json.ok) {
-      st.textContent = "저장됨 — 문 감지/ROI는 최대 2초 내 반영됩니다. 스트림 포트 변경은 detector 재시작이 필요합니다.";
+      st.textContent = "저장됨 — 최대 2초 내 반영됩니다.";
       st.style.color = "var(--green)";
       setTimeout(() => { st.textContent = ""; st.style.color = ""; }, 4000);
       return true;
     } else {
-      st.textContent = "저장 실패";
-      st.style.color = "var(--red)";
-      setTimeout(() => { st.textContent = ""; st.style.color = ""; }, 4000);
+      st.textContent = "저장 실패"; st.style.color = "var(--red)";
       return false;
     }
   } catch (_) {
-    st.textContent = "저장 실패 — 대시보드 서버(8080)가 실행 중인지 확인하세요.";
-    st.style.color = "var(--red)";
-    return false;
-  } finally {
-    clearTimeout(timeout);
-  }
+    st.textContent = "저장 실패 — 대시보드 서버 확인";
+    st.style.color = "var(--red)"; return false;
+  } finally { clearTimeout(timeout); }
 }
 
-// ── 문 여닫이 기준 이미지 ────────────────────────────────────────────────────
-function getStreamPort() {
-  return parseInt(portInput.value, 10) || 8081;
-}
+/* ── 문 기준 이미지 ────────────────────────────────────────────────────────── */
+function getStreamPort() { return parseInt(portInput.value, 10) || 8081; }
 
 async function captureDoorRef(state) {
   const port = getStreamPort();
@@ -1110,17 +1631,11 @@ async function captureDoorRef(state) {
   const label = state === "open" ? "열림" : "닫힘";
   st.textContent = `${label} 캡처 중...`;
   try {
-    const res = await fetch(`http://${window.location.hostname}:${port}/door/save?state=${state}`, { method: "POST" });
+    const res = await fetch(`http://${location.hostname}:${port}/door/save?state=${state}`, { method: "POST" });
     const json = await res.json();
-    if (json.ok) {
-      st.textContent = `${label} 기준 이미지 저장됨 — detector가 최대 2초 내 다시 읽습니다.`;
-      refreshDoorPreview(state);
-    } else {
-      st.textContent = json.error || "캡처 실패";
-    }
-  } catch (_) {
-    st.textContent = "detector 미실행 또는 포트 오류";
-  }
+    if (json.ok) { st.textContent = `${label} 기준 저장됨`; refreshDoorPreview(state); }
+    else          { st.textContent = json.error || "캡처 실패"; }
+  } catch (_) { st.textContent = "detector 미실행 또는 포트 오류"; }
 }
 
 function refreshDoorPreview(state) {
@@ -1129,72 +1644,68 @@ function refreshDoorPreview(state) {
   const phId  = state === "open" ? "door-ph-open"        : "door-ph-closed";
   const img   = document.getElementById(imgId);
   const ph    = document.getElementById(phId);
-  const src   = `http://${window.location.hostname}:${port}/door/preview?state=${state}&t=${Date.now()}`;
+  const src   = `http://${location.hostname}:${port}/door/preview?state=${state}&t=${Date.now()}`;
   const tmp   = new Image();
   tmp.onload  = () => { img.src = src; img.style.display = ""; ph.style.display = "none"; };
   tmp.onerror = () => { img.style.display = "none"; ph.style.display = ""; };
   tmp.src = src;
 }
 
-// ── 잔류물 기준 이미지 ──────────────────────────────────────────────────────
+/* ── 잔류물 기준 이미지 ──────────────────────────────────────────────────────── */
 async function captureResidueRef() {
   const port = getStreamPort();
   const st = document.getElementById("residue-status");
   st.textContent = "청결 기준 캡처 중...";
   try {
-    const res = await fetch(`http://${window.location.hostname}:${port}/residue/save`, { method: "POST" });
+    const res = await fetch(`http://${location.hostname}:${port}/residue/save`, { method: "POST" });
     const json = await res.json();
-    if (json.ok) {
-      st.textContent = "청결 기준 이미지 저장됨 — detector가 최대 2초 내 다시 읽습니다.";
-      refreshResiduePreview();
-    } else {
-      st.textContent = json.error || "캡처 실패";
-    }
-  } catch (_) {
-    st.textContent = "detector 미실행 또는 포트 오류";
-  }
+    if (json.ok) { st.textContent = "청결 기준 저장됨"; refreshResiduePreview(); }
+    else          { st.textContent = json.error || "캡처 실패"; }
+  } catch (_) { st.textContent = "detector 미실행 또는 포트 오류"; }
 }
 
 function refreshResiduePreview() {
   const port = getStreamPort();
   const img  = document.getElementById("residue-preview-img");
   const ph   = document.getElementById("residue-preview-ph");
-  /* 별도 /residue/preview 엔드포인트 미구현 — 현재 스냅샷으로 대체 */
-  const src  = `http://${window.location.hostname}:${port}/snapshot?t=${Date.now()}`;
+  const src  = `http://${location.hostname}:${port}/snapshot?t=${Date.now()}`;
   const tmp  = new Image();
   tmp.onload  = () => { img.src = src; img.style.display = ""; ph.style.display = "none"; };
   tmp.onerror = () => { img.style.display = "none"; ph.style.display = ""; };
   tmp.src = src;
 }
 
-// ── 문 현재 상태 실시간 폴링 ─────────────────────────────────────────────────
+/* ── 문 상태 실시간 폴링 ──────────────────────────────────────────────────────── */
 async function pollDoorState() {
   const port = getStreamPort();
   const badge = document.getElementById("door-state-badge");
   try {
-    const res = await fetch(`http://${window.location.hostname}:${port}/door/state`);
+    const res = await fetch(`http://${location.hostname}:${port}/door/state`);
     const json = await res.json();
     if (json.state === 1) {
-      badge.textContent = "True (열림)"; badge.style.color = "var(--orange)";
+      badge.className = "door-pill open"; badge.textContent = "🔴 열림";
       doorIsOpen = true;
+      updateCardState("door", "warn", "현재 열려 있음");
     } else if (json.state === 0) {
-      badge.textContent = "False (닫힘)"; badge.style.color = "var(--green)";
+      badge.className = "door-pill closed"; badge.textContent = "🟢 닫힘";
       doorIsOpen = false;
+      updateCardState("door", "normal", "닫힘 정상");
     } else if (json.enabled) {
-      /* 감지는 활성이지만 기준 이미지가 없어 판단 불가 */
-      badge.textContent = "기준 없음"; badge.style.color = "var(--muted)";
+      badge.className = "door-pill unknown"; badge.textContent = "기준 없음";
+      updateCardState("door", "normal", "기준 미설정");
     } else {
-      badge.textContent = "비활성"; badge.style.color = "var(--muted)";
+      badge.className = "door-pill unknown"; badge.textContent = "비활성";
+      updateCardState("door", "normal", "감지 비활성");
     }
   } catch (_) {
-    /* detector 미연결 */
-    badge.textContent = "—"; badge.style.color = "var(--muted)";
+    badge.className = "door-pill unknown"; badge.textContent = "— 연결 안 됨";
+    updateCardState("door", "normal", "확인 중");
   }
 }
 setInterval(pollDoorState, 3000);
 pollDoorState();
 
-// ── 문 ROI 드래그 선택기 ─────────────────────────────────────────────────────
+/* ── 문 ROI 선택기 ────────────────────────────────────────────────────────── */
 let _roiImg = null, _roiDrag = null;
 
 function updateRoiSummary() {
@@ -1204,10 +1715,10 @@ function updateRoiSummary() {
   const h = parseInt(document.getElementById("cfg-door_roi_h").value, 10) || 0;
   const el = document.getElementById("roi-summary");
   if (w > 0 && h > 0) {
-    el.textContent = `선택된 ROI: x=${x}, y=${y}, 너비=${w}, 높이=${h}px. 이 영역만 문 상태 판단에 사용합니다.`;
+    el.textContent = `선택된 ROI: x=${x}, y=${y}, 너비=${w}, 높이=${h}px`;
     el.style.color = "var(--green)";
   } else {
-    el.textContent = "ROI를 지정하지 않았습니다. 현재는 화면 전체를 비교하므로 오탐 가능성이 높습니다.";
+    el.textContent = "ROI 미지정 — 화면 전체 비교 (오탐 가능성 높음)";
     el.style.color = "var(--orange)";
   }
 }
@@ -1224,7 +1735,6 @@ async function openRoiPicker() {
     canvas.height = img.naturalHeight;
     const ctx = canvas.getContext("2d");
     ctx.drawImage(img, 0, 0);
-    // 기존 ROI가 있으면 표시
     const rx = parseInt(document.getElementById("cfg-door_roi_x").value)||0;
     const ry = parseInt(document.getElementById("cfg-door_roi_y").value)||0;
     const rw = parseInt(document.getElementById("cfg-door_roi_w").value)||0;
@@ -1234,25 +1744,18 @@ async function openRoiPicker() {
     document.getElementById("roi-hint").textContent = "이미지 위에서 드래그하여 ROI를 선택하세요.";
     setupRoiDrag(canvas);
   };
-  img.onerror = () => {
-    document.getElementById("roi-hint").textContent = "스냅샷 실패 — detector가 실행 중인지 확인하세요.";
-  };
-  img.src = `http://${window.location.hostname}:${port}/snapshot?t=${Date.now()}`;
+  img.onerror = () => { document.getElementById("roi-hint").textContent = "스냅샷 실패 — detector 확인"; };
+  img.src = `http://${location.hostname}:${port}/snapshot?t=${Date.now()}`;
 }
 
 function drawRoiRect(ctx, x, y, w, h) {
-  /* 선택 영역 외부를 반투명 오버레이로 표시해 선택 범위를 직관적으로 보여줍니다. */
   ctx.save();
   ctx.fillStyle = "rgba(0,0,0,0.4)";
   const iw = ctx.canvas.width, ih = ctx.canvas.height;
-  ctx.fillRect(0, 0, iw, y);
-  ctx.fillRect(0, y + h, iw, ih - y - h);
-  ctx.fillRect(0, y, x, h);
-  ctx.fillRect(x + w, y, iw - x - w, h);
-  ctx.strokeStyle = "#ff3333";
-  ctx.lineWidth = Math.max(2, iw / 240);
-  ctx.strokeRect(x, y, w, h);
-  ctx.restore();
+  ctx.fillRect(0,0,iw,y); ctx.fillRect(0,y+h,iw,ih-y-h);
+  ctx.fillRect(0,y,x,h); ctx.fillRect(x+w,y,iw-x-w,h);
+  ctx.strokeStyle = "#ff3333"; ctx.lineWidth = Math.max(2,iw/240);
+  ctx.strokeRect(x,y,w,h); ctx.restore();
 }
 
 function setupRoiDrag(canvas) {
@@ -1260,97 +1763,81 @@ function setupRoiDrag(canvas) {
   canvas.style.touchAction = "none";
   const getPos = e => {
     const r = canvas.getBoundingClientRect();
-    const scaleX = canvas.width  / r.width;
-    const scaleY = canvas.height / r.height;
     return {
-      x: Math.max(0, Math.min(canvas.width,  (e.clientX - r.left) * scaleX)),
-      y: Math.max(0, Math.min(canvas.height, (e.clientY - r.top)  * scaleY))
+      x: Math.max(0, Math.min(canvas.width,  (e.clientX-r.left) * canvas.width/r.width)),
+      y: Math.max(0, Math.min(canvas.height, (e.clientY-r.top)  * canvas.height/r.height))
     };
   };
-  const redraw = e => {
+  canvas.onpointerdown = e => { e.preventDefault(); _roiDrag = getPos(e); canvas.setPointerCapture(e.pointerId); };
+  canvas.onpointermove = e => {
     if (!_roiDrag) return;
     const p = getPos(e);
-    const x = Math.min(_roiDrag.x, p.x), y = Math.min(_roiDrag.y, p.y);
-    const w = Math.abs(p.x - _roiDrag.x), h = Math.abs(p.y - _roiDrag.y);
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.drawImage(_roiImg, 0, 0);
-    if (w > 4 && h > 4) drawRoiRect(ctx, x, y, w, h);
+    const x=Math.min(_roiDrag.x,p.x),y=Math.min(_roiDrag.y,p.y),w=Math.abs(p.x-_roiDrag.x),h=Math.abs(p.y-_roiDrag.y);
+    ctx.clearRect(0,0,canvas.width,canvas.height); ctx.drawImage(_roiImg,0,0);
+    if (w>4&&h>4) drawRoiRect(ctx,x,y,w,h);
   };
-  const finish = e => {
-    if (!_roiDrag) return;
-    const p = getPos(e);
-    const x = Math.round(Math.min(_roiDrag.x, p.x));
-    const y = Math.round(Math.min(_roiDrag.y, p.y));
-    const w = Math.round(Math.abs(p.x - _roiDrag.x));
-    const h = Math.round(Math.abs(p.y - _roiDrag.y));
-    _roiDrag = null;
-    if (w < 4 || h < 4) return;
-    document.getElementById("cfg-door_roi_x").value = x;
-    document.getElementById("cfg-door_roi_y").value = y;
-    document.getElementById("cfg-door_roi_w").value = w;
-    document.getElementById("cfg-door_roi_h").value = h;
-    document.getElementById("roi-hint").textContent =
-      `x=${x} y=${y} w=${w} h=${h}`;
-    updateRoiSummary();
-    document.getElementById("roi-save-btn").disabled = false;
-    document.getElementById("roi-save-hint").textContent = "선택 완료 — [ROI 저장] 버튼으로 적용하세요.";
-    document.getElementById("roi-save-hint").style.color = "var(--green)";
-  };
-  canvas.onpointerdown = e => {
-    e.preventDefault();
-    _roiDrag = getPos(e);
-    canvas.setPointerCapture(e.pointerId);
-  };
-  canvas.onpointermove = redraw;
   canvas.onpointerup = e => {
-    finish(e);
+    if (!_roiDrag) return;
+    const p=getPos(e);
+    const x=Math.round(Math.min(_roiDrag.x,p.x)),y=Math.round(Math.min(_roiDrag.y,p.y));
+    const w=Math.round(Math.abs(p.x-_roiDrag.x)),h=Math.round(Math.abs(p.y-_roiDrag.y));
+    _roiDrag=null;
     if (canvas.hasPointerCapture(e.pointerId)) canvas.releasePointerCapture(e.pointerId);
+    if (w<4||h<4) return;
+    document.getElementById("cfg-door_roi_x").value=x;
+    document.getElementById("cfg-door_roi_y").value=y;
+    document.getElementById("cfg-door_roi_w").value=w;
+    document.getElementById("cfg-door_roi_h").value=h;
+    document.getElementById("roi-hint").textContent=`x=${x} y=${y} w=${w} h=${h}`;
+    updateRoiSummary();
+    document.getElementById("roi-save-btn").disabled=false;
+    const hint=document.getElementById("roi-save-hint");
+    hint.textContent="선택 완료 — [ROI 저장] 버튼으로 적용하세요.";
+    hint.style.color="var(--green)";
   };
-  canvas.onpointercancel = e => {
-    _roiDrag = null;
-    if (canvas.hasPointerCapture(e.pointerId)) canvas.releasePointerCapture(e.pointerId);
-  };
+  canvas.onpointercancel = e => { _roiDrag=null; if(canvas.hasPointerCapture(e.pointerId))canvas.releasePointerCapture(e.pointerId); };
 }
 
 async function roiSave() {
   const saved = await saveSettings();
-  if (!saved) {
-    document.getElementById("roi-save-hint").textContent = "저장에 실패했습니다. detector 연결과 대시보드 서버를 확인하세요.";
-    document.getElementById("roi-save-hint").style.color = "var(--red)";
-    return;
+  const hint = document.getElementById("roi-save-hint");
+  if (saved) {
+    hint.textContent="저장됨 — 최대 2초 내 반영";
+    hint.style.color="var(--green)";
+    document.getElementById("roi-save-btn").disabled=true;
+    setTimeout(()=>{hint.textContent="드래그로 영역 선택 후 저장하세요.";hint.style.color="var(--muted)";},3000);
+  } else {
+    hint.textContent="저장 실패 — 서버 상태 확인";
+    hint.style.color="var(--red)";
   }
-  document.getElementById("roi-save-hint").textContent = "저장됨 — detector 반영 대기(최대 2초)";
-  document.getElementById("roi-save-hint").style.color = "var(--green)";
-  document.getElementById("roi-save-btn").disabled = true;
-  setTimeout(() => {
-    document.getElementById("roi-save-hint").textContent = "드래그로 영역 선택 후 저장하세요.";
-    document.getElementById("roi-save-hint").style.color = "var(--muted)";
-  }, 3000);
 }
 
 function clearRoi() {
-  ["door_roi_x","door_roi_y","door_roi_w","door_roi_h"]
-    .forEach(k => document.getElementById("cfg-"+k).value = 0);
+  ["door_roi_x","door_roi_y","door_roi_w","door_roi_h"].forEach(k=>document.getElementById("cfg-"+k).value=0);
   updateRoiSummary();
   if (_roiImg) {
-    const canvas = document.getElementById("roi-canvas");
-    const ctx = canvas.getContext("2d");
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.drawImage(_roiImg, 0, 0);
+    const canvas=document.getElementById("roi-canvas");
+    const ctx=canvas.getContext("2d");
+    ctx.clearRect(0,0,canvas.width,canvas.height); ctx.drawImage(_roiImg,0,0);
   }
-  document.getElementById("roi-hint").textContent = "ROI 초기화됨.";
-  const saveBtn = document.getElementById("roi-save-btn");
-  if (saveBtn) {
-    saveBtn.disabled = false;  /* 초기화(0,0,0,0)도 저장할 수 있게 */
-    document.getElementById("roi-save-hint").textContent = "[ROI 저장]으로 초기화를 적용하세요.";
-    document.getElementById("roi-save-hint").style.color = "var(--muted)";
-  }
+  document.getElementById("roi-hint").textContent="ROI 초기화됨.";
+  const saveBtn=document.getElementById("roi-save-btn");
+  if (saveBtn) { saveBtn.disabled=false; document.getElementById("roi-save-hint").textContent="[ROI 저장]으로 초기화를 적용하세요."; }
 }
 
-// ── 초기화 ──────────────────────────────────────────────────────────────────
+/* ── 초기화 ────────────────────────────────────────────────────────────────── */
+/* 저장된 테마/모드 복원 */
+(function init() {
+  const theme = localStorage.getItem("dashTheme") || "light";
+  const mode  = localStorage.getItem("dashMode")  || "easy";
+  document.documentElement.dataset.theme = theme;
+  document.getElementById("theme-btn").textContent = theme === "dark" ? "🌙" : "☀";
+  setMode(mode);
+})();
+
 loadLogList();
 
-// 페이지 로드 시 스트림 자동 연결 — config에서 포트를 읽은 뒤 바로 연결합니다
+/* 페이지 로드 시 스트림 자동 연결 */
 (async () => {
   try {
     const res = await fetch("/api/config");
@@ -1360,21 +1847,19 @@ loadLogList();
   connectStream();
 })();
 
-// 30초마다 로그 목록 갱신
+/* 30초마다 로그 목록 갱신 */
 setInterval(async () => {
   try {
     const res = await fetch("/api/logs");
     const files = await res.json();
-    const current = Array.from(logSelect.options).map(o => o.value);
-    const hasNew = files.some(f => !current.includes(f));
-    if (hasNew) {
-      const selected = logSelect.value;
+    const current = [...logSelect.options].map(o => o.value);
+    if (files.some(f => !current.includes(f))) {
+      const sel = logSelect.value;
       logSelect.innerHTML = "";
-      files.forEach((f, i) => {
+      files.forEach((f,i) => {
         const opt = document.createElement("option");
-        opt.value = f;
-        opt.textContent = i === 0 ? `${f} (최신)` : f;
-        if (f === selected) opt.selected = true;
+        opt.value = f; opt.textContent = i===0 ? `${f} (최신)` : f;
+        if (f===sel) opt.selected = true;
         logSelect.appendChild(opt);
       });
     }
