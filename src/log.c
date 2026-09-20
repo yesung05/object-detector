@@ -63,6 +63,11 @@ int event_log_open(EventLog *log, const char *path,
     /* WAL 모드: 읽기와 쓰기가 서로 막지 않아 대시보드 조회와 충돌 없음 */
     sqlite3_exec(log->db, "PRAGMA journal_mode=WAL;", NULL, NULL, NULL);
     sqlite3_exec(log->db, "PRAGMA synchronous=NORMAL;", NULL, NULL, NULL);
+    /* 대시보드 프로세스가 접근 로그를 같은 DB 에 씁니다. WAL 은 쓰기를 직렬화하므로
+       두 쓰기가 겹치는 순간 한쪽이 SQLITE_BUSY 를 받습니다. 대기 없이 그냥 실패하면
+       detector 이벤트가 조용히 사라지므로 짧게 기다립니다. 250ms 는 프레임 처리를
+       눈에 띄게 막지 않으면서 상대 쓰기(수 ms)를 넉넉히 넘기는 값입니다. */
+    sqlite3_busy_timeout(log->db, 250);
 
     if (sqlite3_exec(log->db, SCHEMA, NULL, NULL, NULL) != SQLITE_OK) {
         fprintf(stderr, "event_log: 스키마 생성 실패: %s\n",
@@ -118,7 +123,11 @@ void event_log_write(EventLog *log, LogLevel level,
     sqlite3_bind_text  (log->stmt_ins, 3, level_name(level),    -1, SQLITE_STATIC);
     sqlite3_bind_text  (log->stmt_ins, 4, module  ? module  : "", -1, SQLITE_STATIC);
     sqlite3_bind_text  (log->stmt_ins, 5, message ? message : "", -1, SQLITE_STATIC);
-    sqlite3_step(log->stmt_ins);
+    if (sqlite3_step(log->stmt_ins) != SQLITE_DONE) {
+        /* 로그 기록 실패는 로그로 남길 수 없으므로 stderr 가 마지막 수단입니다. */
+        fprintf(stderr, "event_log: insert failed (%s): %s %s\n",
+                sqlite3_errmsg(log->db), module ? module : "", message ? message : "");
+    }
 }
 
 int event_log_count(EventLog *log, LogLevel min_level) {

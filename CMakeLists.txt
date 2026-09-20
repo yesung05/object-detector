@@ -94,6 +94,7 @@ if(ORT_INCLUDE_DIR AND ORT_LIBRARY AND FFMPEG_INCLUDE_DIR AND FFMPEG_FOUND)
         src/tracks.c
         src/rules.c
         src/stream.c
+        src/netaccess.c
         src/door.c
         src/model_select.c
         src/residue.c
@@ -104,7 +105,8 @@ if(ORT_INCLUDE_DIR AND ORT_LIBRARY AND FFMPEG_INCLUDE_DIR AND FFMPEG_FOUND)
         third_party/sqlite/sqlite3.c)
     target_include_directories(yolo11-person PRIVATE
         include "${ORT_INCLUDE_DIR}" "${FFMPEG_INCLUDE_DIR}")
-    target_link_libraries(yolo11-person PRIVATE "${ORT_LIBRARY}" ${FFMPEG_LIBRARIES} ws2_32 psapi)
+    # iphlpapi: netaccess.c 가 GetIpAddrTable 로 인터페이스 넷마스크를 읽습니다.
+    target_link_libraries(yolo11-person PRIVATE "${ORT_LIBRARY}" ${FFMPEG_LIBRARIES} ws2_32 psapi iphlpapi)
 
     if(MSVC)
         target_compile_definitions(yolo11-person PRIVATE
@@ -150,13 +152,14 @@ add_executable(test_core
     src/door.c
     src/residue.c
     src/slot_monitor.c
+    src/netaccess.c
     third_party/sqlite/sqlite3.c)
 target_include_directories(test_core PRIVATE include tests)
 if(MSVC)
     target_compile_options(test_core PRIVATE /O1 /W4 /utf-8)
     target_compile_definitions(test_core PRIVATE
         WIN32_LEAN_AND_MEAN _WIN32_WINNT=0x0601 _CRT_SECURE_NO_WARNINGS)
-    target_link_libraries(test_core PRIVATE psapi)
+    target_link_libraries(test_core PRIVATE psapi ws2_32 iphlpapi)
 else()
     target_compile_options(test_core PRIVATE
         -O1 -g -Wall -Wextra -Wpedantic -Wconversion -Wshadow)
@@ -204,9 +207,9 @@ if(WIN32)
     # 병합해야 합니다. 대시보드 UI 가 모르는 키가 저장 한 번에 사라지면
     # detector 가 조용히 기본값으로 되돌아갑니다.
     add_executable(hunik-dashboard dashboard/server.c src/config.c src/surface_config.c
-                                  third_party/sqlite/sqlite3.c)
+                                  src/netaccess.c third_party/sqlite/sqlite3.c)
     target_include_directories(hunik-dashboard PRIVATE include third_party/sqlite)
-    target_link_libraries(hunik-dashboard ws2_32)
+    target_link_libraries(hunik-dashboard ws2_32 iphlpapi)
     if(MSVC)
         target_compile_options(hunik-dashboard PRIVATE /utf-8 /W3)
         target_compile_definitions(hunik-dashboard PRIVATE _CRT_SECURE_NO_WARNINGS)
@@ -243,12 +246,13 @@ if(ORT_INCLUDE_DIR AND ORT_LIBRARY AND WIN32)
 endif()
 set_tests_properties(surface_unit PROPERTIES LABELS "unit")
 if(WIN32)
-    add_executable(test_surface_stream tests/test_surface_stream.c src/stream.c
+    # stream.c 가 netaccess.c 를 참조하므로 함께 빌드해야 링크됩니다.
+    add_executable(test_surface_stream tests/test_surface_stream.c src/stream.c src/netaccess.c
         src/surface_config.c src/surface_monitor.c src/log.c src/platform.c
         third_party/sqlite/sqlite3.c)
     target_include_directories(test_surface_stream PRIVATE include)
     target_compile_definitions(test_surface_stream PRIVATE _CRT_SECURE_NO_WARNINGS)
-    target_link_libraries(test_surface_stream PRIVATE ws2_32 psapi)
+    target_link_libraries(test_surface_stream PRIVATE ws2_32 psapi iphlpapi)
     if(MSVC)
         target_compile_options(test_surface_stream PRIVATE /utf-8)
     endif()
