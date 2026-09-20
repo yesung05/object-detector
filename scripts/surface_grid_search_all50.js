@@ -53,7 +53,7 @@ function metrics50(rows){
 }
 
 function rank50(entries,limits=constraints){
-  return entries.filter(e=>e.complete&&e.metrics.primary.FP<=limits.max_false_positives&&e.metrics.primary.quality_coverage>=limits.min_quality_coverage)
+  return entries.filter(e=>e.complete&&e.metrics.primary.FP<=limits.max_false_positives&&e.metrics.primary.quality_coverage>=limits.min_quality_coverage&&(limits.min_recall==null||e.metrics.primary.recall>=limits.min_recall))
     .sort((a,b)=>b.metrics.primary.f1-a.metrics.primary.f1||a.metrics.primary.FP-b.metrics.primary.FP||b.metrics.primary.quality_coverage-a.metrics.primary.quality_coverage||a.id.localeCompare(b.id));
 }
 
@@ -104,10 +104,13 @@ async function verify(dir,baseline){
   if(await hashFile(baseline.ffmpeg)!==baseline.ffmpeg_sha256)throw Error('FFmpeg changed');
   const exeHash=await hashFile(baseline.exe);const originalExeHash=read(path.join(dir,'snapshot/manifest.json')).artifacts.find(a=>a.file.replace(/\\/g,'/').endsWith('/evaluate_surface_video.exe'))?.sha256;
   if(originalExeHash&&exeHash!==originalExeHash)throw Error('Evaluator EXE changed since baseline creation');
+  for(const a of read(path.join(dir,'snapshot/manifest.json')).artifacts){const p=resolvePath(a.file,baseline.project_root);if(await hashFile(p)!==a.sha256)throw Error('Artifact changed: '+p);}
+  for(const c of baseline.cases)if(await hashFile(c.video)!==c.sha256)throw Error('Video changed: '+c.id);
 }
 
 function plan(dir){
   const b=read(path.join(dir,'baseline.json'));
+  const constraints=b.selection_constraints||b.constraints;
   const eligible=b.cases.filter(c=>c.expected_alert!==null&&!PROTOCOL_CHANGED_IDS.has(c.id));
   const report={baseline:dir,total_cases:b.cases.length,eligible_cases:eligible.length,null_cases:b.cases.filter(c=>c.expected_alert===null).length,protocol_changed_cases:b.cases.filter(c=>PROTOCOL_CHANGED_IDS.has(c.id)&&c.expected_alert!==null).length,candidates:variants().length,cold_video_runs:variants().length*b.cases.length,additional_video_runs:(variants().length-1)*b.cases.length,grid,constraints,ranking:'F1 descending (primary excl. S33), then fewer FP, then quality_coverage, then candidate ID',note:'S33 excluded from ranking but reported. null-expected_alert cases excluded from metrics. Operational config never changed.'};
   console.log(JSON.stringify(report,null,2));return report;
@@ -131,7 +134,7 @@ async function runCase(baselineDir,baseline,caseRow,candidateDir,configPath,sig)
   if(Math.abs(chosen.video_s-caseRow.reference_s)>0.251)throw Error('Missing checkpoint: '+caseRow.id);
   const surface=chosen.status.surfaces[0];
   const processMetrics=fs.readFileSync(path.join(work,'process.log'),'utf8').match(/EVAL[^\r\n]*/)?.[0]||null;
-  const result={signature:sig,id:caseRow.id,reference_s:caseRow.reference_s,prediction_s:chosen.video_s,alert:surface.candidates.some(c=>c.alert),quality:surface.quality,baseline:!!surface.baseline,valid:!!surface.baseline&&!surface.capturing&&surface.quality===0,occupancy:surface.occupancy,layout_changed:surface.layout_changed,first_alert_s:sequence.find(x=>x.status.surfaces[0].candidates.some(c=>c.alert))?.video_s??null,frames:sequence.length,process_metrics:processMetrics,predictions_sha256:await hashFile(prediction)};
+  const result={occluder_fraction:surface.occluder_fraction??0,max_occluder_fraction:Math.max(...sequence.map(x=>x.status.surfaces[0].occluder_fraction??0)),mean_occluder_fraction:sequence.reduce((a,x)=>a+(x.status.surfaces[0].occluder_fraction??0),0)/sequence.length,occluder_rejected_samples:sequence.filter(x=>x.status.surfaces[0].occluder_rejected).length,signature:sig,id:caseRow.id,reference_s:caseRow.reference_s,prediction_s:chosen.video_s,alert:surface.candidates.some(c=>c.alert),quality:surface.quality,baseline:!!surface.baseline,valid:!!surface.baseline&&!surface.capturing&&surface.quality===0,occupancy:surface.occupancy,layout_changed:surface.layout_changed,first_alert_s:sequence.find(x=>x.status.surfaces[0].candidates.some(c=>c.alert))?.video_s??null,frames:sequence.length,process_metrics:processMetrics,predictions_sha256:await hashFile(prediction)};
   write(resultPath,result);return{...result,expected_alert:caseRow.expected_alert};
 }
 
@@ -142,15 +145,18 @@ async function tryReuseInitial(all50Dir,caseRow,configHash,exeHash){
   if(!manifestExeHash||manifestExeHash!==exeHash)return null;
   const initialConfig=read(path.join(all50Dir,'config.json'));
   if(digest(initialConfig)!==configHash)return null;
+  const sourceCase=manifest.cases.find(c=>c.id===caseRow.id);if(!sourceCase||sourceCase.sha256!==caseRow.sha256||sourceCase.reference_s!==caseRow.reference_s)return null;
+  const prior=read(rp);if(prior.predictions_sha256&&prior.predictions_sha256!==await hashFile(path.join(all50Dir,caseRow.id,'predictions.jsonl')))throw Error('Initial predictions changed');
   console.log('  Reusing initial result for '+caseRow.id);
   return{...read(rp),expected_alert:caseRow.expected_alert,reused_initial:true};
 }
 
 async function search(baselineDir,{resumeDir=null,smoke=false,filterIds=null,noRest=false,parallelism=1}={}){
   baselineDir=path.resolve(baselineDir);const baseline=read(path.join(baselineDir,'baseline.json'));await verify(baselineDir,baseline);
+  const constraints=baseline.selection_constraints||baseline.constraints;
   const baseConfig=read(path.join(baselineDir,'snapshot/config.json'));
-  // runner_sha256 not in signature so --no-rest/--parallel don't force new search dir
-  const sig=digest({baseline_dir:baselineDir,grid,constraints,PROTOCOL_CHANGED_IDS:[...PROTOCOL_CHANGED_IDS],version:2});
+  // Execution definition is frozen; pacing flags may change, scientific inputs may not.
+  const sig=digest({baseline,runner_sha256:await hashFile(__filename),grid,constraints,PROTOCOL_CHANGED_IDS:[...PROTOCOL_CHANGED_IDS],version:3});
   const dir=resumeDir||fs.mkdtempSync(path.join(searchRoot,smoke?'smoke-':'search-'));const manifestPath=path.join(dir,'search.json');
   if(resumeDir){const old=read(manifestPath);if(old.signature!==sig)throw Error('Search definition changed; create a new search.');}
   else write(manifestPath,{baseline:baselineDir,signature:sig,smoke,grid,constraints,noRest,parallelism,created_at:new Date().toISOString()});
@@ -186,7 +192,7 @@ async function search(baselineDir,{resumeDir=null,smoke=false,filterIds=null,noR
     // Update shared leaderboard (Node.js single-thread: safe, writes between awaits)
     const sortedEntries=[...entries].sort((a,b)=>a.id.localeCompare(b.id));
     write(path.join(dir,'leaderboard.json'),sortedEntries);
-    const ranked=rank50(entries);
+    const ranked=rank50(entries,constraints);
     if(ranked.length&&!smoke){
       write(path.join(dir,'best.json'),{...ranked[0],status:'best_so_far_on_development_data',applied_to_operational_config:false});
       write(path.join(dir,'best-config.json'),configFor(baseConfig,ranked[0].params));
@@ -214,9 +220,9 @@ async function search(baselineDir,{resumeDir=null,smoke=false,filterIds=null,noR
     if(Math.abs(freshResult.prediction_s-firstCase.reference_s)>0.251)throw Error('Smoke: checkpoint not reached for '+firstCase.id);
     write(path.join(dir,'smoke-result.json'),{passed:true,id:firstCase.id,prediction_s:freshResult.prediction_s,reference_s:firstCase.reference_s,note:'Smoke: confirms one full evaluation run; not tuning.'});
   }
-  const ranked=rank50(entries);
+  const ranked=rank50(entries,constraints);
   const sortedAll=[...entries].sort((a,b)=>a.id.localeCompare(b.id));
-  const mdRows=sortedAll.map(e=>{const m=e.metrics.primary;const pass=m.FP<=constraints.max_false_positives&&m.quality_coverage>=constraints.min_quality_coverage;return`| ${e.id} | ${e.params.threshold} | ${e.params.min_area} | ${e.params.confirm_seconds} | ${m.TP} | ${m.FP} | ${m.TN} | ${m.FN} | ${(m.precision*100).toFixed(1)} | ${(m.recall*100).toFixed(1)} | ${(m.f1*100).toFixed(1)} | ${(m.accuracy*100).toFixed(1)} | ${pass?'통과':'탈락'} |`;});
+  const mdRows=sortedAll.map(e=>{const m=e.metrics.primary;const pass=m.FP<=constraints.max_false_positives&&m.quality_coverage>=constraints.min_quality_coverage&&m.recall>=(constraints.min_recall??0);return`| ${e.id} | ${e.params.threshold} | ${e.params.min_area} | ${e.params.confirm_seconds} | ${m.TP} | ${m.FP} | ${m.TN} | ${m.FN} | ${(m.precision*100).toFixed(1)} | ${(m.recall*100).toFixed(1)} | ${(m.f1*100).toFixed(1)} | ${(m.accuracy*100).toFixed(1)} | ${pass?'통과':'탈락'} |`;});
   const md=`# 50-video Grid Search Results\n\nPrimary metrics exclude S33 (protocol-changed) and null-labeled cases.\n\n| 후보 | threshold | min_area | 확인초 | TP | FP | TN | FN | 정밀도 | 재현율 | F1 | 정확도 | 제약 |\n|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|\n${mdRows.join('\n')}\n\n**추천**: ${ranked[0]?ranked[0].id+' ('+JSON.stringify(ranked[0].params)+')':'없음'}\n`;
   fs.writeFileSync(path.join(dir,'report.md'),md);
   write(path.join(dir,'completed.json'),{finished_at:new Date().toISOString(),smoke,noRest,parallelism,candidates:entries.length,best:smoke?null:ranked[0]||null,operational_config_modified:false,applied_to_operational_config:false});
@@ -239,4 +245,4 @@ async function main(){
   else console.log('node scripts/surface_grid_search_all50.js --init ALL50_DIR [--project-root PATH] | --plan BASELINE | --run BASELINE [--no-rest] [--parallel N] | --resume SEARCH [--no-rest] [--parallel N] | --smoke BASELINE [--ids S01,S02]');
 }
 if(require.main===module)(['--run','--resume','--smoke'].includes(process.argv[2])?exclusiveSearch(main):main()).catch(e=>{console.error(e.message||e);process.exitCode=1;});
-module.exports={variants,metrics50,rank50,configFor,resolvePath,mergeCasesAndLabels,PROTOCOL_CHANGED_IDS};
+module.exports={variants,metrics50,rank50,configFor,resolvePath,mergeCasesAndLabels,PROTOCOL_CHANGED_IDS,initialize,runCase};

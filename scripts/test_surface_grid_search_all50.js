@@ -38,6 +38,10 @@ assert.deepEqual(ranking.map(r=>r.id),['a','b','c'],'ranked by f1 then fp then q
 assert.ok(!ranking.find(r=>r.id==='too_many_fp'),'FP>12 excluded');
 assert.ok(!ranking.find(r=>r.id==='low_quality'),'quality<0.96 excluded');
 assert.ok(!ranking.find(r=>r.id==='incomplete'),'incomplete excluded');
+const protectedEntry=entry('protected',.7,5,47/49);protectedEntry.metrics.primary.recall=15/23;
+assert.equal(rank50([protectedEntry],{max_false_positives:11,min_quality_coverage:47/49,min_recall:15/23}).length,1);
+assert.equal(rank50([protectedEntry],{max_false_positives:11,min_quality_coverage:.96,min_recall:15/23}).length,0,'49-case denominator must not use 48/50');
+assert.equal(rank50([protectedEntry],{max_false_positives:11,min_quality_coverage:47/49,min_recall:16/23}).length,0,'recall regression cannot win');
 
 // configFor: only modifies table-1, leaves other surfaces intact, does not mutate original
 const base={surfaces:[{id:'table-1',polygon:[[0,0],[1,0],[1,1]],departure_seconds:45},{id:'wall-1',threshold:10}]};

@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>무인 매장 환경·위생 감시</title>
+<style>
+:root{color-scheme:light;--ink:#193249;--muted:#607284;--line:#dce4ec;--green:#167448;--orange:#a34709}*{box-sizing:border-box}body{margin:0;background:#f2f5f9;color:var(--ink);font:15px/1.6 system-ui,sans-serif}main{max-width:1240px;margin:auto;padding:28px}h1{font-size:28px;margin:0}h2{font-size:18px;margin:0 0 12px}.subtitle,small{color:var(--muted)}header{margin-bottom:20px}.toolbar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;background:white;border:0;border-radius:0;padding:12px;margin-bottom:18px}button,input{font:inherit;padding:6px 10px;border:0;border-radius:0;background:white;color:var(--ink)}button{cursor:pointer}button:disabled{opacity:.45;cursor:default}input[type=number]{width:85px}label{display:inline-flex;gap:6px;align-items:center}#health{padding:12px 16px;border-radius:0;background:#e4edf6;margin:12px 0}#message{color:var(--orange)}.metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:18px 0}.metric,.panel,.card{background:white;border:0;border-radius:0;padding:18px}.metric strong{font-size:30px;display:block}.metric span{color:var(--muted);font-size:13px}.layout{display:grid;grid-template-columns:1fr;gap:18px}.layout.with-video{grid-template-columns:1.3fr 1fr}#cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px}.card h3{margin:0;font-size:16px}.verdict{font-size:23px;font-weight:750;margin:10px 0 6px}.card[data-kind=ok] .verdict{color:var(--green)}.card[data-kind=alert] .verdict{color:var(--orange)}.reason{font-size:13px;color:var(--muted);margin:0}canvas{display:block;width:100%;height:auto;background:#e7edf3;border-radius:0}.flow{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:18px 0}.flow span{border:0;padding:8px 12px;background:white;border-radius:0}.notes{margin-top:18px;font-size:12px;color:var(--muted)}[hidden]{display:none!important}body.presentation .toolbar{display:none}body.presentation main{max-width:1500px}#resume{display:none}body.presentation #resume{display:block;position:fixed;right:10px;bottom:10px}@media(max-width:800px){.metrics{grid-template-columns:repeat(2,1fr)}.layout.with-video{grid-template-columns:1fr}main{padding:16px}}@media print{body{background:white}main{padding:0;max-width:none}.toolbar,#resume,#message{display:none!important}.card,.metric{break-inside:avoid}h1{font-size:24px}.notes{color:#333}}
+</style></head><body><main>
+<header><h1>무인 매장 환경·위생 감시</h1><div class="subtitle">표면 변화와 이용 상태를 고려한 청소 필요 상황 확인</div></header>
+<div class="toolbar">
+<label>영상 포트 <input id="port" type="number" min="1" max="65535" value="8081"></label><button id="connect">연결 새로고침</button>
+<label><input id="show-video" type="checkbox">카메라 표시</label><button id="freeze">화면 고정</button><button id="present">발표 화면</button><button id="png" disabled>그림 PNG 저장</button><button id="print">인쇄 / PDF</button><button id="export" disabled>관측 수치 JSON</button>
+</div>
+<div id="health" role="status">감지기 연결 확인 중...</div><div id="message" role="status"></div>
+<div class="metrics">
+<div class="metric"><strong id="areas">—</strong><span>감시 영역 수</span></div>
+<div class="metric"><strong id="alerts">—</strong><span>확인이 필요한 영역</span></div>
+<div class="metric"><strong id="requests">—</strong><span>AI 검사 요청 · 실행 누적</span></div>
+<div class="metric"><strong id="reuses">—</strong><span>결과 재사용 관측 · 실행 누적</span></div>
+</div>
+<div id="layout" class="layout"><section id="video-panel" class="panel" hidden><h2>관측 화면</h2><canvas id="video" width="1280" height="720"></canvas><small id="video-time">영상을 요청하는 중입니다.</small></section><section><h2>장소별 상태</h2><div id="cards"></div></section></div>
+<div class="flow" aria-label="처리 구조"><span>표면 영역</span> → <span>기준 모습 비교</span> → <span>사람·가림 확인</span> → <span>선택적 AI 검사</span> → <span>관리자 확인 알림</span></div>
+<div class="notes">‘이상 없음’은 유효한 관측에서 청소가 필요한 변화가 감지되지 않았다는 뜻입니다. 오염 종류·위생 안전성을 확정하지 않습니다.<br>검사 요청 수는 실제 성공한 추론 수가 아니며, 재사용 관측 수는 절감한 추론 수가 아닙니다. 연결 실패·미지원 수치는 ‘—’로 표시합니다.<br><span id="stamp">아직 수신한 관측이 없습니다.</span></div>
+</main><button id="resume">일반 화면으로</button>
+<script>
+'use strict';
+const $=id=>document.getElementById(id);
+let snapshot=null,receivedAt='',lastFrame=null,lastChange=0,busy=false,frozen=false,frozenReport=null,generation=0,videoImage=null,videoAt='',videoBusy=false;
+const endpoint=()=>`${location.protocol==='https:'?'https:':'http:'}//${location.hostname||'localhost'}:${Number($('port').value)||8081}`;
+function place(s,i){const kind=/^table-/.test(s.id)?'테이블':/^floor-/.test(s.id)?'바닥':/^wall-/.test(s.id)?'벽':'영역';return `${kind} ${i+1}`;}
+function classify(s,enabled,stale){
+ if(!enabled)return ['wait','감시 꺼짐','감시 설정에서 활성화해 주세요.'];
+ if(stale||s.age>3)return ['wait','화면 확인 필요','현재 상태를 확인할 수 없어요.'];
+ const c=s.candidates||[];
+ if(c.some(v=>v.animal))return ['alert','동물 확인 필요','동물로 의심되는 모습이 보여요.'];
+ if(c.some(v=>v.alert))return ['alert','청소 확인 필요','물건이나 오염이 남았는지 확인해 주세요.'];
+ if(s.capturing)return ['wait','깨끗한 모습 기억 중',`사람이 비켜 주면 자동 등록해요. (${s.capture_count}/5)`];
+ if(!s.baseline)return ['wait','처음 설정이 필요해요','설정 화면에서 깨끗한 모습을 등록해 주세요.'];
+ if(s.quality===2)return ['wait','가려져서 안 보여요','사람이나 물건이 비키면 다시 확인해요.'];
+ if(s.quality!==0)return ['wait','화면 확인 필요','카메라 화면과 조명을 확인해 주세요.'];
+ if(s.layout_changed)return ['wait','물건 위치가 바뀌었어요','원래 있던 물건인지 확인해 주세요.'];
+ if(s.occupancy==='occupied')return ['wait','사람이 사용 중이에요','사람이 떠난 뒤 청소 여부를 확인해요.'];
+ if(s.occupancy==='departure_pending')return ['wait','잠시 기다리는 중','사람이 떠났는지 확인하고 있어요.'];
+ if(s.occupancy!=='vacant'||c.length)return ['wait','확인 중','조금 더 관찰하고 있어요.'];
+ return ['ok','이상 없음','청소가 필요한 변화가 감지되지 않았어요.'];
+}
+function count(v){return Number.isFinite(v)&&v>=0?String(v):'—';}
+function report(){if(frozen&&frozenReport)return {...frozenReport,frozen:true};if(!snapshot)return null;const stale=!Number.isFinite(snapshot.frame_time)||Date.now()-lastChange>4000;return {received_at:receivedAt,frozen,stale,enabled:!!snapshot.enabled,revision:snapshot.revision,frame_time:snapshot.frame_time,video_received_at:videoAt||null,ai_scheduler:snapshot.ai_scheduler||null,areas:(snapshot.surfaces||[]).map((s,i)=>{const [kind,label,reason]=classify(s,snapshot.enabled,stale);return {name:place(s,i),kind,label,reason};})};}
+function render(){const r=report();$('cards').replaceChildren();if(!r)return;
+ $('health').textContent=(frozen?'화면 고정 · ':'')+(r.stale?'영상 갱신 중단 · 마지막 관측':!r.enabled?'감시 꺼짐':'실제 감지기 관측');
+ $('areas').textContent=count(r.areas.length);$('alerts').textContent=r.stale||!r.enabled?'—':count(r.areas.filter(v=>v.kind==='alert').length);
+ $('requests').textContent=count(r.ai_scheduler?.requests);$('reuses').textContent=count(r.ai_scheduler?.reuse_observations);
+ $('stamp').textContent=`상태 수신: ${receivedAt} · 설정 버전 ${r.revision??'미지원'}${frozen?' · 고정된 화면이며 현재 실시간 상태가 아닙니다.':''}`;
+ for(const area of r.areas){const card=document.createElement('article');card.className='card';card.dataset.kind=area.kind;for(const [tag,cls,text]of [['h3','',area.name],['p','verdict',area.label],['p','reason',area.reason]]){const e=document.createElement(tag);e.className=cls;e.textContent=text;card.append(e);}$('cards').append(card);}
+ if(!r.areas.length)$('cards').textContent='아직 적용된 감시 영역이 없습니다.';
+ $('png').disabled=false;$('export').disabled=false;
+}
+function drawVideo(){const c=$('video'),ctx=c.getContext('2d');ctx.clearRect(0,0,c.width,c.height);if(videoImage)ctx.drawImage(videoImage,0,0,c.width,c.height);}
+function refreshVideo(){if(frozen||videoBusy||!$('show-video').checked)return;videoBusy=true;const token=generation,img=new Image();img.crossOrigin='anonymous';const timeout=setTimeout(()=>{if(token===generation){videoBusy=false;if(!frozen){videoImage=null;videoAt='';drawVideo();$('video-time').textContent='영상 응답 없음';}}img.onload=img.onerror=null;},4000);
+ img.onload=()=>{clearTimeout(timeout);if(token!==generation)return;videoBusy=false;if(frozen)return;videoImage=img;videoAt=new Date().toISOString();drawVideo();$('video-time').textContent='영상 수신: '+videoAt+' · 상태와 별도 요청한 영상입니다.';};
+ img.onerror=()=>{clearTimeout(timeout);if(token!==generation)return;videoBusy=false;if(frozen)return;videoImage=null;videoAt='';drawVideo();$('video-time').textContent='영상을 가져오지 못했습니다.';};img.src=endpoint()+'/snapshot?t='+Date.now();
+}
+async function poll(){if(busy||frozen)return;busy=true;const token=generation,controller=new AbortController(),timer=setTimeout(()=>controller.abort(),4000);
+ try{const res=await fetch(endpoint()+'/surface/status',{signal:controller.signal});if(!res.ok)throw Error('HTTP '+res.status);const data=await res.json();if(token!==generation||frozen)return;if(!Array.isArray(data.surfaces))throw Error('지원되지 않는 상태 형식');
+ if(lastFrame!==data.frame_time){lastFrame=data.frame_time;lastChange=Date.now();}snapshot=data;receivedAt=new Date().toISOString();render();refreshVideo();
+ }catch(e){if(token!==generation||frozen)return;snapshot=null;videoImage=null;videoAt='';drawVideo();$('health').textContent='감지기 연결 안 됨 · 감지기 실행 상태와 포트를 확인해 주세요.';$('cards').replaceChildren();for(const id of ['areas','alerts','requests','reuses'])$(id).textContent='—';$('png').disabled=true;$('export').disabled=true;$('stamp').textContent='현재 관측을 확인할 수 없습니다.';}
+ finally{clearTimeout(timer);busy=false;}
+}
+function download(blob,name){const a=document.createElement('a'),url=URL.createObjectURL(blob);a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}
+$('connect').onclick=()=>{generation++;frozen=false;snapshot=null;lastFrame=null;lastChange=0;videoBusy=false;videoImage=null;videoAt='';drawVideo();$('freeze').textContent='화면 고정';poll();};
+$('port').onchange=$('connect').onclick;
+$('show-video').onchange=()=>{$('video-panel').hidden=!$('show-video').checked;$('layout').className=$('show-video').checked?'layout with-video':'layout';refreshVideo();};
+$('freeze').onclick=()=>{if(!snapshot)return;if(!frozen)frozenReport=report();frozen=!frozen;$('freeze').textContent=frozen?'실시간으로 돌아가기':'화면 고정';render();if(!frozen)poll();};
+$('present').onclick=()=>document.body.classList.add('presentation');$('resume').onclick=()=>document.body.classList.remove('presentation');
+$('print').onclick=()=>window.print();
+$('export').onclick=()=>{render();const r=report();if(r)download(new Blob([JSON.stringify(r,null,2)],{type:'application/json'}),'surface-observation.json');};
+$('png').onclick=()=>{render();const r=report();if(!r)return;const includeVideo=$('show-video').checked&&videoImage,c=document.createElement('canvas');c.width=1600;c.height=360+Math.ceil(r.areas.length/3)*190+(includeVideo?750:0);const x=c.getContext('2d');x.fillStyle='#f2f5f9';x.fillRect(0,0,c.width,c.height);x.fillStyle='#193249';x.font='bold 36px sans-serif';x.fillText('무인 매장 환경·위생 감시',50,65);x.font='22px sans-serif';x.fillText($('health').textContent,50,110);x.fillText(`상태 수신: ${r.received_at}${frozen?' · 화면 고정':''}`,50,148);
+ x.fillText(`감시 영역 ${r.areas.length}   |   AI 요청 ${count(r.ai_scheduler?.requests)}   |   재사용 관측 ${count(r.ai_scheduler?.reuse_observations)}`,50,194);
+ let top=230;if(includeVideo){const h=Math.min(690,1500*videoImage.naturalHeight/videoImage.naturalWidth),w=h*videoImage.naturalWidth/videoImage.naturalHeight;x.drawImage(videoImage,50,top,w,h);x.font='17px sans-serif';x.fillText('영상 수신: '+videoAt+' (상태와 비동기 관측)',50,top+h+28);top+=750;}
+ r.areas.forEach((a,i)=>{const left=50+(i%3)*505,y=top+Math.floor(i/3)*190;x.fillStyle='white';x.fillRect(left,y,480,166);x.fillStyle='#193249';x.font='bold 23px sans-serif';x.fillText(a.name,left+18,y+35);x.fillStyle=a.kind==='ok'?'#167448':a.kind==='alert'?'#a34709':'#607284';x.font='bold 29px sans-serif';x.fillText(a.label,left+18,y+82);x.fillStyle='#607284';x.font='16px sans-serif';x.fillText(a.reason,left+18,y+120,445);});
+ x.fillStyle='#607284';x.font='18px sans-serif';x.fillText('영상 변화에 대한 확인 알림이며 오염 종류를 확정하지 않음 · 요청/재사용 관측은 실제 추론/절감 횟수와 다름',50,c.height-35);
+ try{c.toBlob(blob=>{if(blob)download(blob,'surface-dashboard.png');else $('message').textContent='이미지 저장 실패';},'image/png');}catch(e){$('message').textContent='이미지 보안 정책 때문에 저장하지 못했습니다. 카메라 표시를 끄거나 운영체제 화면 캡처를 사용하세요.';}
+};
+poll();setInterval(poll,2000);
+</script></body></html>

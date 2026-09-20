@@ -20,6 +20,7 @@ async function main() {
   const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'hunik-surface-http-'));
   fs.mkdirSync(path.join(fixture, 'dashboard'));
   fs.copyFileSync(path.join(root, 'dashboard', 'surfaces.html'), path.join(fixture, 'dashboard', 'surfaces.html'));
+  fs.copyFileSync(path.join(root, 'dashboard', 'research.html'), path.join(fixture, 'dashboard', 'research.html'));
   const port = await freePort();
   const base = `http://127.0.0.1:${port}`;
   const child = spawn(process.env.SURFACE_TEST_DASHBOARD || path.join(root, 'build-windows', 'Release', 'hunik-dashboard.exe'),
@@ -33,6 +34,8 @@ async function main() {
       try {response = await fetch(base+'/api/surfaces');break;}catch{await delay(100);}
     }
     assert(response, 'isolated dashboard starts');
+    const research=await fetch(base+'/research');assert.equal(research.status,200);
+    assert.match(await research.text(),/무인 매장 환경·위생 감시/);
     const initial = await response.json();
     assert.equal(initial.revision, 0);
     const polygon = [[.1,.1],[.9,.1],[.9,.9],[.1,.9]];

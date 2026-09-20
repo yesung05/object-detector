@@ -53,3 +53,18 @@ surface-test-*/
 config/surface-*.bin*
 config/surfaces.json*
 *.doc
+docs/**/references/*.pdf
+docs/**/references/*.download
+runs/surface-experiments/
+runs/scenario-voice/
+
+# Local datasets, recordings and generated experiment artifacts (not source).
+/datasets/
+/records/
+/runs/
+docs/**/*.pdf
+/models/*-distilled-*.onnx
+/models/*_u8s8_*.onnx
+docs/**/figures/s18-mask-replay-*/predictions.jsonl
+docs/**/figures/s18-mask-replay-*/process.log
+docs/**/figures/s18-mask-replay-*/replay/

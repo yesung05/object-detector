@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1300" height="560" viewBox="0 0 1300 560" role="img" aria-labelledby="title desc">
+<title id="title">테이블 이용 및 가림 처리 정책</title><desc id="desc">이용 중에는 일반 알림을 보류하고 퇴석 확인 후 잔류 변화를 확인한다. 가림은 청소 완료로 간주하지 않는다.</desc>
+<defs><marker id="a" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto"><path d="M0 0L9 3L0 6" fill="none" stroke="#34495e" stroke-width="1.5"/></marker></defs>
+<rect width="1300" height="560" fill="white"/>
+<g font-family="sans-serif" fill="#193249" text-anchor="middle"><text x="650" y="48" font-size="28" font-weight="bold">테이블 이용·가림을 고려한 청소 확인 정책</text>
+<g fill="#f0f5fa" stroke="#9fb3c8" stroke-width="2"><rect x="35" y="140" width="245" height="110" rx="10"/><rect x="360" y="140" width="250" height="110" rx="10"/><rect x="690" y="140" width="250" height="110" rx="10"/><rect x="1020" y="140" width="245" height="110" rx="10"/><rect x="370" y="350" width="560" height="100" rx="10"/></g>
+<g font-size="24"><text x="157" y="180">사람 이용 중</text><text x="157" y="216" font-size="18">일반 청소 알림 보류</text><text x="485" y="180">퇴석 확인</text><text x="485" y="216" font-size="18">기본 유예 45초</text><text x="815" y="180">남은 변화 확인</text><text x="815" y="216" font-size="18">기본 지속 확인 15초</text><text x="1142" y="180">청소 확인 필요</text><text x="1142" y="216" font-size="18">이미 발생한 알림은 유지</text><text x="650" y="389">사람이 가리면 해당 부분의 판정 보류</text><text x="650" y="423" font-size="18">다시 보이는 모습으로 확인 · 가림을 청소 완료로 해석하지 않음</text></g>
+<g font-size="17" fill="#607284"><text x="320" y="126">사람 떠남</text><text x="650" y="126">퇴석 확정</text><text x="980" y="126">변화 지속</text><text x="650" y="500">유예 시간은 설정값이며, 실제 알림 지연의 측정값이 아니다.</text><text x="650" y="532">동물 의심은 별도 재확인 경로 유지 · 기준 모습 등록 중 가리면 관측 횟수 초기화</text></g></g>
+<g fill="none" stroke="#34495e" stroke-width="2" marker-end="url(#a)"><path d="M280 195H355"/><path d="M610 195H685"/><path d="M940 195H1015"/><path d="M485 250V310H157V255"/><path d="M815 250V345"/></g>
+<text x="310" y="302" font-family="sans-serif" font-size="17" fill="#607284" text-anchor="middle">다시 이용하면 보류</text>
+</svg>
