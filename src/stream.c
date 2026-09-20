@@ -37,7 +37,7 @@
 
 #define MAX_CLIENTS 4
 #define JPEG_QUALITY 75   /* 0-100. 75이면 1280×720 기준 약 50-80KB */
-#define STREAM_FPS   10   /* 최대 전송 FPS — 클라이언트당 100ms sleep */
+#define STREAM_FPS   10   /* 기본 최대 전송 FPS — 클라이언트당 100ms sleep */
 
 /* 클라이언트가 없을 때도 /snapshot 과 /door/save 가 동작하도록 프레임을
  * 유지하는 최소 주기입니다. 이 값이 0이면 대시보드 첫 접속 시 "no frame"
@@ -81,6 +81,8 @@ static volatile int g_door_state   = -1; /* -1=알 수 없음, 0=닫힘, 1=열�
 static volatile int g_door_enabled =  0; /* 감지 활성 여부 */
 static volatile LONG g_clients     =  0; /* /stream 연결 수 (Interlocked 로만 변경) */
 static ULONGLONG     g_last_push_ms = 0; /* 마지막으로 받아들인 프레임 시각 */
+/* 적응형 감속이 낮출 수 있는 전송 FPS. 키오스크가 바쁠 때 JPEG 인코딩 부하를 줄입니다. */
+static volatile LONG g_stream_fps = STREAM_FPS;
 
 /*
  * JPEG 캐시 — 같은 프레임을 클라이언트마다 다시 인코딩하지 않기 위한 것입니다.
@@ -99,6 +101,11 @@ static uint32_t  g_jpeg_seq = (uint32_t)-1;
 static uint8_t  *g_jpeg_scratch = NULL;
 static size_t    g_jpeg_scratch_cap = 0;
 
+void stream_set_max_fps(int fps) {
+    if (fps < 1)  fps = 1;
+    if (fps > 30) fps = 30;
+    g_stream_fps = fps;
+}
 void stream_set_door_state  (int state)   { g_door_state   = state;   }
 void stream_set_door_enabled(int enabled) { g_door_enabled = enabled; }
 int  stream_client_count    (void)        { return (int)g_clients;    }
@@ -639,7 +646,8 @@ static DWORD WINAPI client_thread(LPVOID arg) {
                    acc.ip, netaccess_tier_name(acc.tier), privacy_active_now());
 
         uint32_t last_seq = (uint32_t)-1;
-        DWORD frame_ms = 1000 / STREAM_FPS;
+        /* 루프 안에서 매번 읽어 감속이 진행 중인 연결에도 곧바로 반영되게 합니다. */
+        DWORD frame_ms = 1000 / (DWORD)(g_stream_fps > 0 ? g_stream_fps : 1);
         /* 클라이언트별 JPEG 재사용 버퍼 — 프레임마다 malloc/free 하지 않습니다. */
         uint8_t *jpg = NULL;
         int jpg_cap = 0;
@@ -668,6 +676,7 @@ static DWORD WINAPI client_thread(LPVOID arg) {
                   && (send_all(s, (char *)jpg, jpg_size) == 0)
                   && (send_all(s, "\r\n", 2) == 0);
             if (!ok) break;
+            frame_ms = 1000 / (DWORD)(g_stream_fps > 0 ? g_stream_fps : 1);
             Sleep(frame_ms);
         }
         free(jpg);
@@ -796,7 +805,7 @@ void stream_push(const uint8_t *rgb, int width, int height, int stride) {
      * 때문입니다 — 0 으로 두면 대시보드 첫 접속과 문 기준 캡처가 실패합니다.
      */
     {
-        int fps = (g_clients > 0) ? STREAM_FPS : IDLE_PUSH_FPS;
+        int fps = (g_clients > 0) ? (int)g_stream_fps : IDLE_PUSH_FPS;
         ULONGLONG now_ms = GetTickCount64();
         ULONGLONG min_gap = (ULONGLONG)(1000 / fps);
         if (g_last_push_ms != 0 && (now_ms - g_last_push_ms) < min_gap) return;

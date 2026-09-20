@@ -99,6 +99,8 @@ int  stream_privacy_active(void);                 /* 1 이면 main.c 가 이번 
  */
 int  stream_pop_access_log(int *level, char *msg, size_t size);
 void stream_set_status(const StreamStatus *st);
+/* 최대 전송 FPS (1~30). 적응형 감속이 키오스크 부하에 따라 낮춥니다. */
+void stream_set_max_fps(int fps);
 
 #else /* !_WIN32 */
 
@@ -134,6 +136,7 @@ static inline int  stream_pop_access_log(int *level, char *msg, size_t size) {
     (void)level; (void)msg; (void)size; return 0;
 }
 static inline void stream_set_status(const StreamStatus *st) { (void)st; }
+static inline void stream_set_max_fps(int fps) { (void)fps; }
 
 #endif /* _WIN32 */
 

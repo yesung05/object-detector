@@ -59,6 +59,28 @@ long platform_process_memory_kb(void) {
     return (long)(pmc.WorkingSetSize / 1024UL);
 }
 
+static unsigned long long ft_to_u64(FILETIME ft) {
+    return ((unsigned long long)ft.dwHighDateTime << 32) | ft.dwLowDateTime;
+}
+
+int platform_cpu_times(CpuTimes *out) {
+    FILETIME idle, kernel, user;
+    if (!out) return -1;
+    if (!GetSystemTimes(&idle, &kernel, &user)) return -1;
+    /* Windows 의 kernel 시간에는 idle 이 포함되어 있습니다. total 을 kernel+user 로 두고
+       idle 을 따로 빼야 실제 사용률이 나옵니다. */
+    out->idle  = ft_to_u64(idle);
+    out->total = ft_to_u64(kernel) + ft_to_u64(user);
+    return 0;
+}
+
+int platform_set_priority(int level) {
+    DWORD cls = (level >= 2) ? IDLE_PRIORITY_CLASS
+              : (level == 1) ? BELOW_NORMAL_PRIORITY_CLASS
+                             : NORMAL_PRIORITY_CLASS;
+    return SetPriorityClass(GetCurrentProcess(), cls) ? 0 : -1;
+}
+
 /* 이름 있는 뮤텍스로 단일 인스턴스를 보장합니다.
  * CreateMutex는 이미 존재해도 핸들을 반환하므로 ERROR_ALREADY_EXISTS로 구분합니다. */
 static HANDLE g_instance_mutex = NULL;
@@ -152,6 +174,36 @@ long platform_process_memory_kb(void) {
     }
     fclose(f);
     return kb;
+}
+
+int platform_cpu_times(CpuTimes *out) {
+#if defined(__linux__)
+    /* /proc/stat 첫 줄: cpu user nice system idle iowait irq softirq steal ...
+     * idle 은 idle+iowait 로 봅니다 — I/O 대기 중에는 CPU 가 남에게 갈 수 있습니다. */
+    FILE *f;
+    unsigned long long v[8] = {0};
+    int n, i;
+    if (!out) return -1;
+    f = fopen("/proc/stat", "r");
+    if (!f) return -1;
+    n = fscanf(f, "cpu %llu %llu %llu %llu %llu %llu %llu %llu",
+               &v[0], &v[1], &v[2], &v[3], &v[4], &v[5], &v[6], &v[7]);
+    fclose(f);
+    if (n < 4) return -1;
+    out->idle  = v[3] + v[4];
+    out->total = 0;
+    for (i = 0; i < (n < 8 ? n : 8); ++i) out->total += v[i];
+    return 0;
+#else
+    (void)out;
+    return -1;   /* macOS 미지원 — 호출자는 감속 판단을 건너뜁니다 */
+#endif
+}
+
+int platform_set_priority(int level) {
+    /* POSIX nice: 0=보통, 5=보통 아래, 15=유휴에 준함. 실패해도 치명적이지 않습니다. */
+    int want = (level >= 2) ? 15 : (level == 1) ? 5 : 0;
+    return nice(want) == -1 ? -1 : 0;
 }
 
 #if defined(__linux__)
