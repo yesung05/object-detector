@@ -3,6 +3,7 @@
 #include "slot_monitor.h"
 #include "surface_monitor.h"
 #include "throttle.h"
+#include "restart.h"
 #include "stream.h"
 #include "door.h"
 #include "residue.h"
@@ -195,6 +196,11 @@ typedef struct {
     /* 적응형 감속 — 키오스크 본 프로그램이 바쁘면 스스로 추론을 줄입니다. */
     Throttle throttle;
     int      priority_level;   /* config: process_priority (0 보통, 1 보통아래, 2 유휴) */
+    /* 예약 재시작 — 점주가 고른 요일·시각 */
+    RestartScheduler restart;
+    double   restart_check_time;
+    char     restart_state_path[600];
+    double   process_start_time;   /* uptime 계산용 — hud_start_time 은 첫 프레임에야 설정됩니다 */
     int    door_band_logged;         /* band_valid 측정 결과를 측정당 한 번만 기록 */
     /* 표면 자동 캡처 설정은 surface_monitor 로 넘기고, 문·잔류물은 각 모니터 구조체가 가집니다. */
     int    surface_auto_capture;
@@ -248,6 +254,11 @@ static void request_stop(int signal_number) {
     (void)signal_number;
     stop_requested = 1;
 }
+
+/* 예약 재시작으로 끝났음을 종료 코드로 알립니다. run-all.ps1 의 감시 루프가
+ * 정상 종료(0)·예약 재시작(10)·비정상 종료(그 외)를 구분해 다르게 반응합니다. */
+#define EXIT_RESTART_REQUESTED 10
+static int restart_requested = 0;
 
 static int should_stop(void *opaque) {
     (void)opaque;
@@ -843,6 +854,19 @@ static int collect_person_rects(const AppContext *app, GrayRect *out, int max) {
     return n;
 }
 
+/* 예약 재시작 설정. 시각 문자열이 잘못되면 기본값(04:00)을 쓰고 경고는 호출자가 남깁니다. */
+static void apply_restart_config(AppContext *app, const Config *cfg) {
+    RestartConfig rc;
+    const char *t = NULL;
+    rc.enabled        = (int)config_long(cfg, "restart_enabled", 0, 0, 1);
+    rc.days           = (int)config_long(cfg, "restart_days", 127, 0, 127);
+    rc.window_minutes = (int)config_long(cfg, "restart_window_minutes", 60, 5, 720);
+    rc.hour = 4; rc.minute = 0;
+    if (config_get(cfg, "restart_time", &t) == 0 && t)
+        restart_parse_time(t, &rc.hour, &rc.minute);
+    restart_configure(&app->restart, &rc);
+}
+
 /* 적응형 감속 설정. 우선순위는 시작 시 한 번만 적용하고 여기서는 임계값만 다룹니다. */
 static void apply_throttle_config(AppContext *app, const Config *cfg) {
     ThrottleConfig tc;
@@ -957,6 +981,7 @@ static void reload_config(AppContext *app) {
     apply_residue_config(app, &cfg);
     apply_slot_config(app, &cfg);
     apply_throttle_config(app, &cfg);
+    apply_restart_config(app, &cfg);
     {
         int prev_privacy = app->privacy_mode;
         apply_security_config(app, &cfg);
@@ -1144,6 +1169,68 @@ static int process_frame(RgbFrame *frame, void *opaque,
     /* 이번 프레임의 변화 픽셀 비율 — 아래 gray_analyze 블록에서 채우고 잔류물 자동 캡처가 읽습니다.
        1.0 으로 시작하는 이유: 아직 못 계산했으면 "움직임 있음"으로 취급해 캡처를 미룹니다. */
     double motion_ratio = 1.0;
+
+    /* ── 예약 재시작 ───────────────────────────────────────────────────────
+     * 1초에 한 번만 확인합니다. 재시작은 추적 중인 체류 시간과 래치를 모두 잃는
+     * 파괴적 동작이라, 사람이 있거나 미해소 소실 경고가 있으면 미룹니다. */
+    if (app->restart.config.enabled && (now - app->restart_check_time) >= 1.0) {
+        time_t wall = time(NULL);
+        struct tm lt;
+        int busy = 0;
+        size_t ri;
+#if defined(_WIN32)
+        localtime_s(&lt, &wall);
+#else
+        localtime_r(&wall, &lt);
+#endif
+        app->restart_check_time = now;
+        for (ri = 0; ri < app->tracks.count; ++ri) {
+            const Track *t = &app->tracks.items[ri];
+            if (t->id <= 0) continue;
+            /* 활성 트랙이 있거나, 사라진 사람에 대한 경고가 아직 안 풀렸으면 재시작 금지.
+               쓰러진 사람을 추적하는 중에 재시작하면 그 사실이 통째로 사라집니다. */
+            if (t->active || t->vanish_warned || t->vanish_escalated) { busy = 1; break; }
+        }
+        {
+            char rmsg[220];
+            int mins = lt.tm_hour * 60 + lt.tm_min;
+            switch (restart_check(&app->restart, lt.tm_wday, lt.tm_yday, mins, busy)) {
+                case RESTART_NOW:
+                    /* 먼저 기록하고 종료합니다 — 저장 전에 죽으면 새 프로세스가 오늘을
+                       미처리로 보고 창 안에서 재시작을 반복합니다. */
+                    if (app->restart_state_path[0] &&
+                        restart_state_save(app->restart_state_path,
+                                           lt.tm_yday, lt.tm_year) != 0) {
+                        event_log_write(&app->event_log, LOG_WARN, "restart",
+                                        "재시작 상태 파일을 쓰지 못했습니다 — 같은 창 안에서 "
+                                        "재시작이 반복될 수 있어 이번 재시작을 취소합니다");
+                        break;
+                    }
+                    snprintf(rmsg, sizeof(rmsg),
+                             "scheduled restart at %02d:%02d — uptime %.0f분, rss %ldKB",
+                             lt.tm_hour, lt.tm_min,
+                             (now - app->process_start_time) / 60.0,
+                             platform_process_memory_kb());
+                    event_log_write(&app->event_log, LOG_INFO, "restart", rmsg);
+                    restart_requested = 1;
+                    stop_requested    = 1;
+                    break;
+                case RESTART_DEFER:
+                    event_log_write(&app->event_log, LOG_INFO, "restart",
+                                    "예정 시각이지만 매장에 사람이 있어 재시작을 미룹니다 "
+                                    "— 사람이 없어지면 진행합니다");
+                    break;
+                case RESTART_SKIP:
+                    snprintf(rmsg, sizeof(rmsg),
+                             "재시작 창(%d분)을 넘겨 오늘은 건너뜁니다 — 내일 %02d:%02d 에 다시 시도합니다",
+                             app->restart.config.window_minutes,
+                             app->restart.config.hour, app->restart.config.minute);
+                    event_log_write(&app->event_log, LOG_WARN, "restart", rmsg);
+                    break;
+                default: break;
+            }
+        }
+    }
 
     /* ── 적응형 감속 ───────────────────────────────────────────────────────
      * 단계가 바뀔 때만 로그를 남깁니다. 남기지 않으면 "왜 갑자기 감지가 느려졌지"에
@@ -2305,6 +2392,8 @@ int main(int argc, char **argv) {
         app.priority_level = (int)config_long(&cfg, "process_priority", 1, 0, 2);
         throttle_init(&app.throttle, NULL);
         apply_throttle_config(&app, &cfg);
+        restart_init(&app.restart, NULL);
+        apply_restart_config(&app, &cfg);
         apply_security_config(&app, &cfg);
         apply_auto_capture_config(&app, &cfg); /* surface_monitor 는 아직 없음 — 생성 직후 다시 넘깁니다 */
         if (!args.stream_port_set)
@@ -2511,6 +2600,27 @@ int main(int argc, char **argv) {
     }
     {
         char msg[220];
+        if (app.restart.config.enabled) {
+            static const char *dn[7] = { "일","월","화","수","목","금","토" };
+            char days[32] = {0};
+            int d;
+            for (d = 0; d < 7; ++d)
+                if ((app.restart.config.days >> d) & 1) {
+                    if (days[0]) strncat(days, ",", sizeof(days) - strlen(days) - 1);
+                    strncat(days, dn[d], sizeof(days) - strlen(days) - 1);
+                }
+            snprintf(msg, sizeof(msg),
+                     "scheduled restart %s %02d:%02d (창 %d분, 사람 있으면 연기)",
+                     days[0] ? days : "(요일 미선택 — 동작 안 함)",
+                     app.restart.config.hour, app.restart.config.minute,
+                     app.restart.config.window_minutes);
+        } else {
+            snprintf(msg, sizeof(msg), "scheduled restart 비활성");
+        }
+        event_log_write(&app.event_log, LOG_INFO, "restart", msg);
+    }
+    {
+        char msg[220];
         snprintf(msg, sizeof(msg),
                  "auto_capture door=%s(quiet=%.0fs hold=%.1fs l1>=%.0f band=%.0f%%) residue=%s(quiet=%.0fs) surface=%s(quiet=%.0fs)",
                  app.door.auto_enabled ? "on" : "off", app.door.auto_quiet_seconds,
@@ -2569,6 +2679,24 @@ int main(int argc, char **argv) {
     }
     start = platform_monotonic_seconds();
     cpu_start = platform_process_cpu_seconds();
+    app.process_start_time = start;
+    /* 오늘 이미 예약 재시작을 했는지 파일에서 복원합니다. 이게 없으면 새로 뜬 프로세스가
+       여전히 예정 창 안이라고 판단해 곧바로 또 재시작합니다(무한 루프). */
+    snprintf(app.restart_state_path, sizeof(app.restart_state_path),
+             "%s/restart_state.txt", data_dir);
+    {
+        time_t wall = time(NULL);
+        struct tm lt;
+#if defined(_WIN32)
+        localtime_s(&lt, &wall);
+#else
+        localtime_r(&wall, &lt);
+#endif
+        if (restart_state_load(&app.restart, app.restart_state_path,
+                               lt.tm_yday, lt.tm_year))
+            event_log_write(&app.event_log, LOG_INFO, "restart",
+                            "오늘 예약 재시작이 이미 실행되었습니다 — 다음 재시작은 내일입니다");
+    }
     /*
      * 실제 반복문은 media_process() 안에 있습니다. 프레임이 준비될 때마다 위의
      * process_frame 함수가 호출되고, 수정된 RGB 프레임이 곧바로 저장됩니다.
@@ -2630,5 +2758,8 @@ done:
     detection_list_destroy(&app.rotated_dets);
     free(app.rotated_rgb);
     free(app.full_luma);
+    /* 예약 재시작은 "실패"가 아니라 "다시 띄워 달라"는 뜻입니다. 감시 루프가 비정상
+     * 종료와 구분해 백오프 없이 즉시 재기동하도록 전용 코드를 돌려줍니다. */
+    if (restart_requested) return EXIT_RESTART_REQUESTED;
     return result;
 }
