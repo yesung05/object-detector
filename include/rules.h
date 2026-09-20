@@ -11,7 +11,8 @@
  */
 
 /*
- * Tier 2 파인튜닝 모델의 리매핑 클래스 ID (0-15)입니다.
+ * Tier 2 내부 클래스 ID (0-15)입니다. 7클래스 raw 모델은 decode에서
+ * food=4, chair=5, dining_table=6을 내부 4,14,15로 정규화합니다.
  * Ultralytics classes= 파라미터로 학습하면 원본 COCO ID가 이 순서대로 재배치됩니다.
  * 원본 COCO: cat=15, dog=16, bottle=39, cup=41, banana=46…cake=55, chair=56, table=60
  */

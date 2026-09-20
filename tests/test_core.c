@@ -1227,6 +1227,63 @@ static void test_decode_class_id_multiclass_argmax(void) {
 
 /* ── rules_evaluate_objects 테스트 ──────────────────────────────────────── */
 
+static void test_decode_tier2_layouts_and_legacy(void) {
+    enum { N = 100, MAX_C = 84 };
+    float output[N * MAX_C];
+    Letterbox t = {320, 320, 320, 320, 1.0f, 0, 0};
+    DetectionList list;
+    const int counts[] = {7, 16, 80};
+    ASSERT_INT_EQ(detection_list_init(&list, 8), 0);
+    for (int version = 0; version < 3; ++version) {
+        int nc = counts[version], c = nc + 4;
+        for (int layout = 0; layout < 2; ++layout) {
+            int64_t shape[3] = {1, layout ? N : c, layout ? c : N};
+            for (int id = 0; id < nc; ++id) {
+                int expected = nc == 7 && id == 5 ? OBJ_CHAIR :
+                               nc == 7 && id == 6 ? OBJ_DININGTABLE : id;
+                memset(output, 0, sizeof(output));
+                output[0] = 160.0f;
+                output[layout ? 1 : N] = 160.0f;
+                output[layout ? 2 : 2*N] = 60.0f;
+                output[layout ? 3 : 3*N] = 60.0f;
+                output[layout ? 4+id : (4+id)*N] = 0.87f;
+                ASSERT_INT_EQ(yolo11_decode(output, shape, 3, &t, .2f, .45f, &list, 8), 0);
+                ASSERT_INT_EQ((int)list.count, 1);
+                EXPECT_INT_EQ(list.items[0].class_id, expected);
+                EXPECT_FLOAT_NEAR(list.items[0].score, .87f, .0001f);
+            }
+        }
+    }
+    detection_list_destroy(&list);
+}
+
+static void test_draw_tier2_confidence_and_masks(void) {
+    enum { W = 160, H = 100, BYTES = W*H*3 };
+    uint8_t first[BYTES], second[BYTES], blank[BYTES];
+    Detection d;
+    DetectionList list;
+    memset(&d, 0, sizeof(d));
+    ASSERT_INT_EQ(detection_list_init(&list, 1), 0);
+    d.x1 = 10; d.y1 = 30; d.x2 = 120; d.y2 = 90;
+    d.class_id = OBJ_CHAIR; d.score = .47f;
+    list.items[0] = d; list.count = 1;
+    memset(first, 0, sizeof(first));
+    memset(second, 0, sizeof(second));
+    memset(blank, 0, sizeof(blank));
+    draw_obj_detections(first, W, H, W*3, &list, OBJ_VIS_FURNITURE);
+    list.items[0].score = .87f;
+    draw_obj_detections(second, W, H, W*3, &list, OBJ_VIS_FURNITURE);
+    EXPECT_INT_EQ(memcmp(first, second, sizeof(first)) != 0, 1);
+    EXPECT_INT_EQ(memcmp(first, blank, sizeof(first)) != 0, 1);
+    memset(first, 0, sizeof(first));
+    draw_obj_detections(first, W, H, W*3, &list, OBJ_VIS_FOOD);
+    EXPECT_INT_EQ(memcmp(first, blank, sizeof(first)), 0);
+    list.items[0].class_id = OBJ_DININGTABLE;
+    draw_obj_detections(first, W, H, W*3, &list, OBJ_VIS_FURNITURE);
+    EXPECT_INT_EQ(memcmp(first, blank, sizeof(first)) != 0, 1);
+    detection_list_destroy(&list);
+}
+
 static void make_obj_list(DetectionList *list, float x1, float y1,
                            float x2, float y2, float score, int class_id) {
     list->count = 1;
@@ -2432,6 +2489,8 @@ int main(void) {
     /* Tier 2 class_id 전파 및 rules_evaluate_objects 테스트 */
     RUN_TEST(test_decode_class_id_pose_is_zero);
     RUN_TEST(test_decode_class_id_multiclass_argmax);
+    RUN_TEST(test_decode_tier2_layouts_and_legacy);
+    RUN_TEST(test_draw_tier2_confidence_and_masks);
     RUN_TEST(test_rules_obj_external_drink);
     RUN_TEST(test_rules_obj_external_food);
     RUN_TEST(test_rules_obj_animal_on_chair);

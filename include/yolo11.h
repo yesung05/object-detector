@@ -27,7 +27,8 @@ typedef struct {
  * (x2, y2): 오른쪽 아래 좌표
  * score:     모델이 해당 클래스라고 판단한 확률에 가까운 값(0.0~1.0)
  * class_id:  리매핑된 클래스 인덱스. pose 모델은 항상 0(person).
- *            Tier 2 파인튜닝 모델은 0=cat … 15=dining_table.
+ *            Tier 2 내부 ID는 0=cat … 15=dining_table.
+ *            7클래스 raw 출력의 chair=5/table=6은 decode에서 14/15로 정규화.
  *
  * 좌표는 YOLO 모델 입력 좌표가 아니라 원본 이미지 좌표입니다.
  *
