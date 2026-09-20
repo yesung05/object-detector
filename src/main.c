@@ -100,6 +100,7 @@ typedef struct {
     double surface_config_check, surface_people_at, surface_status_at;
     int surface_revision;
     int              detect_every_obj;  /* Tier 2 실행 간격(프레임), 기본 90 */
+    int              tier2_always;      /* 1=surface 활성 중에도 Tier 2 강제 실행 (개발용) */
     int64_t          obj_inference_runs;
     /* 이상 탐지 모듈 */
     GrayBuf      gray;           /* 현재 프레임 그레이스케일 (지연 초기화) */
@@ -810,6 +811,9 @@ static void reload_config(AppContext *app) {
     app->detect_every_obj =
         (int)config_long(&cfg, "detect_every_obj",
                          (long)app->detect_every_obj, 1, 10000);
+    /* tier2_always: surface 활성 중에도 Tier 2를 강제 실행합니다.
+     * 운영 환경에서는 0(기본값)으로 두어 CPU 부하를 아낍니다. */
+    app->tier2_always = (int)config_long(&cfg, "tier2_always", 0, 0, 1);
 
     apply_residue_config(app, &cfg);
     apply_slot_config(app, &cfg);
@@ -1410,7 +1414,8 @@ static int process_frame(RgbFrame *frame, void *opaque,
          * detect_every_obj/2가 detect_every의 배수일 때 Tier 2가 영원히 실행되지
          * 않는 버그가 있었다(detect_every=5, detect_every_obj=90 → 45%5==0).
          * 조건을 단순 주기로 변경한다. ORT는 내부적으로 직렬 실행되므로 경합 없음. */
-        if (app->obj_detector && !surface_monitor_enabled(app->surface_monitor)) {
+        if (app->obj_detector &&
+                (app->tier2_always || !surface_monitor_enabled(app->surface_monitor))) {
             int run_obj = (frame->index % app->detect_every_obj == 0);
             if (run_obj) {
                 int rc = detector_run(app->obj_detector,
