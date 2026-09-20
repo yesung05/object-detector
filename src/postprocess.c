@@ -1,4 +1,5 @@
 #include "yolo11.h"
+#include "rules.h"
 
 #include <math.h>
 #include <stdlib.h>
@@ -456,6 +457,14 @@ int yolo11_decode(const float *output, const int64_t *shape, size_t rank,
                     }
                 }
                 if (score < confidence) continue;
+                /* Project Tier 2 v2/v3: cat,dog,bottle,cup,food,chair,table.
+                 * Normalize to the legacy internal IDs used by drawing AND rules.
+                 * 16-class, COCO-80 and pose outputs keep their existing IDs.
+                 * Embedded-NMS exports do not encode class count; not inferred here. */
+                if (channels == 11) {
+                    if (class_id == 5) class_id = OBJ_CHAIR;
+                    else if (class_id == 6) class_id = OBJ_DININGTABLE;
+                }
                 d = map_box(cx - width * 0.5f, cy - height * 0.5f,
                             cx + width * 0.5f, cy + height * 0.5f,
                             score, class_id, transform);

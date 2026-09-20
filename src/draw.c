@@ -80,6 +80,7 @@ static const uint8_t *glyph(char c) {
     static const uint8_t h_g[7] = {17, 17, 17, 31, 17, 17, 17};  /* H — CHAIR */
     static const uint8_t b_g[7] = {30, 17, 17, 30, 17, 17, 30};  /* B — TABLE */
     static const uint8_t k_g[7] = {17, 18, 20, 24, 20, 18, 17};  /* K — DRINK */
+    static const uint8_t g_g[7] = {14, 17, 16, 23, 17, 17, 14};  /* G — DOG */
     static const uint8_t digits[10][7] = {
         {14, 17, 19, 21, 25, 17, 14},
         {4, 12, 4, 4, 4, 4, 14},
@@ -110,6 +111,7 @@ static const uint8_t *glyph(char c) {
         case 'U': return u_g;
         case '#': return hash;
         case 'D': return d_g;
+        case 'G': return g_g;
         case 'L': return l_g;
         case 'T': return t_g;
         case 'H': return h_g;
@@ -425,9 +427,9 @@ void draw_tracks(uint8_t *rgb, int width, int height, int stride,
  * draw_tracks()와 달리 1px 테두리를 사용하여 Tier 1 박스와 시각적으로 구분합니다.
  *
  * 색상:
- *   ANIMAL (cat/dog)  — 빨강 (220, 50, 50)
+ *   CAT / DOG         — 빨강 (220, 50, 50)
  *   FOOD              — 주황 (255, 140, 0)
- *   DRINK (bottle)    — 보라 (160, 80, 220)
+ *   BOTTLE            — 보라 (160, 80, 220)
  *   CUP               — 밝은보라 (180, 120, 240)
  *   CHAIR             — 회청 (100, 160, 200)
  *   TABLE             — 회청 (80, 140, 180)
@@ -445,6 +447,7 @@ void draw_obj_detections(uint8_t *rgb, int width, int height, int stride,
     for (i = 0; i < detections->count; ++i) {
         const Detection *d = &detections->items[i];
         const char *label;
+        char label_text[48];
         uint8_t br, bg, bb;
         int x1 = clampi((int)(d->x1 + 0.5f), 0, width - 1);
         int y1 = clampi((int)(d->y1 + 0.5f), 0, height - 1);
@@ -457,13 +460,13 @@ void draw_obj_detections(uint8_t *rgb, int width, int height, int stride,
         /* 클래스별 색상과 레이블, 그리고 마스크 비트 결정 */
         if (id == OBJ_CAT || id == OBJ_DOG) {
             if (!(obj_vis_mask & OBJ_VIS_ANIMAL)) continue;
-            br = 220; bg = 50;  bb = 50;  label = "ANIMAL";
+            br = 220; bg = 50;  bb = 50;  label = id == OBJ_CAT ? "CAT" : "DOG";
         } else if (id >= OBJ_FOOD_FIRST && id <= OBJ_FOOD_LAST) {
             if (!(obj_vis_mask & OBJ_VIS_FOOD)) continue;
             br = 255; bg = 140; bb = 0;   label = "FOOD";
         } else if (id == OBJ_BOTTLE) {
             if (!(obj_vis_mask & OBJ_VIS_DRINK)) continue;
-            br = 160; bg = 80;  bb = 220; label = "DRINK";
+            br = 160; bg = 80;  bb = 220; label = "BOTTLE";
         } else if (id == OBJ_CUP) {
             if (!(obj_vis_mask & OBJ_VIS_DRINK)) continue;
             br = 180; bg = 120; bb = 240; label = "CUP";
@@ -478,7 +481,9 @@ void draw_obj_detections(uint8_t *rgb, int width, int height, int stride,
             br = 128; bg = 128; bb = 128; label = "OBJ";
         }
 
-        label_width = (int)strlen(label) * 6 * font_scale + 6;
+        snprintf(label_text, sizeof(label_text), "%s %d%%", label,
+                 clampi((int)(d->score * 100.0f + 0.5f), 0, 100));
+        label_width = (int)strlen(label_text) * 6 * font_scale + 6;
         if (label_width > width) label_width = width;
         label_y = y1 >= label_height ? y1 - label_height : y1;
 
@@ -494,7 +499,7 @@ void draw_obj_detections(uint8_t *rgb, int width, int height, int stride,
             }
         }
         draw_text(rgb, width, height, stride, x1 + 3, label_y + 4,
-                  label, font_scale);
+                  label_text, font_scale);
     }
 }
 
