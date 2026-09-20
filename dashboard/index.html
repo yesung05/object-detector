@@ -701,6 +701,22 @@ input[type="range"].out-of-range::-webkit-slider-thumb { background: var(--orang
   box-shadow: inset -1px -1px 2px var(--sh-light), inset 1px 1px 2px var(--sh-dark);
   border-radius: 5px; padding: 1px 6px;
 }
+/* 요일 선택 — 7개가 한 줄에 들어가도록 */
+.weekday-row { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; }
+.weekday-row label {
+  display: flex; flex-direction: column; align-items: center; gap: 3px;
+  padding: 6px 0; border-radius: 8px; cursor: pointer;
+  font-size: 11px; font-weight: 600; color: var(--muted);
+  background: var(--bg);
+  box-shadow: -2px -2px 5px var(--sh-light), 2px 2px 5px var(--sh-dark);
+  transition: color .15s, box-shadow .15s;
+}
+.weekday-row label:has(input:checked) {
+  color: var(--accent);
+  box-shadow: inset -2px -2px 5px var(--sh-light), inset 2px 2px 5px var(--sh-dark);
+}
+.weekday-row input { margin: 0; }
+
 .roi-glass-hint {
   margin-top: 6px; padding: 7px 10px; border-radius: 8px;
   font-size: 11px; line-height: 1.6; color: var(--muted);
@@ -1227,6 +1243,42 @@ details.dev-accordion[open] > summary { color: var(--red) !important; }
         </div>
       </div>
 
+      <!-- 예약 재시작 -->
+      <div class="preset-card neu-raised">
+        <div>
+          <div class="preset-title">🔄 예약 재시작</div>
+          <div class="preset-subtitle">지정한 요일·시각에 프로그램을 다시 시작합니다 — 손님이 있으면 자동으로 미룹니다</div>
+        </div>
+        <div class="preset-door-row">
+          <span class="preset-door-label">사용</span>
+          <label class="toggle">
+            <input type="checkbox" id="pcfg-restart_enabled" onchange="syncSimpleToCfg('restart_enabled', this.checked?1:0)">
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+        <div>
+          <div class="preset-subtitle" style="margin-bottom:6px">요일</div>
+          <div class="weekday-row" id="restart-days">
+            <label><input type="checkbox" data-day="0" onchange="syncRestartDays()"><span>일</span></label>
+            <label><input type="checkbox" data-day="1" onchange="syncRestartDays()"><span>월</span></label>
+            <label><input type="checkbox" data-day="2" onchange="syncRestartDays()"><span>화</span></label>
+            <label><input type="checkbox" data-day="3" onchange="syncRestartDays()"><span>수</span></label>
+            <label><input type="checkbox" data-day="4" onchange="syncRestartDays()"><span>목</span></label>
+            <label><input type="checkbox" data-day="5" onchange="syncRestartDays()"><span>금</span></label>
+            <label><input type="checkbox" data-day="6" onchange="syncRestartDays()"><span>토</span></label>
+          </div>
+        </div>
+        <div class="preset-time-row">
+          <span class="preset-door-label" style="flex:none">시각</span>
+          <input type="time" class="setting-input" id="pcfg-restart_time" style="width:auto"
+                 onchange="syncSimpleToCfg('restart_time', this.value)">
+        </div>
+        <div class="preset-desc">
+          영업이 끝난 한산한 시각을 권합니다. 예정 시각에 매장에 사람이 있으면 미루고,
+          <strong>1시간 안에 비지 않으면 그날은 건너뜁니다</strong> — 낮에 갑자기 재시작되는 것을 막기 위함입니다.
+        </div>
+      </div>
+
       <!-- Tier 2 감지 대상 -->
       <div class="preset-card neu-raised">
         <div>
@@ -1636,6 +1688,62 @@ details.dev-accordion[open] > summary { color: var(--red) !important; }
             <div><div class="setting-label">표면 정지 시간 (초)</div><div class="setting-desc">surface_auto_quiet_seconds</div></div>
             <input type="range" class="setting-input" id="cfg-surface_auto_quiet_seconds" min="3" max="120" step="1" value="10" oninput="syncDisplay(this)">
             <span class="setting-value-display" id="disp-surface_auto_quiet_seconds">10</span>
+          </div>
+        </div>
+      </details>
+
+      <!-- 리소스 / 재시작 -->
+      <details class="neu-accordion">
+        <summary>리소스 / 재시작</summary>
+        <div class="accordion-body">
+          <div class="setting-desc" style="margin-bottom:6px">
+            이 프로그램은 키오스크의 보조입니다. 결제 화면이 우리 때문에 버벅이지 않도록
+            우선순위를 낮추고, 다른 프로그램이 바쁘면 스스로 감지를 줄입니다.
+          </div>
+          <div class="setting-row">
+            <div><div class="setting-label">프로세스 우선순위</div><div class="setting-desc">process_priority — 0 보통 / 1 보통 아래(권장) / 2 유휴. 재시작해야 반영됩니다</div></div>
+            <input type="number" class="setting-input" id="cfg-process_priority" min="0" max="2" value="1">
+            <span></span>
+          </div>
+          <div class="setting-row">
+            <div><div class="setting-label">적응형 감속</div><div class="setting-desc">throttle_enabled — 다른 프로그램 CPU 부하에 따라 추론 주기를 늘립니다</div></div>
+            <label class="toggle"><input type="checkbox" id="cfg-throttle_enabled" checked><span class="toggle-slider"></span></label>
+            <span></span>
+          </div>
+          <div class="setting-row">
+            <div><div class="setting-label">1단계 임계 (%)</div><div class="setting-desc">throttle_light_percent — 추론 주기 2배</div></div>
+            <input type="range" class="setting-input" id="cfg-throttle_light_percent" min="10" max="100" step="5" value="50" oninput="syncDisplay(this)">
+            <span class="setting-value-display" id="disp-throttle_light_percent">50</span>
+          </div>
+          <div class="setting-row">
+            <div><div class="setting-label">2단계 임계 (%)</div><div class="setting-desc">throttle_heavy_percent — 추론 4배, Tier 2 정지</div></div>
+            <input type="range" class="setting-input" id="cfg-throttle_heavy_percent" min="10" max="100" step="5" value="70" oninput="syncDisplay(this)">
+            <span class="setting-value-display" id="disp-throttle_heavy_percent">70</span>
+          </div>
+          <div class="setting-row">
+            <div><div class="setting-label">3단계 임계 (%)</div><div class="setting-desc">throttle_minimal_percent — 추론 정지, 카메라 감시만</div></div>
+            <input type="range" class="setting-input" id="cfg-throttle_minimal_percent" min="10" max="100" step="5" value="85" oninput="syncDisplay(this)">
+            <span class="setting-value-display" id="disp-throttle_minimal_percent">85</span>
+          </div>
+          <div class="setting-row">
+            <div><div class="setting-label">예약 재시작</div><div class="setting-desc">restart_enabled</div></div>
+            <label class="toggle"><input type="checkbox" id="cfg-restart_enabled"><span class="toggle-slider"></span></label>
+            <span></span>
+          </div>
+          <div class="setting-row">
+            <div><div class="setting-label">재시작 요일 (비트마스크)</div><div class="setting-desc">restart_days — 1=일 2=월 4=화 8=수 16=목 32=금 64=토, 127=매일</div></div>
+            <input type="number" class="setting-input" id="cfg-restart_days" min="0" max="127" value="127">
+            <span></span>
+          </div>
+          <div class="setting-row">
+            <div><div class="setting-label">재시작 시각</div><div class="setting-desc">restart_time (HH:MM)</div></div>
+            <input type="time" class="setting-input" id="cfg-restart_time" value="04:00">
+            <span></span>
+          </div>
+          <div class="setting-row">
+            <div><div class="setting-label">연기 허용 시간 (분)</div><div class="setting-desc">restart_window_minutes — 이 안에 사람이 안 비면 그날은 건너뜁니다</div></div>
+            <input type="number" class="setting-input" id="cfg-restart_window_minutes" min="5" max="720" value="60">
+            <span></span>
           </div>
         </div>
       </details>
@@ -2196,7 +2304,10 @@ function cfgVal(id) {
   const el = document.getElementById("cfg-" + id);
   if (!el) return undefined;
   if (el.type === "checkbox") return el.checked ? 1 : 0;
-  if (el.type === "password" || el.type === "text") return el.value.trim(); /* access_pin — 문자열 그대로 */
+  /* 문자열로 저장해야 하는 값들 — 숫자로 바꾸면 "04:00" 이 4 가 됩니다.
+     JSON 에도 따옴표를 붙여야 하므로 saveSettings 가 문자열 그대로 직렬화합니다. */
+  if (el.type === "password" || el.type === "text" || el.type === "time")
+    return el.value.trim();
   const v = parseFloat(el.value);
   return isNaN(v) ? 0 : v;
 }
@@ -2229,7 +2340,10 @@ async function loadSettings() {
       "stream_privacy_mode","privacy_unlock_max_seconds","access_pin",
       "door_auto_capture","door_auto_quiet_seconds","door_auto_open_hold_seconds","door_auto_open_l1",
       "residue_auto_capture","residue_auto_quiet_seconds",
-      "surface_auto_capture","surface_auto_quiet_seconds"
+      "surface_auto_capture","surface_auto_quiet_seconds",
+      "process_priority","throttle_enabled","throttle_light_percent",
+      "throttle_heavy_percent","throttle_minimal_percent",
+      "restart_enabled","restart_days","restart_time","restart_window_minutes"
     ];
     /* PIN 은 서버 응답에 키가 없으면(미설정) 빈 칸이어야 하므로 먼저 비웁니다 */
     { const pinEl = document.getElementById("cfg-access_pin"); if (pinEl) pinEl.value = ""; }
@@ -2299,6 +2413,15 @@ async function saveSettings() {
     residue_auto_quiet_seconds:     cfgVal("residue_auto_quiet_seconds"),
     surface_auto_capture:           cfgVal("surface_auto_capture"),
     surface_auto_quiet_seconds:     cfgVal("surface_auto_quiet_seconds"),
+    process_priority:               cfgVal("process_priority"),
+    throttle_enabled:               cfgVal("throttle_enabled"),
+    throttle_light_percent:         cfgVal("throttle_light_percent"),
+    throttle_heavy_percent:         cfgVal("throttle_heavy_percent"),
+    throttle_minimal_percent:       cfgVal("throttle_minimal_percent"),
+    restart_enabled:                cfgVal("restart_enabled"),
+    restart_days:                   cfgVal("restart_days"),
+    restart_time:                   cfgVal("restart_time"),
+    restart_window_minutes:         cfgVal("restart_window_minutes"),
   };
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 5000);
@@ -2680,9 +2803,18 @@ function syncCfgToSimple() {
   if (pDoorEl) { pDoorEl.value = doorSec; document.getElementById("pdoor-val").textContent = doorSec; }
   updateDoorDesc(doorSec);
 
-  /* tier2 · 보호 모드 · 자동 캡처 체크박스 */
+  /* 재시작: 요일 체크박스와 시각 입력을 cfg 값에서 복원 */
+  renderRestartDays();
+  {
+    const src = document.getElementById("cfg-restart_time");
+    const dst = document.getElementById("pcfg-restart_time");
+    if (src && dst) dst.value = src.value || "04:00";
+  }
+
+  /* tier2 · 보호 모드 · 자동 캡처 · 재시작 체크박스 */
   ["show_animal","show_food","show_drink","show_furniture",
-   "stream_privacy_mode","door_auto_capture","residue_auto_capture","surface_auto_capture"].forEach(k => {
+   "stream_privacy_mode","door_auto_capture","residue_auto_capture","surface_auto_capture",
+   "restart_enabled"].forEach(k => {
     const src = document.getElementById("cfg-" + k);
     const dst = document.getElementById("pcfg-" + k);
     if (src && dst) dst.checked = src.checked;
@@ -2704,6 +2836,21 @@ function syncCfgToSimple() {
 function syncSimpleToCfg(key, val) {
   setCfgVal(key, val);
   if (key === "door_open_seconds") updateDoorDesc(val);
+}
+
+/* 요일 체크박스 7개 ↔ 비트마스크(bit0=일 … bit6=토) 변환. detector 는 정수 하나만 읽습니다. */
+function syncRestartDays() {
+  let mask = 0;
+  document.querySelectorAll('#restart-days input[data-day]').forEach(cb => {
+    if (cb.checked) mask |= (1 << parseInt(cb.dataset.day, 10));
+  });
+  setCfgVal("restart_days", mask);
+}
+function renderRestartDays() {
+  const mask = parseInt(document.getElementById("cfg-restart_days")?.value, 10) || 0;
+  document.querySelectorAll('#restart-days input[data-day]').forEach(cb => {
+    cb.checked = (mask >> parseInt(cb.dataset.day, 10)) & 1;
+  });
 }
 
 /* ── 시간 설정: 고정 눈금 슬라이더 + 범위 밖 직접 입력 ──────────────────────

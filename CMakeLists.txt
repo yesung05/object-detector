@@ -96,6 +96,7 @@ if(ORT_INCLUDE_DIR AND ORT_LIBRARY AND FFMPEG_INCLUDE_DIR AND FFMPEG_FOUND)
         src/stream.c
         src/netaccess.c
         src/throttle.c
+        src/restart.c
         src/door.c
         src/model_select.c
         src/residue.c
@@ -155,6 +156,7 @@ add_executable(test_core
     src/slot_monitor.c
     src/netaccess.c
     src/throttle.c
+    src/restart.c
     third_party/sqlite/sqlite3.c)
 target_include_directories(test_core PRIVATE include tests)
 if(MSVC)

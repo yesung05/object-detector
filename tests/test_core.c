@@ -12,6 +12,7 @@
 #include "residue.h"
 #include "netaccess.h"
 #include "throttle.h"
+#include "restart.h"
 #include "slot_monitor.h"
 
 #include <math.h>
@@ -2223,9 +2224,110 @@ static void test_throttle_needs_baseline_before_deciding(void) {
     EXPECT_INT_EQ(t.level, THROTTLE_NONE);
 }
 
+/* ── 예약 재시작 ──────────────────────────────────────────────────────────── */
+
+static RestartConfig restart_cfg(void) {
+    RestartConfig c;
+    c.enabled = 1;
+    c.days = 127;          /* 매일 */
+    c.hour = 4; c.minute = 0;
+    c.window_minutes = 60;
+    return c;
+}
+
+static void test_restart_time_parse_and_window(void) {
+    int h = 0, m = 0;
+    RestartConfig c = restart_cfg();
+    EXPECT_TRUE(restart_parse_time("04:00", &h, &m) && h == 4 && m == 0);
+    EXPECT_TRUE(restart_parse_time("23:59", &h, &m) && h == 23 && m == 59);
+    EXPECT_TRUE(!restart_parse_time("24:00", &h, &m));
+    EXPECT_TRUE(!restart_parse_time("4", &h, &m));
+    EXPECT_TRUE(!restart_parse_time("04:00:00", &h, &m));  /* 뒤에 잡다한 문자 거부 */
+
+    EXPECT_INT_EQ(restart_in_window(&c, 3, 3 * 60 + 59), 0); /* 03:59 — 아직 */
+    EXPECT_INT_EQ(restart_in_window(&c, 3, 4 * 60), 1);      /* 04:00 */
+    EXPECT_INT_EQ(restart_in_window(&c, 3, 4 * 60 + 59), 1); /* 04:59 — 창 안 */
+    EXPECT_INT_EQ(restart_in_window(&c, 3, 5 * 60), 0);      /* 05:00 — 창 밖 */
+
+    c.days = 1 << 1;                                         /* 월요일만 */
+    EXPECT_INT_EQ(restart_in_window(&c, 1, 4 * 60), 1);
+    EXPECT_INT_EQ(restart_in_window(&c, 2, 4 * 60), 0);
+    c.enabled = 0;
+    EXPECT_INT_EQ(restart_in_window(&c, 1, 4 * 60), 0);
+}
+
+static void test_restart_defers_while_people_present(void) {
+    /* 재시작은 추적 중인 체류 시간과 래치를 모두 잃습니다. 사람이 있으면 미뤄야 합니다. */
+    RestartScheduler s;
+    RestartConfig c = restart_cfg();
+    restart_init(&s, &c);
+
+    EXPECT_INT_EQ(restart_check(&s, 3, 100, 3 * 60, 0), RESTART_NO);        /* 03:00 */
+    EXPECT_INT_EQ(restart_check(&s, 3, 100, 4 * 60, 1), RESTART_DEFER);     /* 사람 있음 */
+    EXPECT_INT_EQ(restart_check(&s, 3, 100, 4 * 60 + 1, 1), RESTART_NO);    /* 연기 로그는 1회만 */
+    EXPECT_INT_EQ(restart_check(&s, 3, 100, 4 * 60 + 5, 0), RESTART_NOW);   /* 사람 떠남 */
+    EXPECT_INT_EQ(restart_check(&s, 3, 100, 4 * 60 + 6, 0), RESTART_NO);    /* 오늘은 끝 */
+}
+
+static void test_restart_skips_when_window_passes(void) {
+    /* 사람이 계속 있어 창을 넘기면 오늘은 포기해야 합니다 — 미뤄 두었다가 영업이
+       한창인 낮에 갑자기 재시작되는 것이 한 번 건너뛰는 것보다 훨씬 나쁩니다. */
+    RestartScheduler s;
+    RestartConfig c = restart_cfg();
+    restart_init(&s, &c);
+    EXPECT_INT_EQ(restart_check(&s, 3, 100, 4 * 60 + 10, 1), RESTART_DEFER);
+    EXPECT_INT_EQ(restart_check(&s, 3, 100, 5 * 60 + 1, 1), RESTART_SKIP);  /* 창 지남 */
+    EXPECT_INT_EQ(restart_check(&s, 3, 100, 14 * 60, 0), RESTART_NO);       /* 낮에 안 함 */
+    /* 다음 날 같은 시각에는 다시 시도 */
+    EXPECT_INT_EQ(restart_check(&s, 4, 101, 4 * 60, 0), RESTART_NOW);
+}
+
+static void test_restart_state_file_prevents_loop(void) {
+    /* 재시작은 프로세스 상태를 초기화합니다. 상태 파일이 없으면 새로 뜬 프로세스가
+       여전히 예정 창 안이라고 판단해 곧바로 또 재시작합니다 — 창 내내 무한 루프입니다. */
+    RestartScheduler s;
+    RestartConfig c = restart_cfg();
+    const char *path = "test_restart_state.tmp";
+    remove(path);
+
+    restart_init(&s, &c);
+    EXPECT_INT_EQ(restart_state_load(&s, path, 100, 125), 0);   /* 파일 없음 = 미처리 */
+    EXPECT_INT_EQ(restart_check(&s, 3, 100, 4 * 60, 0), RESTART_NOW);
+    EXPECT_INT_EQ(restart_state_save(path, 100, 125), 0);
+
+    /* 재시작 직후 새 프로세스 — 같은 날, 아직 창 안 */
+    restart_init(&s, &c);
+    EXPECT_INT_EQ(restart_state_load(&s, path, 100, 125), 1);
+    EXPECT_INT_EQ(restart_check(&s, 3, 100, 4 * 60 + 10, 0), RESTART_NO); /* 루프 차단 */
+
+    /* 다음 날에는 다시 동작해야 합니다 */
+    restart_init(&s, &c);
+    EXPECT_INT_EQ(restart_state_load(&s, path, 101, 125), 0);
+    EXPECT_INT_EQ(restart_check(&s, 4, 101, 4 * 60, 0), RESTART_NOW);
+    remove(path);
+}
+
+static void test_restart_config_change_rearms_today(void) {
+    /* 점주가 시각을 옮겼는데 "오늘은 이미 했음"으로 남아 새 시각이 무시되면
+       설정이 안 먹히는 것처럼 보입니다. */
+    RestartScheduler s;
+    RestartConfig c = restart_cfg();
+    restart_init(&s, &c);
+    EXPECT_INT_EQ(restart_check(&s, 3, 100, 4 * 60, 0), RESTART_NOW);
+    EXPECT_INT_EQ(restart_check(&s, 3, 100, 4 * 60 + 1, 0), RESTART_NO);
+    c.hour = 6;
+    restart_configure(&s, &c);
+    EXPECT_INT_EQ(restart_check(&s, 3, 100, 6 * 60, 0), RESTART_NOW);
+}
+
 int main(void) {
     TEST_SUITE_BEGIN(core_unit_tests);
     RUN_TEST(test_letterbox);
+    RUN_TEST(test_restart_time_parse_and_window);
+    RUN_TEST(test_restart_defers_while_people_present);
+    RUN_TEST(test_restart_skips_when_window_passes);
+    RUN_TEST(test_restart_state_file_prevents_loop);
+    RUN_TEST(test_restart_config_change_rearms_today);
     RUN_TEST(test_throttle_levels_and_hysteresis);
     RUN_TEST(test_throttle_actions_per_level);
     RUN_TEST(test_throttle_needs_baseline_before_deciding);
