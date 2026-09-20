@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>시나리오 영상 촬영</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#eef2f6;color:#173047;font:16px/1.65 system-ui,sans-serif}main{max-width:1150px;margin:auto;padding:24px}h1{margin:0}h2{font-size:22px}button,input,select{font:inherit;padding:9px;border:0;border-radius:0}button{background:#173f67;color:white;cursor:pointer}button:disabled{opacity:.4;cursor:default}input[type=number]{width:85px}label{display:inline-flex;gap:8px;align-items:center;margin:5px}.panel{padding:20px;margin:16px 0;background:white}.row{display:flex;gap:12px;align-items:center;flex-wrap:wrap}.layout{display:grid;grid-template-columns:1fr 1fr;gap:18px}video{width:100%;background:#111;max-height:440px}#instruction{font-size:23px;white-space:pre-line}#clock{font-size:40px;font-weight:bold;color:#b32f23}#status{white-space:pre-line}#choices{max-height:280px;overflow:auto}#choices label{display:flex}#history{white-space:pre-line;max-height:250px;overflow:auto}small{color:#52687a}.danger{background:#a22d22}@media(max-width:750px){.layout{grid-template-columns:1fr}}
+</style></head><body><main>
+<h1>50개 시나리오 자동 촬영</h1><p>같은 테이블 · 참여자 1명 · 무작위 순서 · 시나리오당 원본 영상 1개</p>
+<div class="panel"><strong>시험 위치: 화면 앞쪽의 가장 큰 흰색 테이블</strong><p>모니터·칸막이·키보드·배선은 원래 비치물로 유지하세요. 물건은 카메라에 보이는 빈 상판에 놓고, 다른 책상과 뒤쪽 사람은 시험 대상에서 제외합니다. 이 안내는 ROI를 자동 설정하지 않습니다. 빈 컵·마른 종이로 시험하세요.</p></div>
+<div class="panel"><strong>처음 한 번: 카메라와 저장 폴더를 허용해 주세요.</strong><p>Chrome 또는 Edge에서 사용하세요. 감지기가 같은 카메라를 사용 중이면 충돌할 수 있습니다. 필요한 경우 사용자가 감지기를 중지한 뒤 촬영하세요. 이 도구가 감지기를 중지하거나 설정을 변경하지는 않습니다. 마이크·음성은 녹음하지 않으며 영상은 서버로 업로드하지 않습니다.</p>
+<div class="row"><button id="camera">① 카메라 연결</button><select id="device" aria-label="카메라 선택"><option value="">기본 카메라</option></select><button id="folder">② 저장 폴더 선택</button></div><p id="setup">연결 전</p>
+</div>
+<div class="panel" id="settings"><h2>필요한 것만 다시 촬영</h2>
+<p>프로젝트 records의 저장 상태와 기존 육안 검토를 확인합니다. 감지 오탐·미검출은 데이터 오류가 아니므로 자동 제외하지 않습니다.</p>
+<div class="row"><button id="retake-refresh">기록 다시 확인</button><button id="retake-only">실패·건너뜀·문제 영상만 선택</button><button id="retake-missing">미촬영까지 함께 선택</button></div>
+<pre id="retake-summary" style="white-space:pre-wrap;max-height:240px;overflow:auto">기록 확인 중</pre>
+<p><small>완료는 파일 저장 상태이며 행동 정확성은 직접 확인해야 합니다. 다른 폴더의 영상은 집계하지 않습니다. 새 영상은 새 세션에 저장합니다.</small></p><details><summary>촬영할 시나리오 선택 (기본 50개 모두)</summary><button id="all">모두 선택</button> <button id="none">모두 해제</button><div id="choices"></div></details>
+<div class="row"><label>랜덤 촬영 수 <input id="limit" type="number" min="1" max="50" value="50"></label><label>준비 <input id="prepare" type="number" min="3" max="300" value="15">초</label><label>초기 장면 <input id="baseline" type="number" min="5" max="300" value="15">초</label><label>행동 <input id="action" type="number" min="40" max="300" value="45">초</label><label>관찰 <input id="observe" type="number" min="60" max="600" value="90">초</label><label>정리 <input id="cleanup" type="number" min="10" max="300" value="20">초</label><label>정리 후 <input id="after" type="number" min="15" max="300" value="20">초</label></div>
+<label><input id="automatic" type="checkbox" checked>저장 후 다음 시나리오 자동 진행</label><label><input id="voice" type="checkbox" checked>브라우저 기본 음성 안내 (녹음 안 함)</label><button id="voice-test">음성 미리듣기</button><p id="voice-status">브라우저 한국어 음성을 확인 중입니다.</p><p><small>설명을 다 읽은 뒤 해당 단계의 카운트다운을 시작합니다. 영상 길이에는 녹화 중 안내 시간도 추가됩니다. S33은 사전 배치와 관찰 단계를 추가합니다. 실제 행동 완료나 청결을 자동 판정하지 않습니다.</small></p>
+</div>
+<div class="row"><button id="start" disabled>③ 랜덤 촬영 시작</button><button id="pause" class="danger" disabled>중단 · 현재 영상 부분 저장</button><button id="skip" disabled>현재 시나리오 건너뛰기</button><button id="new" disabled>새 랜덤 세션</button></div>
+<div class="row"><button id="skip-explanation" disabled>설명 건너뛰기 → 타이머 시작</button><small>음성만 생략합니다. 준비·행동·관찰 시간은 유지합니다. 실제 녹화 시작 시 삐 소리가 납니다 (행동 시작 신호 아님).</small></div>
+<div class="panel" id="status" role="status">시나리오 목록을 불러오는 중입니다.</div>
+<div class="layout"><div class="panel"><h2 id="title">촬영 대기</h2><p id="props"></p><strong id="phase"></strong><div id="clock">—</div><p id="instruction">카메라와 폴더를 선택한 뒤 시작하세요.</p></div><div class="panel"><video id="preview" autoplay muted playsinline></video><small>카메라 원본만 저장합니다. 이 안내와 탐지 박스는 영상에 합성하지 않습니다.</small></div></div>
+<div class="panel"><h2>촬영 기록</h2><div id="history">아직 저장한 영상이 없습니다.</div></div>
+<p><small>촬영 중 탭을 숨기거나 카메라가 끊기면 부분 저장 후 멈춥니다. 절전·화면 잠금·페이지 닫기를 피하세요. 갑작스러운 종료나 저장 장치 오류 시 현재 파일 복구는 보장하지 않습니다. 저장 성공은 행동 수행 성공·정확도 평가를 의미하지 않습니다.</small></p>
+</main><script src="/phases.js"></script><script src="/browser-voice.js"></script><script src="/recorder.js"></script></body></html>

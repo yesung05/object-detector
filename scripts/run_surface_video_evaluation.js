@@ -1,0 +1,25 @@
+const fs=require('node:fs'),path=require('node:path'),crypto=require('node:crypto'),{spawn}=require('node:child_process');
+const root=path.resolve(__dirname,'..'),audit=JSON.parse(fs.readFileSync(path.join(root,'runs/record-audit-6l5Wca/timestamp-audit.json'),'utf8'));
+const excluded=new Set(['S17','S38']),positive=new Set(['S44','S34','S45','S16','S21','S40','S49','S24','S18','S25']);
+const output=fs.mkdtempSync(path.join(root,'runs','video-evaluation-')),exe=path.join(root,'build-windows/surface-validation/evaluate_surface_video.exe');
+const config=JSON.parse(fs.readFileSync(path.join(root,'config/surfaces.json'),'utf8'));config.surfaces=config.surfaces.filter(s=>s.id==='table-1');
+fs.writeFileSync(path.join(output,'config.json'),JSON.stringify(config,null,2));
+const models=['models/yolo11n-pose-416x224.onnx','models/yolo11n_tier2_fp32.onnx'];
+fs.writeFileSync(path.join(output,'manifest.json'),JSON.stringify({source:audit.source,config,models:models.map(file=>({file,sha256:crypto.createHash('sha256').update(fs.readFileSync(path.join(root,file))).digest('hex')})),excluded:[...excluded],sampling_hz:2,baseline_capture_video_s:15,adapter:'production surface module and ONNX detectors; fresh person detections without tracker; camera quality assumed valid; synchronous AI video-time results; not deployed full pipeline',ground_truth:'human inspection of late_observe reference frames; binary surface residue presence only, not action onset labels',started_at:new Date().toISOString()},null,2));
+const results=[];
+async function evaluate(row){
+ const work=path.join(output,row.id);fs.mkdirSync(work);const logPath=path.join(work,'predictions.jsonl'),out=fs.createWriteStream(logPath),stderr=fs.createWriteStream(path.join(work,'process.log'));
+ const ff=spawn('C:/dev/ffmpeg-master-latest-win64-gpl-shared/bin/ffmpeg.exe',['-hide_banner','-loglevel','error','-threads','1','-i',path.join(audit.source,row.filename),'-an','-vf','fps=fps=2:start_time=0','-pix_fmt','rgb24','-f','rawvideo','pipe:1'],{windowsHide:true,stdio:['ignore','pipe','pipe']});
+ const proc=spawn(exe,[path.join(output,'config.json'),work,...models.map(m=>path.join(root,m)),'1'],{windowsHide:true,stdio:['pipe','pipe','pipe']});
+ let processLog='';proc.stderr.on('data',b=>processLog+=b);proc.stderr.pipe(stderr,{end:false});ff.stderr.pipe(stderr,{end:false});ff.stdout.pipe(proc.stdin);proc.stdout.pipe(out);proc.stdin.on('error',()=>ff.kill());proc.on('close',code=>{if(code!==0)ff.kill();});
+ const wait=child=>new Promise((resolve,reject)=>{child.on('error',reject);child.on('close',code=>resolve(code));});
+ const timeout=setTimeout(()=>{ff.kill();proc.kill();},600000);
+ let codes;try{codes=await Promise.all([wait(ff),wait(proc)]);await new Promise(r=>out.closed?r():out.on('close',r));}finally{clearTimeout(timeout);stderr.end();}
+ if(codes.some(c=>c!==0))throw Error(row.id+' process failure '+codes+' '+processLog.slice(-1000));
+ const rows=fs.readFileSync(logPath,'utf8').trim().split('\n').map(JSON.parse),target=row.review_frames.find(f=>f.label==='late_observe').requested_s,chosen=rows.reduce((a,b)=>Math.abs(a.video_s-target)<Math.abs(b.video_s-target)?a:b),s=chosen.status.surfaces[0];
+ const valid=!!s.baseline&&!s.capturing&&s.quality===0,alert=s.candidates.some(c=>c.alert),gt=positive.has(row.id);
+ const result={id:row.id,source_status:row.status,expected_residue:gt,reference_s:target,prediction_s:chosen.video_s,valid_at_reference:valid,quality:s.quality,baseline:s.baseline,occupancy:s.occupancy,predicted_alert:alert,outcome:gt?(alert?'TP':'FN'):(alert?'FP':'TN'),candidates:s.candidates,first_alert_s:rows.find(r=>r.status.surfaces[0].candidates.some(c=>c.alert))?.video_s??null,occupied_samples:rows.filter(r=>r.status.surfaces[0].occupancy==='occupied').length,baseline_ready_s:rows.find(r=>r.status.surfaces[0].baseline)?.video_s??null,ai_scheduler:rows.at(-1).status.ai_scheduler,process_metrics:processLog.match(/EVAL[^\r\n]*/)?.[0]};
+ results.push(result);fs.writeFileSync(path.join(output,'results.json'),JSON.stringify(results,null,2));console.log(JSON.stringify({id:result.id,outcome:result.outcome,valid,first_alert_s:result.first_alert_s,occupied_samples:result.occupied_samples}));
+}
+async function main(){console.log('Output: '+output);for(const row of audit.results.filter(r=>!excluded.has(r.id)))await evaluate(row);const counts={TP:0,FP:0,TN:0,FN:0};for(const r of results)counts[r.outcome]++;const {TP,FP,TN,FN}=counts;const summary={scope:'21 late-observation surface-level binary checkpoints, not full-video event detection accuracy',counts,precision:TP+FP?TP/(TP+FP):null,recall:TP+FN?TP/(TP+FN):null,f1:2*TP+FP+FN?2*TP/(2*TP+FP+FN):null,accuracy:(TP+TN)/results.length,invalid_reference_samples:results.filter(r=>!r.valid_at_reference).map(r=>r.id),excluded:[...excluded],cpu_measured:false,latency_evaluated:false,optimization_comparison:false};fs.writeFileSync(path.join(output,'summary.json'),JSON.stringify(summary,null,2));console.log(JSON.stringify(summary,null,2));}
+main().catch(e=>{console.error(e);process.exitCode=1;});

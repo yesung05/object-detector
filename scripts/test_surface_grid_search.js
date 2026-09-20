@@ -1,0 +1,10 @@
+const assert=require('node:assert/strict');
+const {variants,metrics,rank,configFor,restMs}=require('./surface_grid_search');
+assert.equal(restMs('video'),10000);assert.equal(restMs('candidate'),60000);assert.equal(restMs('video',true),0);
+const all=variants();assert.equal(all.length,18);assert.equal(new Set(all.map(c=>JSON.stringify(c.params))).size,18);assert.deepEqual(all[0].params,{threshold:24,min_area:0.003,confirm_seconds:15});
+const rows=[{expected_residue:true,predicted_alert:true,valid_at_reference:true},{expected_residue:true,predicted_alert:false,valid_at_reference:false},{expected_residue:false,predicted_alert:true,valid_at_reference:true},{expected_residue:false,predicted_alert:false,valid_at_reference:true}];
+assert.deepEqual(metrics(rows),{TP:1,FP:1,TN:1,FN:1,n:4,precision:.5,recall:.5,f1:.5,accuracy:.5,quality_coverage:.75});
+const base={surfaces:[{id:'table-1',polygon:[[0,0],[1,0],[1,1]],departure_seconds:45},{id:'other'}]};const before=JSON.stringify(base),changed=configFor(base,all[1].params);assert.equal(JSON.stringify(base),before);assert.equal(changed.surfaces[0].departure_seconds,45);
+const entry=(id,f1,FP,quality_coverage=1,complete=true)=>({id,metrics:{f1,FP,quality_coverage},complete});
+const ranking=rank([entry('bad-fp',1,3),entry('bad-quality',1,0,.9),entry('incomplete',1,0,1,false),entry('b',.7,2),entry('a',.7,1),entry('c',.6,0)]);assert.deepEqual(ranking.map(r=>r.id),['a','b','c']);
+console.log('Grid search PASS: 18 distinct variants, fixed initial settings, metric math, immutable config copies, FP/coverage guards, incomplete trials excluded.');

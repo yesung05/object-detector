@@ -25,12 +25,13 @@ import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-# 우리가 필요한 COCO 원본 카테고리 ID (1-indexed)
-COCO_CLASSES = [15, 16, 39, 41, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 60]
-
-# COCO 원본 ID → 우리 리매핑 ID (0-15)
-COCO_ID_TO_OUR = {cid: i for i, cid in enumerate(COCO_CLASSES)}
-
+# 이 스크립트는 클래스 균형을 맞추지 않습니다. 실사용은 build_tier2_balanced.py를 쓰세요.
+#
+# 카테고리 ID를 상수표로 하드코딩하지 않는 이유:
+# 이전 버전은 COCO 80-클래스 인덱스(cat=15, dog=16, ...)를 instances_*.json의
+# 91-카테고리 ID로 그대로 썼습니다. 두 체계는 다릅니다(cat의 실제 ID는 17).
+# 그 결과 bench를 cat으로, skateboard를 cup으로 학습시켰습니다.
+# 이름으로 조회하면 같은 실수가 구조적으로 불가능합니다.
 CLASS_NAMES = [
     "cat", "dog", "bottle", "cup",
     "banana", "apple", "sandwich", "orange",
@@ -113,11 +114,18 @@ def prepare_dataset(data_dir: Path, workers: int):
         with open(ann_dir / json_name, encoding="utf-8") as f:
             coco = json.load(f)
 
+        # 원본 카테고리 ID → 0..15 연속 인덱스. YOLO는 연속 인덱스를 요구합니다.
+        name_to_id = {c["name"]: c["id"] for c in coco["categories"]}
+        missing = [n for n in CLASS_NAMES if n not in name_to_id]
+        if missing:
+            sys.exit(f"COCO에 없는 클래스명: {missing}")
+        coco_id_to_our = {name_to_id[n]: i for i, n in enumerate(CLASS_NAMES)}
+
         # 2. 16클래스 포함 이미지 ID 수집
         img_ids = set()
         ann_by_img: dict[int, list] = {}
         for ann in coco["annotations"]:
-            if ann["category_id"] in COCO_ID_TO_OUR:
+            if ann["category_id"] in coco_id_to_our:
                 img_ids.add(ann["image_id"])
                 ann_by_img.setdefault(ann["image_id"], []).append(ann)
 
@@ -156,7 +164,7 @@ def prepare_dataset(data_dir: Path, workers: int):
             W, H = meta["width"], meta["height"]
             lines = []
             for ann in ann_by_img.get(img_id, []):
-                cls = COCO_ID_TO_OUR[ann["category_id"]]
+                cls = coco_id_to_our[ann["category_id"]]
                 x, y, w, h = ann["bbox"]
                 cx = (x + w / 2) / W
                 cy = (y + h / 2) / H
