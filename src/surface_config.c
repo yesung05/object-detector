@@ -156,6 +156,25 @@ int surface_config_parse(const char *json,SurfaceConfig *out,char *error,size_t 
         NUM("$.clear_seconds",d->clear_seconds,10,1,120);
         NUM("$.threshold",v,24,5,100);d->threshold=(float)v;
         NUM("$.min_area",v,0.003,0.0002,0.5);d->min_area=(float)v;
+        NUM("$.occluder_dark_threshold",d->occluder_dark_threshold,80,10,120);
+        NUM("$.occluder_max_fraction",d->occluder_max_fraction,0.10,0.001,0.15);
+        stage="occluders";if(extract(db,j,"$.occluders",&s))goto invalid;
+        if(sqlite3_column_text(s,1)) {
+            if(strcmp((const char*)sqlite3_column_text(s,1),"array"))goto invalid;
+            sqlite3_prepare_v2(db,"SELECT value FROM json_each(?1)",-1,&fl,NULL);
+            sqlite3_bind_text(fl,1,(const char*)sqlite3_column_text(s,0),-1,SQLITE_TRANSIENT);
+            while(sqlite3_step(fl)==SQLITE_ROW) {
+                SurfaceOccluder *o;const char *oj=(const char*)sqlite3_column_text(fl,0);int outside=0;
+                if(d->occluder_count>=SURFACE_OCCLUDERS){sqlite3_finalize(fl);goto invalid;}
+                o=&d->occluders[d->occluder_count++];
+                if(string(db,oj,"$.id",o->id,sizeof(o->id),"")||!identifier(o->id)||read_polygon(db,oj,"$.polygon",&o->polygon,0)) {sqlite3_finalize(fl);goto invalid;}
+                for(i=0;i<o->polygon.count;i++)if(!surface_polygon_contains(&d->polygon,o->polygon.points[i].x,o->polygon.points[i].y))outside=1;
+                for(i=0;i<d->occluder_count-1;i++)if(!strcmp(d->occluders[i].id,o->id)){sqlite3_finalize(fl);goto invalid;}
+                if(!outside||d->type!=1){sqlite3_finalize(fl);goto invalid;}
+            }
+            sqlite3_finalize(fl);fl=NULL;
+        }
+        sqlite3_finalize(s);s=NULL;
         stage="fixtures";if(extract(db,j,"$.fixtures",&s))goto invalid;
         if(sqlite3_column_text(s,1)) {
             if(strcmp((const char*)sqlite3_column_text(s,1),"array"))goto invalid;
