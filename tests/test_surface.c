@@ -82,6 +82,29 @@ static int scheduler_scenario(const char *dir,SurfaceConfig config,int reuse) {
     }
     surface_monitor_destroy(m);event_log_close(&log);return requests;
 }
+static void chair_rectangle(int x1,int y1,int x2,int y2,int v){int x,y;for(y=y1;y<y2;y++)for(x=x1;x<x2;x++)memset(rgb+(y*100+x)*3,v,3);}
+static void chair_tests(const char *dir,SurfaceConfig config) {
+    SurfaceMonitor *m;SurfaceFrame f={0};EventLog log;double t;char json[4096];const char *at=strstr(valid_json,"\"fixtures\"");
+    snprintf(json,sizeof(json),"%.*s\"occluders\":[{\"id\":\"chair\",\"polygon\":[[0,0.2],[0.22,0.2],[0.22,0.7],[0,0.7]]}],%s",(int)(at-valid_json),valid_json,at);
+    CHECK(surface_config_parse(json,&config,err,sizeof(err))==0);CHECK(config.surfaces[0].occluder_count==1);
+    config.geometry_revision+=100;config.surfaces[0].min_area=.001f;
+    f.rgb=rgb;f.width=f.height=100;f.stride=300;f.camera_ok=f.people_valid=1;event_log_open(&log,":memory:",LOG_INFO,0);
+    m=surface_monitor_create(dir);CHECK(surface_monitor_apply(m,&config,err,sizeof(err))==0);memset(rgb,230,sizeof(rgb));CHECK(surface_monitor_capture(m,"table-1",0,err,sizeof(err))==0);
+    for(t=1;t<=3;t+=.5)update(m,&f,&log,t);
+    chair_rectangle(0,30,13,60,30);for(t=3.5;t<=8;t+=.5)update(m,&f,&log,t);
+    CHECK(strstr(status,"\"alert\":true")==NULL);CHECK(strstr(status,"\"occluder_fraction\":0.00000")==NULL);
+    /* An isolated dark object in the registration region is NOT a chair. */
+    chair_rectangle(16,45,20,55,30);for(t=8.5;t<=13;t+=.5)update(m,&f,&log,t);CHECK(strstr(status,"\"alert\":true")!=NULL);
+    memset(rgb,230,sizeof(rgb));for(t=13.5;t<=20;t+=.5)update(m,&f,&log,t);CHECK(strstr(status,"\"occluder_fraction\":0.00000")!=NULL);CHECK(strstr(status,"\"alert\":true")==NULL);
+    /* Central residue stays visible, independent of chair state. */
+    dirt(20);for(t=20.5;t<=25;t+=.5)update(m,&f,&log,t);CHECK(strstr(status,"\"alert\":true")!=NULL);surface_monitor_destroy(m);
+    /* Dark initial chair area does not become auto-clean when exposed. */
+    config.geometry_revision++;m=surface_monitor_create(dir);CHECK(surface_monitor_apply(m,&config,err,sizeof(err))==0);memset(rgb,230,sizeof(rgb));chair_rectangle(0,30,13,60,30);CHECK(surface_monitor_capture(m,"table-1",0,err,sizeof(err))==0);
+    for(t=1;t<=3;t+=.5)update(m,&f,&log,t);memset(rgb,230,sizeof(rgb));for(t=3.5;t<=8;t+=.5)update(m,&f,&log,t);CHECK(strstr(status,"\"occluder_fraction\":0.00000")==NULL);CHECK(strstr(status,"\"alert\":true")==NULL);surface_monitor_destroy(m);
+    /* Oversized masking is rejected (fail open), never blanket suppression. */
+    config.geometry_revision++;config.surfaces[0].occluder_max_fraction=.001f;m=surface_monitor_create(dir);CHECK(surface_monitor_apply(m,&config,err,sizeof(err))==0);CHECK(surface_monitor_capture(m,"table-1",0,err,sizeof(err))==0);for(t=1;t<=3;t+=.5)update(m,&f,&log,t);chair_rectangle(0,30,13,60,30);for(t=3.5;t<=8;t+=.5)update(m,&f,&log,t);CHECK(strstr(status,"\"occluder_rejected\":true")!=NULL);CHECK(strstr(status,"\"occluder_fraction\":0.00000")!=NULL);surface_monitor_destroy(m);
+    event_log_close(&log);
+}
 int main(int argc, char **argv) {
     SurfaceConfig config,next;SurfaceMonitor *m;SurfaceFrame f;SurfaceObject person;
     SurfaceInspection q;EventLog log;char dir[160];double t;
@@ -175,6 +198,7 @@ int main(int argc, char **argv) {
     {int periodic=scheduler_scenario(dir,config,0),reused=scheduler_scenario(dir,config,1);
      printf("synthetic static scene (50s): periodic=%d reused=%d candidate requests\n",periodic,reused);
      CHECK(reused<periodic);CHECK(reused==1);}
+    chair_tests(dir,config);
     printf("surface tests: %s (%d failures)\n",failures?"FAIL":"PASS",failures);
     return failures?1:0;
 }

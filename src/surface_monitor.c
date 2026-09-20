@@ -24,10 +24,14 @@ typedef struct {
     int overflow, geometry_invalid;
     float x1,y1,x2,y2;
     unsigned char mask[PIX],visible[PIX],changed[PIX],fixture_mask[PIX];
+    unsigned char edge_distance[PIX],occluder_mask[PIX],occluder_hold[PIX];
+    float occluder_fraction;
+    int occluder_rejected;
     unsigned char baseline[PIX*3],empty[PIX*3],current[PIX*3];
     unsigned int capture_sum[PIX*3];
     int queue[PIX];
     double last_scan,enter,absence,last_valid,last_audit;
+    int auto_capture_started; double auto_quiet; /* 자동 캡처: 이번 캡처가 자동 시작인지, 조건 유지 누적(초) */
     Candidate candidates[CANDIDATES];
 } SurfaceRuntime;
 struct SurfaceMonitor {
@@ -38,6 +42,7 @@ struct SurfaceMonitor {
     double last_dispatch;
     int candidate_sequence;
     unsigned long ai_requests,ai_reused,ai_reused_occupied,ai_reused_alert,ai_audits;
+    int auto_capture; double auto_quiet_seconds; /* surface_monitor_set_auto_capture */
 };
 /* All runtime image arrays are monitor-owned, fixed-capacity, and released
  * together. Per-frame heap allocation is intentionally avoided. */
@@ -50,7 +55,9 @@ static uint32_t geometry_hash(const SurfaceConfig *c,int i) {
     const SurfaceDefinition *d=&c->surfaces[i];uint32_t h=2166136261u;
     h=hash_bytes(h,c->camera_id,strlen(c->camera_id));h=hash_bytes(h,&c->width,sizeof(int)*3);
     h=hash_bytes(h,&d->polygon,sizeof(d->polygon));h=hash_bytes(h,d->exclusions,sizeof(d->exclusions));
-    return hash_bytes(h,d->fixtures,sizeof(d->fixtures));
+    h=hash_bytes(h,d->fixtures,sizeof(d->fixtures));
+    if(d->occluder_count){h=hash_bytes(h,d->occluders,sizeof(d->occluders));h=hash_bytes(h,&d->occluder_dark_threshold,sizeof(float));h=hash_bytes(h,&d->occluder_max_fraction,sizeof(float));}
+    return h;
 }
 static void baseline_path(const SurfaceMonitor *m,int i,int empty,char *out,size_t n) {
     snprintf(out,n,"%s/surface-%s-%08x-%s.bin",m->directory,m->config.surfaces[i].id,
@@ -79,10 +86,12 @@ static int save_baseline(SurfaceMonitor *m,int i,int empty) {
 }
 SurfaceMonitor *surface_monitor_create(const char *directory) {
     SurfaceMonitor *m=(SurfaceMonitor*)calloc(1,sizeof(*m));
-    if(m)snprintf(m->directory,sizeof(m->directory),"%s",directory?directory:"config");return m;
+    if(m){snprintf(m->directory,sizeof(m->directory),"%s",directory?directory:"config");m->auto_capture=1;m->auto_quiet_seconds=10;}return m;
 }
 void surface_monitor_destroy(SurfaceMonitor *m){free(m);}
 int surface_monitor_enabled(const SurfaceMonitor *m){return m&&m->config.enabled;}
+void surface_monitor_set_auto_capture(SurfaceMonitor *m,int enabled,double quiet_seconds){
+    if(!m)return;m->auto_capture=enabled?1:0;m->auto_quiet_seconds=quiet_seconds>0?quiet_seconds:10;}
 int surface_monitor_apply(SurfaceMonitor *m,const SurfaceConfig *c,char *e,size_t n) {
     int i,x,y,k;
     if(!m||!c)return error_out(e,n,"Invalid monitor");
@@ -103,6 +112,12 @@ int surface_monitor_apply(SurfaceMonitor *m,const SurfaceConfig *c,char *e,size_
             r->mask[y*G+x]=(unsigned char)inside;
         }
         load_baseline(m,i,0);load_baseline(m,i,1);
+        /* Distance inside ROI to its boundary, bounded to an eight-cell band. */
+        memset(r->edge_distance,255,sizeof(r->edge_distance));
+        {int head=0,tail=0;for(k=0;k<PIX;k++)if(!r->mask[k]){r->edge_distance[k]=0;r->queue[tail++]=k;}
+         for(y=0;y<G;y++)for(x=0;x<G;x++)if((!x||!y||x==G-1||y==G-1)&&r->edge_distance[y*G+x]==255){r->edge_distance[y*G+x]=1;r->queue[tail++]=y*G+x;}
+         while(head<tail){int p=r->queue[head++],ns[4]={p-1,p+1,p-G,p+G},z;if(r->edge_distance[p]>=8)continue;
+          for(z=0;z<4;z++){int q=ns[z];if(q<0||q>=PIX||(z==0&&p%G==0)||(z==1&&p%G==G-1)||r->edge_distance[q]!=255)continue;r->edge_distance[q]=r->edge_distance[p]+1;r->queue[tail++]=q;}}}
     }
     return 0;
 }
@@ -174,6 +189,53 @@ static void fixtures(SurfaceRuntime *r,const SurfaceDefinition *d) {
         }
     }
 }
+/* Registered dark chair boundary, not a semantic object detector. Only dark
+ * components connected outside the table can mask the current surface. Initial
+ * dark boundary pixels have no empty reference and stay unknown, not auto-clean.
+ * Interior isolated residue is never suppressed. No learned baseline writes. */
+static int dark_pixel(const unsigned char *p,float threshold){return p[0]<=threshold&&p[1]<=threshold&&p[2]<=threshold;}
+static void flood(unsigned char *mask,int *queue,int head,int tail) {
+    while(head<tail){int p=queue[head++],ns[4]={p-1,p+1,p-G,p+G},z;
+        for(z=0;z<4;z++){int q=ns[z];if(q<0||q>=PIX||(z==0&&p%G==0)||(z==1&&p%G==G-1)||mask[q]!=1)continue;mask[q]=2;queue[tail++]=q;}}
+}
+static void occluders(SurfaceRuntime *r,const SurfaceDefinition *d,const SurfaceFrame *f,int total) {
+    unsigned char external[PIX],initial[PIX];int oi,k,x,y,count=0;
+    memset(r->occluder_mask,0,sizeof(r->occluder_mask));r->occluder_fraction=0;r->occluder_rejected=0;
+    if(!d->occluder_count)return;
+    for(oi=0;oi<d->occluder_count;oi++) {
+        const SurfacePolygon *polygon=&d->occluders[oi].polygon;float x1=1,y1=1,x2=0,y2=0;int tail=0,seeds=0;
+        for(k=0;k<polygon->count;k++){x1=fminf(x1,polygon->points[k].x);x2=fmaxf(x2,polygon->points[k].x);y1=fminf(y1,polygon->points[k].y);y2=fmaxf(y2,polygon->points[k].y);}
+        memset(external,0,sizeof(external));memset(initial,0,sizeof(initial));
+        for(y=0;y<G;y++)for(x=0;x<G;x++) {
+            int p=y*G+x,covered=0;float nx=x1+(x+.5f)/G*(x2-x1),ny=y1+(y+.5f)/G*(y2-y1);
+            int xx=(int)clamp(nx*f->width,0,(float)f->width-1),yy=(int)clamp(ny*f->height,0,(float)f->height-1);
+            if(!surface_polygon_contains(polygon,nx,ny)||!dark_pixel(f->rgb+(size_t)yy*f->stride+xx*3,d->occluder_dark_threshold))continue;
+            for(k=0;k<(int)f->people_count;k++)if(object_covers(&f->people[k],nx,ny)){covered=1;break;}
+            if(covered)continue;external[p]=1;
+            if(!surface_polygon_contains(&d->polygon,nx,ny)){external[p]=2;r->queue[tail++]=p;seeds++;}
+        }
+        if(seeds>=8)flood(external,r->queue,0,tail);else memset(external,0,sizeof(external));
+        tail=0;
+        for(y=0;y<G;y++)for(x=0;x<G;x++) {
+            int p=y*G+x,xx,yy;float nx=r->x1+(x+.5f)/G*(r->x2-r->x1),ny=r->y1+(y+.5f)/G*(r->y2-r->y1);
+            if(!r->mask[p]||r->edge_distance[p]>8||!surface_polygon_contains(polygon,nx,ny))continue;
+            xx=(int)((nx-x1)/(x2-x1)*G);yy=(int)((ny-y1)/(y2-y1)*G);
+            if(xx>=0&&xx<G&&yy>=0&&yy<G&&external[yy*G+xx]==2)r->occluder_mask[p]=1;
+            if(dark_pixel(r->baseline+p*3,d->occluder_dark_threshold)){
+                initial[p]=1;if(r->edge_distance[p]<=1){initial[p]=2;r->queue[tail++]=p;}}
+        }
+        flood(initial,r->queue,0,tail);
+        for(k=0;k<PIX;k++)if(initial[k]==2)r->occluder_mask[k]=1;
+    }
+    for(k=0;k<PIX;k++)if(r->mask[k]) {
+        if(r->occluder_mask[k])r->occluder_hold[k]=5;
+        else if(r->occluder_hold[k]){if(r->visible[k])r->occluder_hold[k]--;if(r->occluder_hold[k])r->occluder_mask[k]=1;}
+        if(r->occluder_mask[k])count++;
+    }
+    if(count>total*d->occluder_max_fraction){r->occluder_rejected=1;memset(r->occluder_hold,0,sizeof(r->occluder_hold));memset(r->occluder_mask,0,sizeof(r->occluder_mask));return;}
+    r->occluder_fraction=total?(float)count/total:0;
+    for(k=0;k<PIX;k++)if(r->occluder_mask[k])r->visible[k]=0;
+}
 void surface_monitor_update(SurfaceMonitor *m,const SurfaceFrame *f,EventLog *log) {
     int i;if(!surface_monitor_enabled(m))return;
     for(i=0;i<m->config.count;i++) {
@@ -221,16 +283,41 @@ void surface_monitor_update(SurfaceMonitor *m,const SurfaceFrame *f,EventLog *lo
                 unsigned char *target=r->capture_empty?r->empty:r->baseline;
                 unsigned char backup[PIX*3];memcpy(backup,target,sizeof(backup));
                 for(k=0;k<PIX*3;k++)target[k]=(unsigned char)(r->capture_sum[k]/5);
-                if(save_baseline(m,i,r->capture_empty)==0){if(r->capture_empty)r->empty_ready=1;else r->ready=1;}
-                else {memcpy(target,backup,sizeof(backup));r->quality=5;}
-                r->capturing=0;
+                if(save_baseline(m,i,r->capture_empty)==0){
+                    char msg[200];if(r->capture_empty)r->empty_ready=1;else r->ready=1;
+                    snprintf(msg,sizeof(msg),"surface_baseline_saved surface=%s kind=%s source=%s",d->id,r->capture_empty?"empty":"normal",r->auto_capture_started?"auto":"manual");
+                    event_log_write(log,LOG_INFO,"surface",msg);
+                } else {
+                    char msg[200];memcpy(target,backup,sizeof(backup));r->quality=5;
+                    snprintf(msg,sizeof(msg),"surface_baseline_save_failed surface=%s kind=%s — 디스크·config 폴더 확인",d->id,r->capture_empty?"empty":"normal");
+                    event_log_write(log,LOG_WARN,"surface",msg);
+                }
+                r->capturing=0;r->auto_capture_started=0;
                 /* Explicit baseline approval supersedes live evidence, not event history. */
                 memset(r->candidates,0,sizeof(r->candidates));
             }
             continue;
         }
-        if(!r->ready){r->quality=3;continue;}
+        if(!r->ready){
+            /* 자동 캡처: 완전 가시(visible==total) + 테이블이면 비어 있음이 quiet 초 유지되면
+               수동 캡처와 같은 5프레임 누적을 시작합니다. 위 capturing 분기가 다음 스캔부터 이어받습니다.
+               quality=3(기준 없음)은 그대로 두어 대시보드가 "처음 설정 필요"를 계속 보이게 합니다. */
+            if(m->auto_capture&&!r->capturing){
+                if(visible==total&&(d->type!=1||r->occupancy==1)){
+                    r->auto_quiet+=dt;
+                    if(r->auto_quiet>=m->auto_quiet_seconds){
+                        char msg[160];r->capturing=1;r->capture_empty=0;r->capture_count=0;
+                        memset(r->capture_sum,0,sizeof(r->capture_sum));r->auto_capture_started=1;r->auto_quiet=0;
+                        snprintf(msg,sizeof(msg),"surface_auto_capture_started surface=%s quiet=%.0fs",d->id,m->auto_quiet_seconds);
+                        event_log_write(log,LOG_INFO,"surface",msg);
+                    }
+                }else r->auto_quiet=0;
+            }
+            r->quality=3;continue;
+        }
         fixtures(r,d);
+        occluders(r,d,f,total);
+        if(d->occluder_count){visible=0;for(k=0;k<PIX;k++)visible+=r->visible[k]!=0;if(visible<total*.7)r->quality=2;}
         /* Robust brightness offset from visible, already-similar pixels. A large
          * unexplained change is held, never learned into the clean baseline. */
         for(k=0;k<PIX;k++)if(r->visible[k]&&!r->fixture_mask[k]) {
@@ -429,6 +516,7 @@ void surface_monitor_status(const SurfaceMonitor *m,double now,char *json,size_t
         const SurfaceRuntime *r=&m->runtime[i];const char *states[]={"unknown","vacant","occupied","departure_pending"};
         APPEND("%s{\"id\":\"%s\",\"occupancy\":\"%s\",\"quality\":%d,\"baseline\":%s,\"empty_baseline\":%s,\"capturing\":%s,\"capture_count\":%d,\"layout_changed\":%s,\"overflow\":%s,\"absence_seconds\":%.1f,\"age\":%.1f,",
             i?",":"",m->config.surfaces[i].id,states[r->occupancy],r->quality,r->ready?"true":"false",r->empty_ready?"true":"false",r->capturing?"true":"false",r->capture_count,r->layout?"true":"false",r->overflow?"true":"false",r->absence,r->last_scan?now-r->last_scan:0);
+        APPEND("\"occluder_fraction\":%.5f,\"occluder_rejected\":%s,\"auto_capture\":%s,\"auto_quiet\":%.1f,",r->occluder_fraction,r->occluder_rejected?"true":"false",(r->capturing&&r->auto_capture_started)?"true":"false",r->auto_quiet);
         APPEND("\"reference\":\"surface-%s-%08x-normal.bin\",\"candidates\":[",m->config.surfaces[i].id,geometry_hash(&m->config,i));
         {int first=1;for(j=0;j<CANDIDATES;j++)if(r->candidates[j].used){const Candidate *c=&r->candidates[j];
             APPEND("%s{\"id\":%d,\"version\":%d,\"alert\":%s,\"animal\":%s,\"acknowledged\":%s,\"visible\":%s,\"ai\":%d,\"evidence_file\":\"%s\",\"evidence\":%.1f,\"bbox\":[%.4f,%.4f,%.4f,%.4f]}",first?"":",",j,c->version,c->alert?"true":"false",c->animal?"true":"false",c->acknowledged?"true":"false",c->seen?"true":"false",c->ai_state,c->evidence_file,c->evidence,c->x1,c->y1,c->x2,c->y2);first=0;}}

@@ -7,6 +7,7 @@
 #define SURFACE_POINTS 16
 #define SURFACE_ZONES 8
 #define SURFACE_FIXTURES 8
+#define SURFACE_OCCLUDERS 4
 #define SURFACE_JSON_MAX 65536
 #define SURFACE_GRID 96
 typedef struct { float x, y; } SurfacePoint;
@@ -16,6 +17,7 @@ typedef struct {
     int movable;
     SurfacePolygon polygon, allowed;
 } SurfaceFixture;
+typedef struct { char id[40]; SurfacePolygon polygon; } SurfaceOccluder;
 typedef struct {
     char id[40];
     int type; /* 0=floor, 1=table, 2=wall */
@@ -24,6 +26,9 @@ typedef struct {
     int usage_count, exclusion_count, fixture_count;
     SurfacePolygon usage[SURFACE_ZONES], exclusions[SURFACE_ZONES];
     SurfaceFixture fixtures[SURFACE_FIXTURES];
+    int occluder_count;
+    SurfaceOccluder occluders[SURFACE_OCCLUDERS];
+    float occluder_dark_threshold, occluder_max_fraction;
     double enter_seconds, departure_seconds, confirm_seconds, clear_seconds;
     float threshold, min_area;
 } SurfaceDefinition;
@@ -69,6 +74,10 @@ void surface_monitor_destroy(SurfaceMonitor *monitor);
 int surface_monitor_apply(SurfaceMonitor *monitor, const SurfaceConfig *config,
                           char *error, size_t size);
 int surface_monitor_enabled(const SurfaceMonitor *monitor);
+/* 기준 없는 표면을 "완전 가시 + (테이블이면) 비어 있음"이 quiet_seconds 지속되면 자동 캡처합니다.
+ * 기본 on·10초. 수동 캡처(surface_monitor_capture)와 같은 5프레임 누적 경로를 탑니다.
+ * SurfaceConfig.automatic(surfaces.json source=auto)은 기하 자동 생성 의미라 여기에 쓰지 않습니다. */
+void surface_monitor_set_auto_capture(SurfaceMonitor *monitor, int enabled, double quiet_seconds);
 void surface_monitor_update(SurfaceMonitor *monitor, const SurfaceFrame *frame, EventLog *log);
 /* Capture is explicitly requested, accumulated on fresh unobscured frames. */
 int surface_monitor_capture(SurfaceMonitor *monitor, const char *id, int empty,
