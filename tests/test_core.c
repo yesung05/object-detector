@@ -2416,9 +2416,64 @@ static void test_restart_config_change_rearms_today(void) {
     EXPECT_INT_EQ(restart_check(&s, 3, 100, 6 * 60, 0), RESTART_NOW);
 }
 
+/* ── 쓰러짐: 화면 경계에 잘린 박스 ────────────────────────────────────────── */
+int is_horizontal_pose_for_test(const Detection *box, float ratio_kp, float ratio_nokp,
+                                int frame_w, int frame_h);
+
+
+/* 앉아 있는 사람: 코가 어깨보다 위, 어깨 너비 60px, 코는 그보다 40px 위. */
+static void seated_pose(Detection *d, float x1, float y1, float x2, float y2) {
+    int k;
+    memset(d, 0, sizeof(*d));
+    d->x1 = x1; d->y1 = y1; d->x2 = x2; d->y2 = y2;
+    d->score = 0.81f;
+    d->keypoint_count = YOLO11_NUM_KEYPOINTS;
+    for (k = 0; k < YOLO11_NUM_KEYPOINTS; ++k) d->kp[k].score = 0.0f;
+    d->kp[0].x = 600; d->kp[0].y = 460; d->kp[0].score = 0.9f;  /* 코 */
+    d->kp[5].x = 570; d->kp[5].y = 500; d->kp[5].score = 0.9f;  /* 왼 어깨 */
+    d->kp[6].x = 630; d->kp[6].y = 500; d->kp[6].score = 0.9f;  /* 오른 어깨 */
+    /* 엉덩이(11,12)는 화면 밖 — score 0 으로 남겨 둡니다 */
+}
+
+static void test_fall_ignores_clipped_bbox_when_upright(void) {
+    /* 실측 재현: 카메라 가까이 앉아 팔을 뻗은 사람의 박스가 1045x470(비율 2.22)으로 잡히고
+       다리가 화면 밖이라 엉덩이 관절이 없어, nokp 폴백(임계 2.2)을 간발의 차로 넘겨
+       person_fallen 이 발화했습니다. 스켈레톤은 명백히 앉은 자세였습니다. */
+    Detection d;
+    seated_pose(&d, 115.0f, 340.0f, 1160.0f, 810.0f);   /* 1045x470, 아래가 프레임 끝 */
+
+    /* 프레임 크기를 모르면(0) 잘림을 알 수 없어 예전처럼 오탐합니다 */
+    EXPECT_INT_EQ(is_horizontal_pose_for_test(&d, 1.8f, 2.2f, 0, 0), 1);
+    /* 프레임 크기를 알면 잘린 박스로 보고 상체 자세로 판단 → 쓰러짐 아님 */
+    EXPECT_INT_EQ(is_horizontal_pose_for_test(&d, 1.8f, 2.2f, 1280, 810), 0);
+}
+
+static void test_fall_still_fires_on_clipped_horizontal_body(void) {
+    /* 잘렸더라도 상체가 실제로 수평이면(코와 어깨의 y 가 비슷) 발화해야 합니다.
+       잘림 가드가 쓰러짐을 통째로 막아 버리면 안 됩니다. */
+    Detection d;
+    seated_pose(&d, 115.0f, 340.0f, 1160.0f, 810.0f);
+    d.kp[0].y = 498.0f;   /* 코가 어깨와 거의 같은 높이 — 누운 자세 */
+    EXPECT_INT_EQ(is_horizontal_pose_for_test(&d, 1.8f, 2.2f, 1280, 810), 1);
+
+    /* 관절이 부족하면 판단하지 않습니다 — 응급 알림은 틀리면 신뢰를 잃습니다 */
+    d.kp[0].score = 0.0f;
+    EXPECT_INT_EQ(is_horizontal_pose_for_test(&d, 1.8f, 2.2f, 1280, 810), 0);
+}
+
+static void test_fall_unclipped_path_unchanged(void) {
+    /* 화면 안쪽에 온전히 들어온 박스는 기존 경로를 그대로 타야 합니다. */
+    Detection d;
+    seated_pose(&d, 300.0f, 200.0f, 500.0f, 600.0f);    /* 세로가 긴 정상 박스 */
+    EXPECT_INT_EQ(is_horizontal_pose_for_test(&d, 1.8f, 2.2f, 1280, 720), 0);
+}
+
 int main(void) {
     TEST_SUITE_BEGIN(core_unit_tests);
     RUN_TEST(test_letterbox);
+    RUN_TEST(test_fall_ignores_clipped_bbox_when_upright);
+    RUN_TEST(test_fall_still_fires_on_clipped_horizontal_body);
+    RUN_TEST(test_fall_unclipped_path_unchanged);
     RUN_TEST(test_restart_time_parse_and_window);
     RUN_TEST(test_restart_defers_while_people_present);
     RUN_TEST(test_restart_skips_when_window_passes);

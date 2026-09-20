@@ -77,6 +77,12 @@ void rules_destroy(RulesEngine *re) {
     re->capacity = 0;
 }
 
+void rules_set_frame_size(RulesEngine *re, int width, int height) {
+    if (!re) return;
+    re->frame_width  = width;
+    re->frame_height = height;
+}
+
 void rules_update_config(RulesEngine *re, const RulesConfig *config) {
     if (!re || !config) return;
     /* latch 상태(overstay_latched 등)는 건드리지 않고 임계값만 교체합니다.
@@ -143,11 +149,39 @@ static void release_state(RulesEngine *re, int track_id) {
 #define FALL_RATIO_NOKP  2.2f    /* keypoint 없을 때 bbox 가로/세로 기준 */
 #define FALL_MIN_H       30.0f   /* bbox 최소 세로 (px), 이하는 노이즈 */
 #define FALL_MIN_SCORE   0.30f   /* detection 신뢰도 하한 */
+#define FALL_EDGE_PX      2.0f   /* 이 거리 안에서 화면 경계에 닿으면 박스가 잘린 것으로 봄 */
+/* 코가 어깨보다 어깨너비의 이 배수만큼 위에 있으면 상체가 서 있다고 봅니다.
+ * 똑바로 앉거나 선 자세는 0.5~0.8 수준, 누우면 0 근처가 됩니다. */
+#define FALL_UPRIGHT_DROP 0.35f
 static const int FALL_KP_IDX[] = {0, 5, 6, 11, 12};
 static const int FALL_KP_COUNT = 5;
 
+/*
+ * 코가 어깨보다 충분히 위에 있으면 상체가 서 있는 것입니다. 누우면 둘의 y 가 비슷해집니다.
+ * 어깨 너비로 정규화해 카메라와의 거리·해상도에 무관하게 만듭니다.
+ *
+ * 반환 1=상체 서 있음, 0=상체가 수평에 가까움, -1=관절이 부족해 판단 불가.
+ */
+static int upper_body_upright(const Detection *b) {
+    const Keypoint *nose = &b->kp[0], *ls = &b->kp[5], *rs = &b->kp[6];
+    float shoulder_y, shoulder_w, drop;
+    if (nose->score < KP_SCORE_THRESH ||
+        ls->score   < KP_SCORE_THRESH ||
+        rs->score   < KP_SCORE_THRESH) return -1;
+    shoulder_y = (ls->y + rs->y) * 0.5f;
+    shoulder_w = ls->x > rs->x ? ls->x - rs->x : rs->x - ls->x;
+    if (shoulder_w < 1.0f) return -1;          /* 정면 아닌 각도 — 너비로 정규화 불가 */
+    drop = (shoulder_y - nose->y) / shoulder_w;
+    return drop > FALL_UPRIGHT_DROP;
+}
+
+/* 테스트에서 직접 부를 수 있도록 노출합니다 — 쓰러짐 오탐은 영상 없이 재현·검증되어야 합니다. */
+int is_horizontal_pose_for_test(const Detection *box, float ratio_kp, float ratio_nokp,
+                                int frame_w, int frame_h);
+
 static int is_horizontal_pose(const Detection *box,
-                               float ratio_kp, float ratio_nokp) {
+                               float ratio_kp, float ratio_nokp,
+                               int frame_w, int frame_h) {
     float w = box->x2 - box->x1;
     float h = box->y2 - box->y1;
     int i, valid = 0;
@@ -155,6 +189,24 @@ static int is_horizontal_pose(const Detection *box,
 
     if (h < FALL_MIN_H)       return 0;  /* 너무 작은 검출은 노이즈 */
     if (box->score < FALL_MIN_SCORE) return 0;  /* 저신뢰 검출 제외 */
+
+    /*
+     * 박스가 화면 경계에 닿으면 실제 크기를 알 수 없습니다. 특히 아래가 잘리면 세로가
+     * 짧게 측정되어 가로/세로 비가 부풀어 오릅니다.
+     *
+     * 실측 사례: 카메라 가까이 앉아 팔을 뻗은 사람의 박스가 1045x470(비율 2.22)으로
+     * 잡혔습니다. 다리가 화면 밖이라 엉덩이 관절도 없어 nokp 폴백(임계 2.2)을 타고
+     * 간발의 차로 "쓰러짐"이 발화했습니다. 스켈레톤은 명백히 앉은 자세였는데도요.
+     *
+     * 이때는 비율을 믿지 않고 상체 자세만으로 판단합니다. 판단이 안 되면 발화하지
+     * 않습니다 — 응급 알림은 틀리는 순간 신뢰를 잃습니다.
+     */
+    if (frame_w > 0 && frame_h > 0 &&
+        (box->x1 <= FALL_EDGE_PX || box->y1 <= FALL_EDGE_PX ||
+         box->x2 >= (float)frame_w - FALL_EDGE_PX ||
+         box->y2 >= (float)frame_h - FALL_EDGE_PX)) {
+        return upper_body_upright(box) == 0;
+    }
 
     /* keypoint 없거나 부족하면 더 엄격한 bbox 비율 기준 적용 */
     if (box->keypoint_count < YOLO11_NUM_KEYPOINTS) {
@@ -187,6 +239,11 @@ static int is_horizontal_pose(const Detection *box,
     if (variance < 0.0f) variance = 0.0f;
     std_ratio = (float)sqrt((double)variance) / h;
     return std_ratio <= FALL_STD_THRESH;
+}
+
+int is_horizontal_pose_for_test(const Detection *box, float ratio_kp, float ratio_nokp,
+                                int frame_w, int frame_h) {
+    return is_horizontal_pose(box, ratio_kp, ratio_nokp, frame_w, frame_h);
 }
 
 /*
@@ -471,7 +528,8 @@ void rules_evaluate(RulesEngine *re, TrackList *tl, double now, EventLog *elog) 
                 t->fall_sudden = 0;
             } else if (head_drop || is_horizontal_pose(&t->box,
                                                re->config.fall_aspect_ratio_kp,
-                                               re->config.fall_aspect_ratio_nokp)) {
+                                               re->config.fall_aspect_ratio_nokp,
+                                               re->frame_width, re->frame_height)) {
                 if (s->fall_start <= 0.0) s->fall_start = now;
                 if (!s->fall_latched &&
                     (now - s->fall_start) >= re->config.fall_hold_seconds) {
