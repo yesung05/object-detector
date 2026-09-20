@@ -12,6 +12,7 @@
 #  define PATH_SEP "\\"
 #else
 #  include <dirent.h>
+#  include <sys/stat.h>
 #  define PATH_SEP "/"
 #endif
 
@@ -68,12 +69,30 @@ static double waste_ratio(int mw, int mh, int cw, int ch) {
     return (total - content) / total;
 }
 
+/*
+ * letterbox 낭비가 같을 때 어느 파일을 고를지 정합니다 — 파일이 큰 쪽입니다.
+ *
+ * models\ 에는 원본 FP32 와 증류·양자화 변종이 함께 들어 있고, 입력 크기가 같으면
+ * (예: yolo11n-pose-416x224 와 yolo11n-pose-distilled-416x224) 낭비율이 완전히 동일합니다.
+ * 예전에는 디렉터리 열거 순서가 승자를 정했기 때문에, 폴더에 파일을 하나 넣는 것만으로
+ * 조용히 다른 모델이 실행될 수 있었습니다. 크기 우선 규칙은 "원본 FP32 우선"을 뜻하며
+ * 파일 이름 규칙에 기대지 않습니다(증류·양자화 모델은 언제나 더 작습니다).
+ */
+static int prefer_candidate(double waste, double best_waste,
+                            unsigned long long size, unsigned long long best_size) {
+    const double eps = 1e-9;
+    if (waste < best_waste - eps) return 1;
+    if (waste > best_waste + eps) return 0;
+    return size > best_size;
+}
+
 int model_select(const char *model_dir, int cam_w, int cam_h,
                  char *out_path, size_t out_size) {
     double best_waste = 2.0; /* 1.0 초과로 시작해 첫 후보가 무조건 대체 */
     int    best_mw = 0, best_mh = 0;
     char   best_name[512] = {0};
     int    candidates = 0;
+    unsigned long long best_size = 0;
 
 #if defined(_WIN32)
     char pattern[512];
@@ -86,15 +105,18 @@ int model_select(const char *model_dir, int cam_w, int cam_h,
     }
     do {
         int mw, mh;
+        unsigned long long size;
         if (!parse_model_size(fd.cFileName, &mw, &mh)) continue;
         ++candidates;
+        size = ((unsigned long long)fd.nFileSizeHigh << 32) | fd.nFileSizeLow;
         double w = waste_ratio(mw, mh, cam_w, cam_h);
-        fprintf(stderr, "model-select: 후보 %s (%dx%d) — letterbox %.1f%%\n",
-                fd.cFileName, mw, mh, w * 100.0);
-        if (w < best_waste) {
+        fprintf(stderr, "model-select: 후보 %s (%dx%d) — letterbox %.1f%%, %.1f MB\n",
+                fd.cFileName, mw, mh, w * 100.0, (double)size / (1024.0 * 1024.0));
+        if (prefer_candidate(w, best_waste, size, best_size)) {
             best_waste = w;
             best_mw = mw;
             best_mh = mh;
+            best_size = size;
             strncpy(best_name, fd.cFileName, sizeof(best_name) - 1);
         }
     } while (FindNextFileA(h, &fd));
@@ -108,15 +130,21 @@ int model_select(const char *model_dir, int cam_w, int cam_h,
     struct dirent *ent;
     while ((ent = readdir(d)) != NULL) {
         int mw, mh;
+        unsigned long long size = 0;
+        char full[1024];
+        struct stat st;
         if (!parse_model_size(ent->d_name, &mw, &mh)) continue;
         ++candidates;
+        snprintf(full, sizeof(full), "%s/%s", model_dir, ent->d_name);
+        if (stat(full, &st) == 0) size = (unsigned long long)st.st_size;
         double w = waste_ratio(mw, mh, cam_w, cam_h);
-        fprintf(stderr, "model-select: 후보 %s (%dx%d) — letterbox %.1f%%\n",
-                ent->d_name, mw, mh, w * 100.0);
-        if (w < best_waste) {
+        fprintf(stderr, "model-select: 후보 %s (%dx%d) — letterbox %.1f%%, %.1f MB\n",
+                ent->d_name, mw, mh, w * 100.0, (double)size / (1024.0 * 1024.0));
+        if (prefer_candidate(w, best_waste, size, best_size)) {
             best_waste = w;
             best_mw = mw;
             best_mh = mh;
+            best_size = size;
             strncpy(best_name, ent->d_name, sizeof(best_name) - 1);
         }
     }
@@ -133,7 +161,8 @@ int model_select(const char *model_dir, int cam_w, int cam_h,
 
     snprintf(out_path, out_size, "%s" PATH_SEP "%s", model_dir, best_name);
     fprintf(stderr,
-            "model-select: 카메라 %dx%d → %s (%dx%d, letterbox %.1f%%) 선택\n",
-            cam_w, cam_h, best_name, best_mw, best_mh, best_waste * 100.0);
+            "model-select: 카메라 %dx%d → %s (%dx%d, letterbox %.1f%%, %.1f MB) 선택\n",
+            cam_w, cam_h, best_name, best_mw, best_mh, best_waste * 100.0,
+            (double)best_size / (1024.0 * 1024.0));
     return 1;
 }
