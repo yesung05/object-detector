@@ -42,6 +42,11 @@ static const RulesConfig DEFAULT_RULES = {
     0,       /* roi_kiosk_set */
     0.15f,   /* animal_iou_threshold */
     1,       /* no_cup_margin */
+    1,       /* vanish_enabled */
+    5.0,     /* vanish_hold_seconds */
+    3.0,     /* vanish_min_dwell_seconds */
+    0.35f,   /* vanish_min_score */
+    0.08f,   /* vanish_edge_margin */
 };
 
 int rules_init(RulesEngine *re, size_t capacity, const RulesConfig *config,
@@ -301,6 +306,71 @@ void rules_evaluate_objects(RulesEngine *re, const DetectionList *objs,
             s->no_cup_latched = 0;
         }
     }
+}
+
+int rules_check_vanish(RulesEngine *re, Track *t, const VanishEvidence *ev,
+                       double now, EventLog *elog) {
+    char msg[256];
+    double gone;
+    float cx, cy;
+
+    if (!re || !t || !ev || !re->config.vanish_enabled) return 0;
+
+    /* 다시 보이면 래치를 풀고 해소를 남깁니다. 재등장했는데 경고가 남아 있으면
+     * 점주가 이미 지나간 상황을 계속 보게 됩니다. */
+    if (t->active && t->misses == 0) {
+        if (t->vanish_warned) {
+            snprintf(msg, sizeof(msg), "person_unaccounted_cleared track=%d", t->id);
+            event_log_write(elog, LOG_INFO, "rules", msg);
+        }
+        t->vanish_warned    = 0;
+        t->vanish_escalated = 0;
+        return 0;
+    }
+
+    gone = now - t->last_seen;
+    if (gone < re->config.vanish_hold_seconds) return 0;
+
+    /* 깜빡이던 트랙이나 원래 흐릿하던 탐지가 사라진 것은 정보가 아닙니다.
+     * 여기를 막지 않으면 잡동사니를 사람으로 잘못 잡았다가 놓칠 때마다 경고가 납니다. */
+    if (t->dwell_seconds < re->config.vanish_min_dwell_seconds) return 0;
+    if (t->box.score < re->config.vanish_min_score) return 0;
+
+    /* 문이 열렸으면 정상 퇴장으로 봅니다. 문 정보가 아예 없을 때만 가장자리로 판단하는데,
+     * 가장자리 규칙을 문 정보가 있을 때도 쓰면 출입문 앞에서 쓰러진 경우 —
+     * 가장 위험한 위치 — 가 통째로 사각지대가 됩니다. */
+    if (ev->door_can_exit == 1) return 0;
+    if (ev->door_can_exit < 0 && ev->near_edge) return 0;
+
+    cx = (t->box.x1 + t->box.x2) * 0.5f;
+    cy = (t->box.y1 + t->box.y2) * 0.5f;
+
+    if (!t->vanish_warned) {
+        t->vanish_warned = 1;
+        snprintf(msg, sizeof(msg),
+                 "person_unaccounted track=%d last=%.0f,%.0f score=%.2f dwell=%.0fs "
+                 "gone=%.0fs door=%s residue=%s",
+                 t->id, cx, cy, t->box.score, t->dwell_seconds, gone,
+                 ev->door_can_exit == 0 ? "closed" : "unknown",
+                 ev->residue_at_spot == 1 ? "yes" :
+                 ev->residue_at_spot == 0 ? "no" : "unknown");
+        event_log_write(elog, LOG_WARN, "rules", msg);
+        return 1;
+    }
+
+    /* 그 자리에 움직이지 않는 것이 남아 있으면 사람일 가능성이 큽니다.
+     * 칸막이 뒤로 이동한 경우는 그 바닥이 기준으로 돌아오므로 여기서 갈립니다.
+     * 이 조건이 없으면 가구가 많은 매장에서 경고가 쏟아집니다. */
+    if (!t->vanish_escalated && ev->residue_at_spot == 1) {
+        t->vanish_escalated = 1;
+        snprintf(msg, sizeof(msg),
+                 "person_unaccounted_residue track=%d last=%.0f,%.0f gone=%.0fs "
+                 "— 소실 지점에 움직이지 않는 것이 남아 있습니다",
+                 t->id, cx, cy, gone);
+        event_log_write(elog, LOG_ERROR, "rules", msg);
+        return 2;
+    }
+    return 0;
 }
 
 void rules_evaluate(RulesEngine *re, TrackList *tl, double now, EventLog *elog) {
