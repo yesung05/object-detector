@@ -168,17 +168,13 @@ header {
 .brand {
   display: flex; align-items: center; gap: 12px; flex-shrink: 0;
 }
-.logo-hex {
-  width: 36px; height: 40px; flex-shrink: 0;
+.logo-img {
+  height: 36px; width: auto; flex-shrink: 0; object-fit: contain;
 }
 .brand-text { line-height: 1.2; }
 .brand-ko {
   font-size: 15px; font-weight: 700; color: var(--text);
   letter-spacing: -.01em;
-}
-.brand-en {
-  font-size: 9px; font-weight: 500; color: var(--muted);
-  letter-spacing: .12em;
 }
 .header-spacer { flex: 1; }
 .header-right {
@@ -540,6 +536,82 @@ details.neu-accordion[open] > summary { color: var(--accent); }
 #roi-summary { margin-top: 8px; padding: 8px 12px; border-radius: 8px; font-size: 12px; background: var(--border); }
 .roi-hint { font-size: 11px; color: var(--muted); }
 
+/* ── 설정 모드 서브 토글 ── */
+.settings-mode-bar {
+  display: flex; gap: 4px; margin-bottom: 16px;
+  background: var(--bg);
+  box-shadow: inset -2px -2px 6px var(--sh-light), inset 2px 2px 6px var(--sh-dark);
+  border-radius: 10px; padding: 3px;
+}
+.smode-btn {
+  flex: 1; background: transparent; border: none;
+  font-family: 'Noto Sans KR', sans-serif;
+  font-size: 12px; font-weight: 700; color: var(--muted);
+  padding: 7px 0; border-radius: 8px; cursor: pointer;
+  transition: background .2s, color .2s;
+}
+.smode-btn.active {
+  background: var(--accent); color: #fff;
+  box-shadow: -2px -2px 5px var(--sh-light), 2px 2px 5px var(--sh-dark);
+}
+
+/* ── 간단 설정 프리셋 카드 ── */
+.simple-settings { display: flex; flex-direction: column; gap: 12px; }
+.preset-card {
+  padding: 16px 18px;
+  display: flex; flex-direction: column; gap: 12px;
+}
+.preset-title { font-size: 14px; font-weight: 700; }
+.preset-subtitle { font-size: 11px; color: var(--muted); margin-top: 2px; }
+.preset-btn-group {
+  display: flex;
+  background: var(--bg);
+  box-shadow: inset -2px -2px 5px var(--sh-light), inset 2px 2px 5px var(--sh-dark);
+  border-radius: 10px; overflow: hidden;
+}
+.preset-btn {
+  flex: 1; background: transparent; border: none;
+  font-family: 'Noto Sans KR', sans-serif;
+  font-size: 11px; font-weight: 600; color: var(--muted);
+  padding: 9px 4px; cursor: pointer;
+  transition: background .15s, color .15s;
+  white-space: nowrap;
+}
+.preset-btn.active {
+  background: var(--accent); color: #fff;
+  border-radius: 8px;
+  box-shadow: -1px -1px 4px var(--sh-light), 1px 1px 4px var(--sh-dark);
+}
+.preset-desc {
+  font-size: 12px; color: var(--muted);
+  background: var(--bg);
+  box-shadow: inset -1px -1px 3px var(--sh-light), inset 1px 1px 3px var(--sh-dark);
+  border-radius: 8px; padding: 8px 12px; line-height: 1.6;
+}
+.preset-desc strong { color: var(--text); }
+.preset-door-row {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+}
+.preset-door-label { font-size: 13px; font-weight: 500; flex: 1; }
+.preset-time-row {
+  display: flex; align-items: center; gap: 10px;
+}
+.preset-time-val {
+  font-size: 18px; font-weight: 700; color: var(--accent);
+  min-width: 40px; text-align: right;
+}
+.preset-time-unit { font-size: 12px; color: var(--muted); }
+.preset-check-group {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 8px;
+}
+.preset-check-item {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 12px; border-radius: 8px;
+  background: var(--bg);
+  box-shadow: -2px -2px 5px var(--sh-light), 2px 2px 5px var(--sh-dark);
+  cursor: pointer; font-size: 12px; font-weight: 500;
+}
+
 /* ── 스크롤바 ── */
 ::-webkit-scrollbar { width: 5px; height: 5px; }
 ::-webkit-scrollbar-track { background: transparent; }
@@ -564,13 +636,11 @@ details.neu-accordion[open] > summary { color: var(--accent); }
 <!-- ══ 헤더 ══════════════════════════════════════════════════════════════════ -->
 <header>
   <div class="brand">
-    <svg class="logo-hex" viewBox="0 0 30 34" fill="none" xmlns="http://www.w3.org/2000/svg">
-      <polygon points="15,1 29,8.7 29,25.3 15,33 1,25.3 1,8.7" fill="var(--accent)" opacity=".9"/>
-      <text x="15" y="22" text-anchor="middle" fill="white" font-size="13" font-weight="700" font-family="'Noto Sans KR',sans-serif">H</text>
-    </svg>
+    <!-- 로고 이미지 플레이스홀더: logo-img src를 설정하면 자동으로 표시됨 -->
+    <img id="logo-img" class="logo-img" src="" alt="로고" style="display:none"
+         onload="this.style.display=''" onerror="this.style.display='none'">
     <div class="brand-text">
       <div class="brand-ko">무인 매장 모니터링 시스템</div>
-      <div class="brand-en">HUNIK UNMANNED STORE MONITOR</div>
     </div>
   </div>
   <div class="header-spacer"></div>
@@ -724,7 +794,118 @@ details.neu-accordion[open] > summary { color: var(--accent); }
 
   <!-- ── 설정 탭 ── -->
   <div class="adv-panel" id="adv-settings">
-    <!-- 스트림 포트 (hidden → actual number input in 고급 section) -->
+
+    <!-- 설정 모드 서브 토글 -->
+    <div class="settings-mode-bar">
+      <button class="smode-btn active" id="smode-simple" onclick="setSettingsMode('simple')">⚡ 간단 설정</button>
+      <button class="smode-btn" id="smode-full"   onclick="setSettingsMode('full')">🔧 고급 설정</button>
+    </div>
+
+    <!-- ─ 간단 설정 ─ -->
+    <div id="simple-settings" class="simple-settings">
+
+      <!-- 체류·착석 -->
+      <div class="preset-card neu-raised">
+        <div>
+          <div class="preset-title">⏱ 체류·착석 관리</div>
+          <div class="preset-subtitle">장기 체류 및 미주문 착석 감지 강도 — 높을수록 빠르게 경고</div>
+        </div>
+        <div class="preset-btn-group" id="pbtn-dwell">
+          <button class="preset-btn" onclick="applyPreset('dwell',0)">매우 관대</button>
+          <button class="preset-btn" onclick="applyPreset('dwell',1)">관대</button>
+          <button class="preset-btn active" onclick="applyPreset('dwell',2)">보통</button>
+          <button class="preset-btn" onclick="applyPreset('dwell',3)">엄격</button>
+          <button class="preset-btn" onclick="applyPreset('dwell',4)">매우 엄격</button>
+        </div>
+        <div class="preset-desc" id="pdesc-dwell">로딩 중...</div>
+      </div>
+
+      <!-- 잔류물 -->
+      <div class="preset-card neu-raised">
+        <div>
+          <div class="preset-title">🧹 잔류물·청결 감지</div>
+          <div class="preset-subtitle">바닥 흘림·방치 쓰레기 감지 민감도 — 높을수록 작은 변화도 감지</div>
+        </div>
+        <div class="preset-btn-group" id="pbtn-residue">
+          <button class="preset-btn" onclick="applyPreset('residue',0)">매우 둔감</button>
+          <button class="preset-btn" onclick="applyPreset('residue',1)">둔감</button>
+          <button class="preset-btn active" onclick="applyPreset('residue',2)">보통</button>
+          <button class="preset-btn" onclick="applyPreset('residue',3)">민감</button>
+          <button class="preset-btn" onclick="applyPreset('residue',4)">매우 민감</button>
+        </div>
+        <div class="preset-desc" id="pdesc-residue">로딩 중...</div>
+      </div>
+
+      <!-- 출입문 -->
+      <div class="preset-card neu-raised">
+        <div>
+          <div class="preset-title">🚪 출입문 감지</div>
+          <div class="preset-subtitle">문이 열려 있는 시간이 허용치를 초과하면 알림</div>
+        </div>
+        <div class="preset-door-row">
+          <span class="preset-door-label">감지 활성화</span>
+          <label class="toggle">
+            <input type="checkbox" id="pcfg-door_enabled" onchange="syncSimpleToCfg('door_enabled', this.checked?1:0)">
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+        <div>
+          <div class="preset-subtitle" style="margin-bottom:8px">개방 허용 시간</div>
+          <div class="preset-time-row">
+            <input type="range" class="setting-input" id="pcfg-door_open_seconds"
+                   min="10" max="120" step="5" value="30"
+                   oninput="syncSimpleToCfg('door_open_seconds',this.value); document.getElementById('pdoor-val').textContent=this.value">
+            <span class="preset-time-val" id="pdoor-val">30</span>
+            <span class="preset-time-unit">초</span>
+          </div>
+          <div class="preset-desc" id="pdesc-door" style="margin-top:8px">30초 이상 열리면 알림</div>
+        </div>
+      </div>
+
+      <!-- 카메라 장애 -->
+      <div class="preset-card neu-raised">
+        <div>
+          <div class="preset-title">📷 카메라 장애 감지</div>
+          <div class="preset-subtitle">암전·백화·정지 감지 민감도</div>
+        </div>
+        <div class="preset-btn-group" id="pbtn-camera">
+          <button class="preset-btn" onclick="applyPreset('camera',0)">둔감</button>
+          <button class="preset-btn active" onclick="applyPreset('camera',1)">보통</button>
+          <button class="preset-btn" onclick="applyPreset('camera',2)">민감</button>
+        </div>
+        <div class="preset-desc" id="pdesc-camera">로딩 중...</div>
+      </div>
+
+      <!-- Tier 2 감지 대상 -->
+      <div class="preset-card neu-raised">
+        <div>
+          <div class="preset-title">🔍 Tier 2 감지 대상</div>
+          <div class="preset-subtitle">바운딩 박스로 표시할 물체 종류</div>
+        </div>
+        <div class="preset-check-group">
+          <label class="preset-check-item">
+            <input type="checkbox" id="pcfg-show_animal"    checked onchange="syncSimpleToCfg('show_animal',this.checked?1:0)">
+            🐾 동물 (고양이·강아지)
+          </label>
+          <label class="preset-check-item">
+            <input type="checkbox" id="pcfg-show_food"      checked onchange="syncSimpleToCfg('show_food',this.checked?1:0)">
+            🍔 외부 음식
+          </label>
+          <label class="preset-check-item">
+            <input type="checkbox" id="pcfg-show_drink"     checked onchange="syncSimpleToCfg('show_drink',this.checked?1:0)">
+            🥤 음료 (병·컵)
+          </label>
+          <label class="preset-check-item">
+            <input type="checkbox" id="pcfg-show_furniture" checked onchange="syncSimpleToCfg('show_furniture',this.checked?1:0)">
+            🪑 가구 (의자·테이블)
+          </label>
+        </div>
+      </div>
+
+    </div><!-- /simple-settings -->
+
+    <!-- ─ 고급 설정 (기존 controls) ─ -->
+    <div id="full-settings" style="display:none">
     <div class="settings-wrap">
 
       <!-- 감지 기본 -->
@@ -1026,6 +1207,7 @@ details.neu-accordion[open] > summary { color: var(--accent); }
       </details>
 
     </div><!-- /settings-wrap -->
+    </div><!-- /full-settings -->
     <div class="save-bar">
       <span class="save-status" id="save-status"></span>
       <button class="neu-btn" onclick="loadSettings()">초기화</button>
@@ -1216,7 +1398,10 @@ function switchAdvTab(name) {
     document.getElementById("adv-" + t).classList.toggle("active", t === name);
     document.getElementById("atab-" + t).classList.toggle("active", t === name);
   });
-  if (name === "settings") loadSettings();
+  if (name === "settings") loadSettings().then(() => {
+    if (currentSettingsMode === "simple") syncCfgToSimple();
+    else ["dwell","residue","camera"].forEach(c => { setPresetLevel(c, detectPresetLevel(c)); updatePresetDesc(c, detectPresetLevel(c)); });
+  });
   if (name === "logs") {
     logNewCount = 0;
     if (logNewBadge) { logNewBadge.style.display = "none"; logNewBadge.textContent = "0"; }
@@ -1825,14 +2010,156 @@ function clearRoi() {
   if (saveBtn) { saveBtn.disabled=false; document.getElementById("roi-save-hint").textContent="[ROI 저장]으로 초기화를 적용하세요."; }
 }
 
+/* ── 설정 모드 (간단/고급) ──────────────────────────────────────────────────── */
+let currentSettingsMode = "simple";
+
+function setSettingsMode(mode) {
+  currentSettingsMode = mode;
+  localStorage.setItem("dashSettingsMode", mode);
+  document.getElementById("simple-settings").style.display = mode === "simple" ? "" : "none";
+  document.getElementById("full-settings").style.display   = mode === "full"   ? "" : "none";
+  document.getElementById("smode-simple").classList.toggle("active", mode === "simple");
+  document.getElementById("smode-full").classList.toggle("active",   mode === "full");
+  if (mode === "simple") syncCfgToSimple();
+}
+
+/* 고급 cfg 값 → 간단 설정 UI 동기화 */
+function syncCfgToSimple() {
+  /* door */
+  const doorEn = document.getElementById("cfg-door_enabled");
+  const pDoorEn = document.getElementById("pcfg-door_enabled");
+  if (doorEn && pDoorEn) pDoorEn.checked = doorEn.checked;
+
+  const doorSec = parseFloat(document.getElementById("cfg-door_open_seconds")?.value) || 30;
+  const pDoorEl = document.getElementById("pcfg-door_open_seconds");
+  if (pDoorEl) { pDoorEl.value = doorSec; document.getElementById("pdoor-val").textContent = doorSec; }
+  updateDoorDesc(doorSec);
+
+  /* tier2 checkboxes */
+  ["show_animal","show_food","show_drink","show_furniture"].forEach(k => {
+    const src = document.getElementById("cfg-" + k);
+    const dst = document.getElementById("pcfg-" + k);
+    if (src && dst) dst.checked = src.checked;
+  });
+
+  /* preset levels (reverse-map from current cfg) */
+  setPresetLevel("dwell",   detectPresetLevel("dwell"));
+  setPresetLevel("residue", detectPresetLevel("residue"));
+  setPresetLevel("camera",  detectPresetLevel("camera"));
+
+  updatePresetDesc("dwell",   detectPresetLevel("dwell"));
+  updatePresetDesc("residue", detectPresetLevel("residue"));
+  updatePresetDesc("camera",  detectPresetLevel("camera"));
+}
+
+/* 간단 설정 값 → 고급 cfg 입력란에 반영 */
+function syncSimpleToCfg(key, val) {
+  setCfgVal(key, val);
+  if (key === "door_open_seconds") updateDoorDesc(val);
+}
+
+/* ── 프리셋 데이터 ─────────────────────────────────────────────────────────── */
+const PRESETS = {
+  dwell: [
+    { dwell_limit_seconds:7200, unordered_grace_seconds:600, fall_hold_seconds:10, fall_aspect_ratio_kp:1.1, fall_aspect_ratio_nokp:1.3 },
+    { dwell_limit_seconds:5400, unordered_grace_seconds:450, fall_hold_seconds:8,  fall_aspect_ratio_kp:1.2, fall_aspect_ratio_nokp:1.4 },
+    { dwell_limit_seconds:3600, unordered_grace_seconds:300, fall_hold_seconds:5,  fall_aspect_ratio_kp:1.3, fall_aspect_ratio_nokp:1.6 },
+    { dwell_limit_seconds:2400, unordered_grace_seconds:180, fall_hold_seconds:3,  fall_aspect_ratio_kp:1.5, fall_aspect_ratio_nokp:1.9 },
+    { dwell_limit_seconds:1800, unordered_grace_seconds:120, fall_hold_seconds:2,  fall_aspect_ratio_kp:1.7, fall_aspect_ratio_nokp:2.2 },
+  ],
+  residue: [
+    { residue_diff_threshold:30, residue_min_blocks:5, residue_confirm_seconds:120, residue_clear_seconds:20, residue_baseline_refresh_seconds:600, residue_global_change_ratio:0.7, residue_person_margin_blocks:2 },
+    { residue_diff_threshold:24, residue_min_blocks:4, residue_confirm_seconds:90,  residue_clear_seconds:15, residue_baseline_refresh_seconds:450, residue_global_change_ratio:0.6, residue_person_margin_blocks:1 },
+    { residue_diff_threshold:18, residue_min_blocks:3, residue_confirm_seconds:60,  residue_clear_seconds:10, residue_baseline_refresh_seconds:300, residue_global_change_ratio:0.5, residue_person_margin_blocks:1 },
+    { residue_diff_threshold:13, residue_min_blocks:2, residue_confirm_seconds:40,  residue_clear_seconds:7,  residue_baseline_refresh_seconds:200, residue_global_change_ratio:0.4, residue_person_margin_blocks:1 },
+    { residue_diff_threshold:9,  residue_min_blocks:1, residue_confirm_seconds:20,  residue_clear_seconds:5,  residue_baseline_refresh_seconds:120, residue_global_change_ratio:0.3, residue_person_margin_blocks:0 },
+  ],
+  camera: [
+    { luma_black_threshold:25, luma_white_threshold:252, frozen_frames_threshold:90 },
+    { luma_black_threshold:40, luma_white_threshold:240, frozen_frames_threshold:45 },
+    { luma_black_threshold:55, luma_white_threshold:225, frozen_frames_threshold:20 },
+  ],
+};
+
+/* 프리셋 적용 (cfg- 입력란 업데이트 + 버튼 강조 + 설명 업데이트) */
+function applyPreset(category, level) {
+  level = parseInt(level, 10);
+  const preset = PRESETS[category][level];
+  if (!preset) return;
+  Object.entries(preset).forEach(([k, v]) => setCfgVal(k, v));
+  setPresetLevel(category, level);
+  updatePresetDesc(category, level);
+}
+
+function setPresetLevel(category, level) {
+  const group = document.getElementById("pbtn-" + category);
+  if (!group) return;
+  [...group.querySelectorAll(".preset-btn")].forEach((btn, i) => {
+    btn.classList.toggle("active", i === level);
+  });
+}
+
+/* 역방향 매핑: 현재 cfg 값에서 가장 가까운 프리셋 레벨 반환 */
+const PRESET_KEY = { dwell: "dwell_limit_seconds", residue: "residue_diff_threshold", camera: "frozen_frames_threshold" };
+function detectPresetLevel(category) {
+  const key = PRESET_KEY[category];
+  const cur = parseFloat(document.getElementById("cfg-" + key)?.value);
+  if (isNaN(cur)) return 2;
+  const presets = PRESETS[category];
+  let best = 0, bestDiff = Infinity;
+  presets.forEach((p, i) => {
+    const diff = Math.abs(p[key] - cur);
+    if (diff < bestDiff) { bestDiff = diff; best = i; }
+  });
+  return best;
+}
+
+/* 프리셋 설명 문자열 생성 */
+function updatePresetDesc(category, level) {
+  const el = document.getElementById("pdesc-" + category);
+  if (!el) return;
+  const p = PRESETS[category][level];
+  if (!p) return;
+  let desc = "";
+  if (category === "dwell") {
+    const h = Math.floor(p.dwell_limit_seconds / 3600);
+    const m = Math.round((p.dwell_limit_seconds % 3600) / 60);
+    const timeStr = h > 0 ? (m > 0 ? `${h}시간 ${m}분` : `${h}시간`) : `${m}분`;
+    const gm = Math.round(p.unordered_grace_seconds / 60);
+    desc = `<strong>체류 한도 ${timeStr}</strong> · 미주문 유예 ${gm}분 · 쓰러짐 판정 ${p.fall_hold_seconds}초 유지`;
+  } else if (category === "residue") {
+    desc = `<strong>휘도 차 임계값 ${p.residue_diff_threshold}</strong> · 최소 ${p.residue_min_blocks}블록 이상 · 확정 ${p.residue_confirm_seconds}초 · 해소 ${p.residue_clear_seconds}초`;
+  } else if (category === "camera") {
+    desc = `암전 임계 <strong>${p.luma_black_threshold}</strong> · 백화 임계 <strong>${p.luma_white_threshold}</strong> · 정지 판정 <strong>${p.frozen_frames_threshold}프레임</strong>`;
+  }
+  el.innerHTML = desc;
+}
+
+function updateDoorDesc(sec) {
+  const el = document.getElementById("pdesc-door");
+  if (el) el.textContent = `${sec}초 이상 열려 있으면 알림`;
+}
+
+/* syncCfgToSimple은 loadSettings 완료 후 switchAdvTab('settings')에서 호출됨 */
+
 /* ── 초기화 ────────────────────────────────────────────────────────────────── */
 /* 저장된 테마/모드 복원 */
 (function init() {
-  const theme = localStorage.getItem("dashTheme") || "light";
-  const mode  = localStorage.getItem("dashMode")  || "easy";
+  const theme    = localStorage.getItem("dashTheme")        || "light";
+  const mode     = localStorage.getItem("dashMode")         || "easy";
+  const smode    = localStorage.getItem("dashSettingsMode") || "simple";
   document.documentElement.dataset.theme = theme;
   document.getElementById("theme-btn").textContent = theme === "dark" ? "🌙" : "☀";
+  currentSettingsMode = smode;
+  /* simple/full 패널 초기 상태 설정 (setMode 전에) */
+  document.getElementById("simple-settings").style.display = smode === "simple" ? "" : "none";
+  document.getElementById("full-settings").style.display   = smode === "full"   ? "" : "none";
+  document.getElementById("smode-simple").classList.toggle("active", smode === "simple");
+  document.getElementById("smode-full").classList.toggle("active",   smode === "full");
   setMode(mode);
+  /* 간단 설정 설명 초기값 (cfg 로드 전 레벨 2=보통 기준) */
+  ["dwell","residue","camera"].forEach(c => updatePresetDesc(c, 2));
+  updateDoorDesc(30);
 })();
 
 loadLogList();
