@@ -11,6 +11,7 @@
 #include "door.h"
 #include "residue.h"
 #include "netaccess.h"
+#include "throttle.h"
 #include "slot_monitor.h"
 
 #include <math.h>
@@ -2074,9 +2075,164 @@ static void test_door_band_disabled_holds_when_occluded(void) {
     door_destroy(&d);
 }
 
+/* ── 미확인 소실 ──────────────────────────────────────────────────────────── */
+
+static void vanish_track(Track *t) {
+    memset(t, 0, sizeof(*t));
+    t->id = 7;
+    t->active = 1;
+    t->misses = 1;              /* 매칭 실패 상태 */
+    t->dwell_seconds = 30.0;    /* 충분히 오래 추적됨 */
+    t->last_seen = 100.0;
+    t->box.score = 0.62f;       /* 사라지기 직전 신뢰도 충분 */
+    t->box.x1 = 400; t->box.y1 = 300; t->box.x2 = 460; t->box.y2 = 460;
+}
+
+static void test_vanish_requires_closed_door(void) {
+    /* 문이 열렸으면 정상 퇴장이므로 아무 말도 하지 않아야 합니다. */
+    RulesEngine re; Track t; VanishEvidence ev; EventLog el;
+    ASSERT_TRUE(rules_init(&re, 8, NULL, NULL, 0) == 0);
+    event_log_open(&el, ":memory:", LOG_INFO, 0);
+    vanish_track(&t);
+    ev.door_can_exit = 1; ev.residue_at_spot = 1; ev.near_edge = 0;
+    EXPECT_INT_EQ(rules_check_vanish(&re, &t, &ev, 120.0, &el), 0);
+    EXPECT_INT_EQ(t.vanish_warned, 0);
+
+    /* 문이 닫힌 채였으면 나갈 수 없었다는 뜻 — 경고 */
+    ev.door_can_exit = 0; ev.residue_at_spot = 0;
+    EXPECT_INT_EQ(rules_check_vanish(&re, &t, &ev, 120.0, &el), 1);
+    EXPECT_INT_EQ(t.vanish_warned, 1);
+    /* 중복 발화 없음 */
+    EXPECT_INT_EQ(rules_check_vanish(&re, &t, &ev, 130.0, &el), 0);
+    rules_destroy(&re); event_log_close(&el);
+}
+
+static void test_vanish_escalates_only_with_residue(void) {
+    /* 문 앞에서 쓰러진 경우: 가장자리라도 문이 닫혀 있으면 잡아야 하고,
+       그 자리에 잔류가 있을 때만 ERROR 로 올라가야 합니다. */
+    RulesEngine re; Track t; VanishEvidence ev; EventLog el;
+    ASSERT_TRUE(rules_init(&re, 8, NULL, NULL, 0) == 0);
+    event_log_open(&el, ":memory:", LOG_INFO, 0);
+    vanish_track(&t);
+    ev.door_can_exit = 0; ev.residue_at_spot = 0; ev.near_edge = 1; /* 문 앞 = 가장자리 */
+
+    EXPECT_INT_EQ(rules_check_vanish(&re, &t, &ev, 120.0, &el), 1); /* 가장자리여도 경고 */
+    EXPECT_INT_EQ(rules_check_vanish(&re, &t, &ev, 130.0, &el), 0); /* 잔류 없음 → 승격 안 함 */
+    EXPECT_INT_EQ(t.vanish_escalated, 0);
+
+    ev.residue_at_spot = 1;
+    EXPECT_INT_EQ(rules_check_vanish(&re, &t, &ev, 140.0, &el), 2); /* 잔류 확인 → 승격 */
+    EXPECT_INT_EQ(t.vanish_escalated, 1);
+    EXPECT_TRUE(event_log_count(&el, LOG_ERROR) > 0);
+    rules_destroy(&re); event_log_close(&el);
+}
+
+static void test_vanish_ignores_weak_and_brief_tracks(void) {
+    /* 깜빡이던 트랙·저신뢰 탐지가 사라진 것은 정보가 아닙니다. 여기를 막지 않으면
+       잡동사니를 사람으로 오인했다 놓칠 때마다 경고가 납니다. */
+    RulesEngine re; Track t; VanishEvidence ev; EventLog el;
+    ASSERT_TRUE(rules_init(&re, 8, NULL, NULL, 0) == 0);
+    event_log_open(&el, ":memory:", LOG_INFO, 0);
+    ev.door_can_exit = 0; ev.residue_at_spot = 1; ev.near_edge = 0;
+
+    vanish_track(&t); t.dwell_seconds = 1.0;               /* 너무 짧게 추적됨 */
+    EXPECT_INT_EQ(rules_check_vanish(&re, &t, &ev, 120.0, &el), 0);
+
+    vanish_track(&t); t.box.score = 0.22f;                 /* 원래 흐릿하던 탐지 */
+    EXPECT_INT_EQ(rules_check_vanish(&re, &t, &ev, 120.0, &el), 0);
+
+    vanish_track(&t);                                      /* 아직 유예 시간 전 */
+    EXPECT_INT_EQ(rules_check_vanish(&re, &t, &ev, 103.0, &el), 0);
+    EXPECT_INT_EQ(rules_check_vanish(&re, &t, &ev, 106.0, &el), 1); /* 5초 경과 → 발화 */
+    rules_destroy(&re); event_log_close(&el);
+}
+
+static void test_vanish_clears_on_reappear(void) {
+    /* 다시 보이면 래치가 풀려 재발 시 다시 감지되어야 합니다. */
+    RulesEngine re; Track t; VanishEvidence ev; EventLog el;
+    ASSERT_TRUE(rules_init(&re, 8, NULL, NULL, 0) == 0);
+    event_log_open(&el, ":memory:", LOG_INFO, 0);
+    vanish_track(&t);
+    ev.door_can_exit = 0; ev.residue_at_spot = 1; ev.near_edge = 0;
+    EXPECT_INT_EQ(rules_check_vanish(&re, &t, &ev, 120.0, &el), 1);
+    EXPECT_INT_EQ(rules_check_vanish(&re, &t, &ev, 125.0, &el), 2);
+
+    t.misses = 0; t.active = 1;                            /* 재등장 */
+    EXPECT_INT_EQ(rules_check_vanish(&re, &t, &ev, 130.0, &el), 0);
+    EXPECT_INT_EQ(t.vanish_warned, 0);
+    EXPECT_INT_EQ(t.vanish_escalated, 0);
+
+    t.misses = 1; t.last_seen = 130.0;                     /* 다시 사라짐 */
+    EXPECT_INT_EQ(rules_check_vanish(&re, &t, &ev, 140.0, &el), 1);
+    rules_destroy(&re); event_log_close(&el);
+}
+
+/* ── 적응형 감속 ──────────────────────────────────────────────────────────── */
+
+static ThrottleConfig throttle_cfg(void) {
+    ThrottleConfig c;
+    c.enabled = 1; c.light_percent = 50; c.heavy_percent = 70; c.minimal_percent = 85;
+    c.hysteresis_percent = 10; c.min_level_seconds = 5.0; c.check_seconds = 2.0;
+    return c;
+}
+
+static void test_throttle_levels_and_hysteresis(void) {
+    /* 올라갈 때는 진입 임계값 그대로 — 키오스크가 갑자기 바빠지면 즉시 물러나야 합니다. */
+    ThrottleConfig c = throttle_cfg();
+    EXPECT_INT_EQ(throttle_decide(&c, THROTTLE_NONE, 49.0), THROTTLE_NONE);
+    EXPECT_INT_EQ(throttle_decide(&c, THROTTLE_NONE, 50.0), THROTTLE_LIGHT);
+    EXPECT_INT_EQ(throttle_decide(&c, THROTTLE_NONE, 72.0), THROTTLE_HEAVY);   /* 한 번에 두 단계 */
+    EXPECT_INT_EQ(throttle_decide(&c, THROTTLE_NONE, 90.0), THROTTLE_MINIMAL);
+
+    /* 내려올 때는 히스테리시스만큼 더 떨어져야 풀립니다. 같은 값을 쓰면 경계에서
+       단계가 초당 여러 번 뒤집혀 로그가 폭주하고 추론 주기가 흔들립니다. */
+    EXPECT_INT_EQ(throttle_decide(&c, THROTTLE_LIGHT, 45.0), THROTTLE_LIGHT);  /* 40 밑까지 유지 */
+    EXPECT_INT_EQ(throttle_decide(&c, THROTTLE_LIGHT, 39.0), THROTTLE_NONE);
+    EXPECT_INT_EQ(throttle_decide(&c, THROTTLE_HEAVY, 65.0), THROTTLE_HEAVY);  /* 60 밑까지 유지 */
+    EXPECT_INT_EQ(throttle_decide(&c, THROTTLE_HEAVY, 55.0), THROTTLE_LIGHT);  /* 한 단계씩 복귀 */
+    EXPECT_INT_EQ(throttle_decide(&c, THROTTLE_MINIMAL, 80.0), THROTTLE_MINIMAL);
+    EXPECT_INT_EQ(throttle_decide(&c, THROTTLE_MINIMAL, 74.0), THROTTLE_HEAVY);
+
+    /* 꺼져 있으면 부하와 무관하게 항상 NONE */
+    c.enabled = 0;
+    EXPECT_INT_EQ(throttle_decide(&c, THROTTLE_HEAVY, 99.0), THROTTLE_NONE);
+}
+
+static void test_throttle_actions_per_level(void) {
+    /* 단계별 동작이 실제로 부하를 줄이는 방향인지 — 추론 주기는 늘고 Tier 2 는 꺼져야 합니다. */
+    EXPECT_INT_EQ(throttle_detect_multiplier(THROTTLE_NONE),    1);
+    EXPECT_INT_EQ(throttle_detect_multiplier(THROTTLE_LIGHT),   2);
+    EXPECT_INT_EQ(throttle_detect_multiplier(THROTTLE_HEAVY),   4);
+    EXPECT_INT_EQ(throttle_detect_multiplier(THROTTLE_MINIMAL), 0); /* 추론 정지 */
+    EXPECT_INT_EQ(throttle_tier2_multiplier(THROTTLE_HEAVY),    0);
+    EXPECT_INT_EQ(throttle_stream_fps(THROTTLE_NONE,  10), 10);
+    EXPECT_INT_EQ(throttle_stream_fps(THROTTLE_HEAVY, 10), 5);
+    EXPECT_INT_EQ(throttle_stream_fps(THROTTLE_MINIMAL, 2), 1);     /* 0 으로 떨어지지 않음 */
+}
+
+static void test_throttle_needs_baseline_before_deciding(void) {
+    /* 첫 호출은 기준점만 잡아야 합니다. 바로 판단하면 프로세스 시작 직후의
+       로딩 부하를 "키오스크가 바쁘다"로 오인해 곧장 감속합니다. */
+    Throttle t;
+    ThrottleConfig c = throttle_cfg();
+    throttle_init(&t, &c);
+    EXPECT_INT_EQ(throttle_update(&t, 10.0, 1.0, 4), 0);
+    EXPECT_INT_EQ(t.level, THROTTLE_NONE);
+    /* check_seconds 전에는 측정 자체를 건너뜁니다 */
+    EXPECT_INT_EQ(throttle_update(&t, 10.5, 1.1, 4), 0);
+    EXPECT_INT_EQ(t.level, THROTTLE_NONE);
+}
+
 int main(void) {
     TEST_SUITE_BEGIN(core_unit_tests);
     RUN_TEST(test_letterbox);
+    RUN_TEST(test_throttle_levels_and_hysteresis);
+    RUN_TEST(test_throttle_actions_per_level);
+    RUN_TEST(test_throttle_needs_baseline_before_deciding);
+    RUN_TEST(test_vanish_requires_closed_door);
+    RUN_TEST(test_vanish_escalates_only_with_residue);
+    RUN_TEST(test_vanish_ignores_weak_and_brief_tracks);
+    RUN_TEST(test_vanish_clears_on_reappear);
     RUN_TEST(test_netaccess_subnet_and_pin_header);
     RUN_TEST(test_door_auto_stall_detection);
     RUN_TEST(test_door_band_judges_while_occluded);

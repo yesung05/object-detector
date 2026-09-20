@@ -2,6 +2,7 @@
 #include "perf_log.h"
 #include "slot_monitor.h"
 #include "surface_monitor.h"
+#include "throttle.h"
 #include "stream.h"
 #include "door.h"
 #include "residue.h"
@@ -189,6 +190,11 @@ typedef struct {
     char   access_pin[64];
     int    privacy_was_active;       /* 전환 로그용 */
     int    door_stall_logged;        /* door.auto_stalled 0→1 전환을 한 번만 기록 */
+    /* 문이 마지막으로 열린 시각. 소실 판정에서 "나갈 수 있었나"를 가르는 근거입니다. */
+    double door_last_open_time;
+    /* 적응형 감속 — 키오스크 본 프로그램이 바쁘면 스스로 추론을 줄입니다. */
+    Throttle throttle;
+    int      priority_level;   /* config: process_priority (0 보통, 1 보통아래, 2 유휴) */
     int    door_band_logged;         /* band_valid 측정 결과를 측정당 한 번만 기록 */
     /* 표면 자동 캡처 설정은 surface_monitor 로 넘기고, 문·잔류물은 각 모니터 구조체가 가집니다. */
     int    surface_auto_capture;
@@ -783,6 +789,46 @@ static void apply_auto_capture_config(AppContext *app, const Config *cfg) {
         surface_monitor_set_auto_capture(app->surface_monitor, app->surface_auto_capture, app->surface_auto_quiet);
 }
 
+/*
+ * 마지막으로 보인 자리에 청결 기준 대비 변화가 남아 있는지 봅니다.
+ * 반환 1=남음, 0=없음, -1=확인 불가(기준 없음 또는 크기 불일치).
+ *
+ * 쓰러진 사람은 그 자리에 그대로 있고, 칸막이 뒤로 걸어간 사람은 바닥이 기준으로
+ * 돌아옵니다. 소실 경고를 응급으로 올릴지 가르는 유일한 물리적 근거입니다.
+ * 잔류물 모듈이 이미 들고 있는 gray 와 baseline 을 그대로 읽으므로 추가 비용이 없습니다.
+ */
+static int residue_at_box(const AppContext *app, const Detection *box) {
+    const ResidueMonitor *r = &app->residue;
+    int ds, bx1, by1, bx2, by2, bx, by, changed = 0, total = 0;
+
+    if (!r->baseline_ready || !r->baseline || !app->gray.data) return -1;
+    if (r->baseline_w != app->gray.width || r->baseline_h != app->gray.height) return -1;
+    ds = app->gray.downsample;
+    if (ds <= 0) return -1;
+
+    bx1 = (int)(box->x1 / ds);
+    by1 = (int)(box->y1 / ds);
+    bx2 = (int)(box->x2 / ds);
+    by2 = (int)(box->y2 / ds);
+    if (bx1 < 0) bx1 = 0;
+    if (by1 < 0) by1 = 0;
+    if (bx2 >= app->gray.width)  bx2 = app->gray.width  - 1;
+    if (by2 >= app->gray.height) by2 = app->gray.height - 1;
+
+    for (by = by1; by <= by2; ++by) {
+        for (bx = bx1; bx <= bx2; ++bx) {
+            int i = by * app->gray.width + bx;
+            int d = (int)app->gray.data[i] - (int)r->baseline[i];
+            if (d < 0) d = -d;
+            total++;
+            if (d >= r->config.diff_threshold) changed++;
+        }
+    }
+    /* 블록이 너무 적으면(아주 먼 사람) 통계가 의미 없으므로 판단을 포기합니다. */
+    if (total < 4) return -1;
+    return (changed * 100 / total) >= 30 ? 1 : 0;
+}
+
 /* 활성 트랙 bbox 를 GrayRect 배열로 모읍니다. 문·잔류물 자동 캡처와 잔류물 판정이 공유합니다. */
 static int collect_person_rects(const AppContext *app, GrayRect *out, int max) {
     int n = 0;
@@ -795,6 +841,35 @@ static int collect_person_rects(const AppContext *app, GrayRect *out, int max) {
         n++;
     }
     return n;
+}
+
+/* 적응형 감속 설정. 우선순위는 시작 시 한 번만 적용하고 여기서는 임계값만 다룹니다. */
+static void apply_throttle_config(AppContext *app, const Config *cfg) {
+    ThrottleConfig tc;
+    tc.enabled            = (int)config_long(cfg, "throttle_enabled", 1, 0, 1);
+    tc.light_percent      = (int)config_long(cfg, "throttle_light_percent",   50, 10, 100);
+    tc.heavy_percent      = (int)config_long(cfg, "throttle_heavy_percent",   70, 10, 100);
+    tc.minimal_percent    = (int)config_long(cfg, "throttle_minimal_percent", 85, 10, 100);
+    /* 히스테리시스와 측정 주기는 설정으로 내보내지 않습니다 — 잘못 만지면 단계가 흔들려
+       오히려 불안정해지고, 현장에서 조절할 이유가 거의 없습니다. */
+    tc.hysteresis_percent = 10;
+    tc.min_level_seconds  = 5.0;
+    tc.check_seconds      = 2.0;
+    throttle_configure(&app->throttle, &tc);
+}
+
+/* 미확인 소실 임계값. 시작 시와 hot-reload 양쪽에서 같은 값을 쓰도록 한 곳에 모읍니다. */
+static void apply_vanish_config(RulesConfig *rc, const Config *cfg) {
+    rc->vanish_enabled =
+        (int)config_long(cfg, "vanish_enabled", 1, 0, 1);
+    rc->vanish_hold_seconds =
+        (double)config_float(cfg, "vanish_hold_seconds", 5.0f, 1.0f, 300.0f);
+    rc->vanish_min_dwell_seconds =
+        (double)config_float(cfg, "vanish_min_dwell_seconds", 3.0f, 0.0f, 300.0f);
+    rc->vanish_min_score =
+        config_float(cfg, "vanish_min_score", 0.35f, 0.0f, 1.0f);
+    rc->vanish_edge_margin =
+        config_float(cfg, "vanish_edge_margin", 0.08f, 0.0f, 0.4f);
 }
 
 /* 키오스크 ROI 를 rules 설정에 채웁니다. 미설정이면 roi_kiosk_set = 0 이 되어
@@ -867,6 +942,7 @@ static void reload_config(AppContext *app) {
         config_float(&cfg, "animal_iou_threshold", 0.15f, 0.01f, 1.0f);
     rules_cfg.no_cup_margin =
         (int)config_long(&cfg, "no_cup_margin", 1, 0, 100);
+    apply_vanish_config(&rules_cfg, &cfg);
     apply_roi_kiosk(&rules_cfg, &cfg);
     rules_update_config(&app->rules, &rules_cfg);
 
@@ -880,6 +956,7 @@ static void reload_config(AppContext *app) {
 
     apply_residue_config(app, &cfg);
     apply_slot_config(app, &cfg);
+    apply_throttle_config(app, &cfg);
     {
         int prev_privacy = app->privacy_mode;
         apply_security_config(app, &cfg);
@@ -1019,7 +1096,10 @@ static void surface_process(AppContext *app,RgbFrame *frame,double now) {
 static int process_frame(RgbFrame *frame, void *opaque,
                          char *error, size_t error_size) {
     AppContext *app = (AppContext *)opaque;
-    int run_detector = frame->index % app->detect_every == 0;
+    /* 감속 단계에 따라 추론 주기를 늘립니다. 배수 0 은 "추론 자체를 건너뜀"입니다. */
+    int detect_mul   = throttle_detect_multiplier(app->throttle.level);
+    int effective_every = detect_mul > 0 ? app->detect_every * detect_mul : 0;
+    int run_detector = effective_every > 0 && (frame->index % effective_every == 0);
     int tracked = 0;
     int requested = 0;
     /* 게이트가 "볼 것이 없다"고 판정하면 adaptive 재추론도 막습니다. */
@@ -1064,6 +1144,24 @@ static int process_frame(RgbFrame *frame, void *opaque,
     /* 이번 프레임의 변화 픽셀 비율 — 아래 gray_analyze 블록에서 채우고 잔류물 자동 캡처가 읽습니다.
        1.0 으로 시작하는 이유: 아직 못 계산했으면 "움직임 있음"으로 취급해 캡처를 미룹니다. */
     double motion_ratio = 1.0;
+
+    /* ── 적응형 감속 ───────────────────────────────────────────────────────
+     * 단계가 바뀔 때만 로그를 남깁니다. 남기지 않으면 "왜 갑자기 감지가 느려졌지"에
+     * 답할 방법이 없습니다. module 을 perf 로 두면 대시보드 피드에서 걸러지므로 throttle 로 둡니다. */
+    if (throttle_update(&app->throttle, now, platform_process_cpu_seconds(),
+                        (int)platform_cpu_count())) {
+        char tmsg[220];
+        ThrottleLevel lv = app->throttle.level;
+        int dm = throttle_detect_multiplier(lv), t2 = throttle_tier2_multiplier(lv);
+        snprintf(tmsg, sizeof(tmsg),
+                 "throttle=%s others_cpu=%.0f%% detect_every=%s tier2=%s stream_fps=%d",
+                 throttle_level_name(lv), app->throttle.others_percent,
+                 dm > 0 ? "x" : "off", t2 > 0 ? "x" : "off",
+                 throttle_stream_fps(lv, 10));
+        event_log_write(&app->event_log,
+                        lv >= THROTTLE_HEAVY ? LOG_WARN : LOG_INFO, "throttle", tmsg);
+        if (app->stream_port > 0) stream_set_max_fps(throttle_stream_fps(lv, 10));
+    }
 
     /* 첫 프레임에서 HUD FPS 계산 기준 시각을 기록합니다. */
     if (app->hud_start_time == 0.0)
@@ -1332,6 +1430,9 @@ static int process_frame(RgbFrame *frame, void *opaque,
     }
     /* Fresh person evidence is reserved independently of motion gating. */
     if(surface_monitor_enabled(app->surface_monitor)&&now-app->surface_people_at>=1.0)run_detector=1;
+    /* MINIMAL 단계에서는 위 강제 추론까지 막습니다 — 키오스크 보호가 감지보다 우선입니다.
+       카메라 상태 감시는 gray 기반이라 계속 동작합니다. */
+    if (detect_mul == 0) run_detector = 0;
     if (run_detector) {
         DetectorRunStats run_stats;
         if (detector_run(app->detector, frame->data, frame->width,
@@ -1493,9 +1594,10 @@ static int process_frame(RgbFrame *frame, void *opaque,
          * detect_every_obj/2가 detect_every의 배수일 때 Tier 2가 영원히 실행되지
          * 않는 버그가 있었다(detect_every=5, detect_every_obj=90 → 45%5==0).
          * 조건을 단순 주기로 변경한다. ORT는 내부적으로 직렬 실행되므로 경합 없음. */
-        if (app->obj_detector &&
+        int tier2_mul = throttle_tier2_multiplier(app->throttle.level);
+        if (app->obj_detector && tier2_mul > 0 &&
                 (app->tier2_always || !surface_monitor_enabled(app->surface_monitor))) {
-            int run_obj = (frame->index % app->detect_every_obj == 0);
+            int run_obj = (frame->index % (app->detect_every_obj * tier2_mul) == 0);
             if (run_obj) {
                 int rc = detector_run(app->obj_detector,
                                       frame->data, frame->width, frame->height,
@@ -1571,6 +1673,8 @@ static int process_frame(RgbFrame *frame, void *opaque,
         }
 
         if (state == 1) {
+            /* 문이 열려 있던 시각을 기록합니다 — 사람이 사라졌을 때 나갈 수 있었는지 판단합니다. */
+            app->door_last_open_time = now;
             /* 열린 상태 — 지속 시간 누적 */
             if (app->door.open_since < 0.0) {
                 app->door.open_since = now; /* 이번 개방 시작 시각 */
@@ -1631,6 +1735,33 @@ static int process_frame(RgbFrame *frame, void *opaque,
             app->door_stall_logged = 1;
         } else if (!app->door.auto_stalled) {
             app->door_stall_logged = 0;
+        }
+    }
+
+    /* ── 미확인 소실 ───────────────────────────────────────────────────────
+     * 추론 프레임에만 돌리지 않는 이유: 소실은 "추론이 사람을 못 찾는 상태"라서
+     * 추론 주기와 무관하게 시간이 흐릅니다. 비용은 트랙 수만큼의 블록 비교뿐입니다.
+     * 그리기 전에 두는 이유도 door_check 와 같습니다 — residue_at_box 가 실제 픽셀을 봅니다. */
+    if (app->rules.config.vanish_enabled) {
+        size_t vi;
+        float mx = (float)frame->width  * app->rules.config.vanish_edge_margin;
+        float my = (float)frame->height * app->rules.config.vanish_edge_margin;
+        for (vi = 0; vi < app->tracks.count; ++vi) {
+            Track *t = &app->tracks.items[vi];
+            VanishEvidence ev;
+            if (t->id <= 0) continue;                              /* 미사용 슬롯 */
+            if (!t->active && now >= t->limbo_expired_at) continue; /* 만료 — 판단 종료 */
+            /* 문 감지가 꺼져 있거나 아직 상태를 한 번도 확정하지 못했으면 "알 수 없음"입니다.
+               모르면서 "나갈 수 없었다"고 단정하면 오탐이 쏟아집니다. */
+            ev.door_can_exit = (!app->door.enabled || app->door.last_state < 0)
+                             ? -1
+                             : (app->door_last_open_time >= t->last_seen - 2.0);
+            ev.near_edge = (t->box.x1 <= mx || t->box.y1 <= my ||
+                            t->box.x2 >= (float)frame->width  - mx ||
+                            t->box.y2 >= (float)frame->height - my);
+            ev.residue_at_spot = residue_at_box(app, &t->box);
+            if (rules_check_vanish(&app->rules, t, &ev, now, &app->event_log) > 0)
+                app->event_count++;
         }
     }
 
@@ -2156,6 +2287,7 @@ int main(int argc, char **argv) {
         app.idle_refresh_seconds  =
             (double)config_float(&cfg, "idle_refresh_seconds", 10.0f, 1.0f, 3600.0f);
         apply_gate_config(&app, &cfg);
+        apply_vanish_config(&rules_cfg, &cfg);
         apply_roi_kiosk(&rules_cfg, &cfg);
         /* 문 여닫이 설정 — door_load는 cfg 블록 밖에서 (data_dir 필요) */
         app.door.enabled                 = (int)config_long (&cfg, "door_enabled",        0,    0,    1);
@@ -2168,6 +2300,11 @@ int main(int argc, char **argv) {
         app.door.roi_h          = (int)config_long (&cfg, "door_roi_h",         0,    0, 9999);
         apply_residue_config(&app, &cfg);
         apply_slot_config(&app, &cfg);
+        /* 우선순위는 시작 시 한 번만 적용합니다 — hot-reload 로 바꾸면 실행 중에 스케줄링이
+           흔들려 원인 파악이 어려워집니다. 바꾸려면 재시작하세요. */
+        app.priority_level = (int)config_long(&cfg, "process_priority", 1, 0, 2);
+        throttle_init(&app.throttle, NULL);
+        apply_throttle_config(&app, &cfg);
         apply_security_config(&app, &cfg);
         apply_auto_capture_config(&app, &cfg); /* surface_monitor 는 아직 없음 — 생성 직후 다시 넘깁니다 */
         if (!args.stream_port_set)
@@ -2347,6 +2484,30 @@ int main(int argc, char **argv) {
                      app.access_pin[0] ? "PIN 필요(localhost 제외)" : "같은 서브넷이면 허용(PIN 미설정)");
             event_log_write(&app.event_log, LOG_INFO, "access", msg);
         }
+    }
+    /* ── 리소스 격리 1층: 프로세스 우선순위 ────────────────────────────────
+     * 이 프로그램은 키오스크의 보조입니다. 결제 화면이 우리 때문에 끊기면 안 되므로
+     * 커널 수준에서 항상 뒤로 밀리게 둡니다. 적응형 감속(2층)에 버그가 있어도 유효한
+     * 최후의 방어선이라, 실패하면 반드시 경고로 남깁니다. */
+    {
+        char msg[200];
+        static const char *names[] = { "normal", "below_normal", "idle" };
+        int lv = app.priority_level < 0 ? 0 : (app.priority_level > 2 ? 2 : app.priority_level);
+        if (platform_set_priority(lv) == 0) {
+            snprintf(msg, sizeof(msg),
+                     "process_priority=%s — 키오스크 본 프로그램이 항상 먼저 스케줄됩니다", names[lv]);
+            event_log_write(&app.event_log, LOG_INFO, "throttle", msg);
+        } else {
+            event_log_write(&app.event_log, LOG_WARN, "throttle",
+                            "process_priority 설정 실패 — 보통 우선순위로 동작합니다. "
+                            "키오스크가 느려지면 적응형 감속만으로 버텨야 합니다");
+        }
+        snprintf(msg, sizeof(msg),
+                 "throttle=%s light=%d%% heavy=%d%% minimal=%d%% (남들 CPU 기준)",
+                 app.throttle.config.enabled ? "on" : "off",
+                 app.throttle.config.light_percent, app.throttle.config.heavy_percent,
+                 app.throttle.config.minimal_percent);
+        event_log_write(&app.event_log, LOG_INFO, "throttle", msg);
     }
     {
         char msg[220];
