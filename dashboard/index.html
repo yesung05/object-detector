@@ -2227,7 +2227,12 @@ function selectFile(file) {
   connect(file);
 }
 
-logSelect.addEventListener("change", () => selectFile(logSelect.value));
+/* 사용자가 직접 로그를 고르면 자동 전환을 멈춥니다 — 과거 로그를 보는 중에 새 파일로
+   끌려가면 안 됩니다. 반대로 직접 고른 적이 없으면 새 로그가 생길 때 따라가야 합니다:
+   대시보드를 먼저 열고 detector 를 나중에 켜는 흔한 순서에서, 자동 전환이 없으면
+   이벤트가 전부 새 파일로 가는데 화면은 옛 파일에 머물러 아무것도 안 보입니다. */
+let userPickedLog = false;
+logSelect.addEventListener("change", () => { userPickedLog = true; selectFile(logSelect.value); });
 
 /* ── CSV 내보내기 ───────────────────────────────────────────────────────────── */
 function exportCSV() {
@@ -3033,13 +3038,17 @@ setInterval(async () => {
     const current = [...logSelect.options].map(o => o.value);
     if (files.some(f => !current.includes(f))) {
       const sel = logSelect.value;
+      /* 서버가 수정 시각 내림차순으로 주므로 files[0] 이 실제 최신입니다. */
+      const follow = !userPickedLog && files[0] && files[0] !== sel;
+      const target = follow ? files[0] : sel;
       logSelect.innerHTML = "";
       files.forEach((f,i) => {
         const opt = document.createElement("option");
         opt.value = f; opt.textContent = i===0 ? `${f} (최신)` : f;
-        if (f===sel) opt.selected = true;
+        if (f===target) opt.selected = true;
         logSelect.appendChild(opt);
       });
+      if (follow) selectFile(files[0]);   /* 히스토리 재로드 + SSE 재연결 */
     }
   } catch (_) {}
 }, 30000);

@@ -76,6 +76,9 @@ typedef struct {
     TrackRuleState *states;  /* RulesEngine 소유, rules_destroy 에서 free */
     size_t          capacity;
     RulesConfig     config;
+    /* 현재 프레임 크기. bbox 가 화면 경계에 닿아 잘렸는지 판단하는 데 씁니다.
+     * config 가 아니라 여기에 두는 이유: 설정 hot-reload 로 덮이면 안 되는 런타임 값입니다. */
+    int frame_width, frame_height;
 } RulesEngine;
 
 int  rules_init(RulesEngine *re, size_t capacity, const RulesConfig *config,
@@ -84,6 +87,12 @@ void rules_destroy(RulesEngine *re);
 
 /* 실행 중 설정 교체 — 기존 latch 상태는 유지합니다. */
 void rules_update_config(RulesEngine *re, const RulesConfig *config);
+
+/*
+ * 프레임 크기를 알려 줍니다. 쓰러짐 판정이 "bbox 가 화면 밖으로 잘렸는가"를 확인하는 데 씁니다.
+ * 알려 주지 않으면(0) 잘림 검사를 건너뛰고 기존 bbox 비율 경로를 그대로 씁니다.
+ */
+void rules_set_frame_size(RulesEngine *re, int width, int height);
 
 /*
  * TrackList 전체를 순회하며 룰을 평가합니다.

@@ -1245,7 +1245,8 @@ static int process_frame(RgbFrame *frame, void *opaque,
         snprintf(tmsg, sizeof(tmsg),
                  "throttle=%s others_cpu=%.0f%% detect_every=%s tier2=%s stream_fps=%d",
                  throttle_level_name(lv), app->throttle.others_percent,
-                 dm > 0 ? "x" : "off", t2 > 0 ? "x" : "off",
+                 dm > 0 ? (dm == 1 ? "x1" : dm == 2 ? "x2" : "x4") : "off",
+                 t2 > 0 ? (t2 == 1 ? "x1" : "x2") : "off",
                  throttle_stream_fps(lv, 10));
         event_log_write(&app->event_log,
                         lv >= THROTTLE_HEAVY ? LOG_WARN : LOG_INFO, "throttle", tmsg);
@@ -1676,6 +1677,8 @@ static int process_frame(RgbFrame *frame, void *opaque,
         /* last_person_time 갱신 */
         if (app->detections.count > 0)
             app->last_person_time = now;
+        /* 쓰러짐 판정이 bbox 잘림을 확인할 수 있도록 프레임 크기를 알려 줍니다. */
+        rules_set_frame_size(&app->rules, frame->width, frame->height);
         rules_evaluate(&app->rules, &app->tracks, now, &app->event_log);
 
         /* Tier 2: detect_every_obj 주기마다 실행.

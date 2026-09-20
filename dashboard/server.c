@@ -306,10 +306,21 @@ static void serve_page(SOCKET s, const char *name) {
     free(buf);
 }
 
-/* qsort 비교 함수: 내림차순(최신 파일명이 앞으로)
- * 파일명이 YYYYMMDD_HHMMSS.db 형식이면 역알파벳 순 = 최신순이 됩니다. */
-static int cmp_str_desc(const void *a, const void *b) {
-    return strcmp(*(const char *const *)b, *(const char *const *)a);
+/*
+ * 로그 파일 목록 정렬 — 수정 시각 내림차순.
+ *
+ * 예전에는 파일명 역알파벳 순이었고 "YYYYMMDD_HHMMSS.db 형식이면 최신순이 된다"고
+ * 가정했습니다. 그 가정이 깨지는 순간 대시보드가 엉뚱한 파일을 "(최신)"으로 골라
+ * 자동 선택하고, 실제 이벤트는 아무 데도 표시되지 않습니다. 실제로 테스트용
+ * smoke_*.db 가 logs\ 에 하나 생긴 것만으로 재현됐습니다('s' > '2').
+ * 파일 시각을 직접 쓰면 이름 규칙에 기대지 않습니다.
+ */
+typedef struct { char *name; ULONGLONG mtime; } LogEntry;
+
+static int cmp_log_desc(const void *a, const void *b) {
+    const LogEntry *x = (const LogEntry *)a, *y = (const LogEntry *)b;
+    if (y->mtime != x->mtime) return y->mtime > x->mtime ? 1 : -1;
+    return strcmp(y->name, x->name);   /* 같은 시각이면 이름으로 안정 정렬 */
 }
 
 /* GET /api/logs → JSON 배열 ["20260829_162958.db", ...] (최신순) */
@@ -321,7 +332,7 @@ static void serve_log_list(SOCKET s) {
      * FindFirstFile 반환 순서는 NTFS에서도 보장되지 않으므로
      * 직접 qsort를 돌려야 files[0]이 항상 최신 파일이 됩니다. */
 #define MAX_LOG_FILES 400
-    char **names = (char **)calloc(MAX_LOG_FILES, sizeof(char *));
+    LogEntry *names = (LogEntry *)calloc(MAX_LOG_FILES, sizeof(LogEntry));
     if (!names) {
         send_header(s, 500, "application/json", 2);
         send(s, "[]", 2, 0);
@@ -337,24 +348,27 @@ static void serve_log_list(SOCKET s) {
             /* 성능 로그(_perf.db)는 이벤트 로그 목록에서 제외합니다. */
             if (strstr(fd.cFileName, "_perf.db")) continue;
             if (count >= MAX_LOG_FILES) break;
-            names[count] = _strdup(fd.cFileName);
-            if (names[count]) count++;
+            names[count].name = _strdup(fd.cFileName);
+            if (!names[count].name) continue;
+            names[count].mtime = ((ULONGLONG)fd.ftLastWriteTime.dwHighDateTime << 32)
+                               | fd.ftLastWriteTime.dwLowDateTime;
+            count++;
         } while (FindNextFileA(hFind, &fd));
         FindClose(hFind);
     }
 
-    qsort(names, (size_t)count, sizeof(char *), cmp_str_desc);
+    qsort(names, (size_t)count, sizeof(LogEntry), cmp_log_desc);
 
     char body[8192];
     int pos = 0;
     body[pos++] = '[';
     for (int i = 0; i < count; i++) {
         char esc[128];
-        json_str(names[i], esc, sizeof(esc));
+        json_str(names[i].name, esc, sizeof(esc));
         int n = snprintf(body + pos, (size_t)(sizeof(body) - pos - 4),
                          "%s%s", i == 0 ? "" : ",", esc);
         if (n > 0) pos += n;
-        free(names[i]);
+        free(names[i].name);
     }
     free(names);
     body[pos++] = ']';
