@@ -24,19 +24,29 @@ set(FFMPEG_ROOT "" CACHE PATH "FFmpeg development package root")
 
 find_path(ORT_INCLUDE_DIR onnxruntime_c_api.h
     HINTS "${ORT_ROOT}"
+          "C:/dev/onnxruntime-win-x64-1.26.0"
+          "C:/deps/onnxruntime"
+          "C:/deps/Microsoft.ML.OnnxRuntime.DirectML"
     PATH_SUFFIXES include build/native/include)
 find_library(ORT_LIBRARY NAMES onnxruntime
     HINTS "${ORT_ROOT}"
+          "C:/dev/onnxruntime-win-x64-1.26.0"
+          "C:/deps/onnxruntime"
+          "C:/deps/Microsoft.ML.OnnxRuntime.DirectML"
     PATH_SUFFIXES lib lib64 runtimes/win-x64/native runtimes/win-x86/native)
 
 find_path(FFMPEG_INCLUDE_DIR libavformat/avformat.h
     HINTS "${FFMPEG_ROOT}"
+          "C:/dev/ffmpeg-master-latest-win64-gpl-shared"
+          "C:/deps/ffmpeg"
     PATH_SUFFIXES include)
 set(FFMPEG_FOUND TRUE)
 foreach(component avformat avcodec avutil swscale avdevice)
     string(TOUPPER "${component}" component_upper)
     find_library(FFMPEG_${component_upper}_LIBRARY NAMES ${component}
         HINTS "${FFMPEG_ROOT}"
+              "C:/dev/ffmpeg-master-latest-win64-gpl-shared"
+              "C:/deps/ffmpeg"
         PATH_SUFFIXES lib lib64)
     if(NOT FFMPEG_${component_upper}_LIBRARY)
         set(FFMPEG_FOUND FALSE)
@@ -50,11 +60,17 @@ endforeach()
 if(ORT_INCLUDE_DIR AND ORT_LIBRARY AND FFMPEG_INCLUDE_DIR AND FFMPEG_FOUND)
     set(runtime_dlls)
     if(WIN32)
+        # ORT_ROOT/FFMPEG_ROOT가 비어 있어도 기본 탐색 경로에서 DLL을 복사합니다.
+        get_filename_component(_ort_dir "${ORT_LIBRARY}" DIRECTORY)
+        get_filename_component(_ffmpeg_dir "${FFMPEG_AVFORMAT_LIBRARY}" DIRECTORY)
         file(GLOB runtime_dlls CONFIGURE_DEPENDS
             "${ORT_ROOT}/runtimes/win-x64/native/*.dll"
             "${ORT_ROOT}/runtimes/win-x86/native/*.dll"
             "${ORT_ROOT}/lib/*.dll"
-            "${FFMPEG_ROOT}/bin/*.dll")
+            "${FFMPEG_ROOT}/bin/*.dll"
+            "${_ort_dir}/../bin/*.dll"
+            "${_ort_dir}/*.dll"
+            "${_ffmpeg_dir}/../bin/*.dll")
         if(DIRECTML_ROOT)
             file(GLOB directml_runtime_dll CONFIGURE_DEPENDS
                 "${DIRECTML_ROOT}/bin/x64-win/DirectML.dll"
@@ -210,6 +226,21 @@ else()
     target_link_libraries(test_surface PRIVATE m)
 endif()
 add_test(NAME surface_unit COMMAND test_surface)
+if(ORT_INCLUDE_DIR AND ORT_LIBRARY AND WIN32)
+    add_executable(evaluate_surface_video tests/evaluate_surface_video.c src/detector_ort.c
+        src/postprocess.c src/surface_config.c src/surface_monitor.c src/log.c src/platform.c third_party/sqlite/sqlite3.c)
+    target_include_directories(evaluate_surface_video PRIVATE include "${ORT_INCLUDE_DIR}")
+    target_link_libraries(evaluate_surface_video PRIVATE "${ORT_LIBRARY}" psapi)
+    target_compile_definitions(evaluate_surface_video PRIVATE _CRT_SECURE_NO_WARNINGS WIN32_LEAN_AND_MEAN ORT_DLL_IMPORT)
+    if(MSVC)
+        target_compile_options(evaluate_surface_video PRIVATE /O2 /utf-8)
+    endif()
+    get_filename_component(eval_ort_library_dir "${ORT_LIBRARY}" DIRECTORY)
+    file(GLOB eval_runtime_dlls "${eval_ort_library_dir}/onnxruntime*.dll")
+    foreach(runtime_dll IN LISTS eval_runtime_dlls)
+        add_custom_command(TARGET evaluate_surface_video POST_BUILD COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${runtime_dll}" "$<TARGET_FILE_DIR:evaluate_surface_video>")
+    endforeach()
+endif()
 set_tests_properties(surface_unit PROPERTIES LABELS "unit")
 if(WIN32)
     add_executable(test_surface_stream tests/test_surface_stream.c src/stream.c
