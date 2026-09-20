@@ -10,6 +10,7 @@
 #include "tracks.h"
 #include "door.h"
 #include "residue.h"
+#include "netaccess.h"
 #include "slot_monitor.h"
 
 #include <math.h>
@@ -1133,11 +1134,11 @@ static void test_door_state_debounce(void) {
     d.confirm_frames = 3;
     d.last_state = -1;
 
-    EXPECT_INT_EQ(door_check(&d, frame, 1, 1, 3, &changed), 0);
+    EXPECT_INT_EQ(door_check(&d, frame, 1, 1, 3, NULL, 0, &changed), 0);
     memset(frame, 255, sizeof(frame));
-    EXPECT_INT_EQ(door_check(&d, frame, 1, 1, 3, &changed), 0);
-    EXPECT_INT_EQ(door_check(&d, frame, 1, 1, 3, &changed), 0);
-    EXPECT_INT_EQ(door_check(&d, frame, 1, 1, 3, &changed), 1);
+    EXPECT_INT_EQ(door_check(&d, frame, 1, 1, 3, NULL, 0, &changed), 0);
+    EXPECT_INT_EQ(door_check(&d, frame, 1, 1, 3, NULL, 0, &changed), 0);
+    EXPECT_INT_EQ(door_check(&d, frame, 1, 1, 3, NULL, 0, &changed), 1);
     EXPECT_INT_EQ(changed, 1);
     door_destroy(&d);
 }
@@ -1829,9 +1830,261 @@ static void test_slot_monitor_cleared(void) {
     slot_monitor_destroy(&sm);
 }
 
+/* ── 자동 기준 캡처 · 접근 제어 ─────────────────────────────────────────── */
+
+static uint32_t be_ip(int a, int b, int c, int d) {
+    uint32_t v;
+    unsigned char *p = (unsigned char *)&v;
+    p[0] = (unsigned char)a; p[1] = (unsigned char)b;
+    p[2] = (unsigned char)c; p[3] = (unsigned char)d;
+    return v;
+}
+
+static void test_netaccess_subnet_and_pin_header(void) {
+    uint32_t mask24 = be_ip(255, 255, 255, 0);
+    char pin[64];
+    EXPECT_TRUE(netaccess_same_subnet(be_ip(192,168,0,10), be_ip(192,168,0,200), mask24));
+    EXPECT_TRUE(!netaccess_same_subnet(be_ip(192,168,0,10), be_ip(192,168,50,3), mask24)); /* 게스트 Wi-Fi */
+    EXPECT_TRUE(netaccess_is_loopback(be_ip(127,0,0,1)));
+    EXPECT_TRUE(netaccess_is_loopback(be_ip(127,5,6,7)));
+    EXPECT_TRUE(!netaccess_is_loopback(be_ip(128,0,0,1)));
+    EXPECT_TRUE(netaccess_extract_pin("POST /x HTTP/1.1\r\nHost: a\r\nx-hunik-pin:  4321 \r\n\r\n", pin, sizeof(pin)));
+    EXPECT_TRUE(strcmp(pin, "4321") == 0);
+    EXPECT_TRUE(!netaccess_extract_pin("POST /x HTTP/1.1\r\nHost: a\r\n\r\n{\"X-Hunik-Pin\":\"1\"}", pin, sizeof(pin))); /* 본문은 무시 */
+    EXPECT_TRUE(!netaccess_extract_pin("GET / HTTP/1.1\r\nX-Hunik-Pin: \r\n\r\n", pin, sizeof(pin)));               /* 빈 값 */
+    EXPECT_TRUE(!netaccess_extract_pin("GET / HTTP/1.1\r\nX-Hunik-Pin: 12 34\r\n\r\n", pin, sizeof(pin)));          /* 내부 공백 거부 */
+}
+
+static void test_residue_downsamples_fullres_baseline(void) {
+    /* 파일 기준(원본 해상도)이 gray(다운샘플 8)와 만나면 블록 중앙 점 샘플로 축소되어야 합니다.
+       예전에는 크기 불일치로 매 프레임 0 을 반환해 파일 기준이 있는 설치에서 감지가 죽어 있었습니다. */
+    ResidueMonitor r = make_residue_monitor();
+    GrayBuf gray = make_gray1(50);
+    int i;
+    ASSERT_TRUE(gray.data != NULL);
+    r.baseline = (uint8_t *)malloc(64);
+    ASSERT_TRUE(r.baseline != NULL);
+    for (i = 0; i < 64; i++) r.baseline[i] = 0;
+    r.baseline[4 * 8 + 4] = 50; /* 블록 중앙 (4,4) — gray_buf_update_luma 와 같은 샘플 위치 */
+    r.baseline_w = 8; r.baseline_h = 8; r.baseline_ready = 1;
+    residue_evaluate(&r, &gray, NULL, 0, NULL, 0, 1.0, NULL);
+    EXPECT_INT_EQ(r.baseline_w, 1);
+    EXPECT_INT_EQ(r.baseline_h, 1);
+    EXPECT_INT_EQ(r.baseline[0], 50);
+    EXPECT_INT_EQ(r.baseline_ready, 1);
+    free(gray.data);
+    residue_destroy(&r);
+}
+
+static void test_residue_auto_init_waits_for_quiet(void) {
+    ResidueMonitor r = make_residue_monitor();
+    GrayBuf gray = make_gray1(30);
+    ASSERT_TRUE(gray.data != NULL);
+    r.config.auto_enabled = 1;
+    r.config.auto_quiet_seconds = 10.0;
+    /* 사람 없음·정지·카메라 정상이 10초 유지돼야 기준을 잡습니다 */
+    EXPECT_INT_EQ(residue_auto_init(&r, &gray, 0, 1, 0.0, 1.0), 0);
+    EXPECT_INT_EQ(residue_auto_init(&r, &gray, 0, 1, 0.0, 6.0), 0);
+    EXPECT_INT_EQ(residue_auto_init(&r, &gray, 1, 1, 0.0, 8.0), 0);  /* 사람 등장 → 처음부터 */
+    EXPECT_INT_EQ(residue_auto_init(&r, &gray, 0, 1, 0.0, 9.0), 0);
+    EXPECT_INT_EQ(residue_auto_init(&r, &gray, 0, 1, 0.0, 15.0), 0); /* 9 부터 6초 — 아직 */
+    EXPECT_INT_EQ(residue_auto_init(&r, &gray, 0, 1, 0.5, 18.0), 0); /* 움직임 → 처음부터 */
+    EXPECT_INT_EQ(residue_auto_init(&r, &gray, 0, 1, 0.0, 19.0), 0);
+    EXPECT_INT_EQ(residue_auto_init(&r, &gray, 0, 1, 0.0, 29.5), 1); /* 19 부터 10.5초 */
+    EXPECT_INT_EQ(r.baseline_ready, 1);
+    EXPECT_INT_EQ(r.baseline[0], 30);
+    EXPECT_INT_EQ(r.auto_phase, 2);
+    EXPECT_INT_EQ(residue_auto_init(&r, &gray, 0, 1, 0.0, 40.0), 0); /* 이미 있음 */
+    free(gray.data);
+    residue_destroy(&r);
+}
+
+static void test_door_auto_captures_closed_then_open(void) {
+    /* 16×16 프레임, 문 ROI (4,4)-(12,12). 사람 없음, 카메라 정상.
+       1) 정지·무인 1초 → 닫힘 기준(전부 0) 저장  2) ROI 만 200 으로 변하고 0.5초 유지 → 열림 저장.
+       경로 NULL 이라 파일은 쓰지 않고 메모리에만 설치합니다. */
+    DoorMonitor d;
+    uint8_t frame[16 * 16 * 3];
+    int x, y, rc;
+    memset(&d, 0, sizeof(d));
+    d.enabled = 1; d.auto_enabled = 1;
+    d.roi_x = 4; d.roi_y = 4; d.roi_w = 8; d.roi_h = 8;
+    d.auto_quiet_seconds = 1.0; d.auto_open_hold_seconds = 0.5; d.auto_open_min_l1 = 25.0f;
+    memset(frame, 0, sizeof(frame));
+
+    EXPECT_INT_EQ(door_auto_update(&d, frame, 16, 16, 48, NULL, 0, 1, 1.0, NULL, NULL), 0); /* 첫 프레임: 정지 판정 불가 */
+    EXPECT_INT_EQ(d.auto_phase, DOOR_AUTO_WAIT_CLOSED);
+    EXPECT_INT_EQ(door_auto_update(&d, frame, 16, 16, 48, NULL, 0, 1, 1.5, NULL, NULL), 0);
+    rc = door_auto_update(&d, frame, 16, 16, 48, NULL, 0, 1, 2.6, NULL, NULL);
+    EXPECT_INT_EQ(rc, 1);
+    ASSERT_TRUE(d.ref_closed_rgb != NULL);
+    EXPECT_INT_EQ(d.auto_phase, DOOR_AUTO_WAIT_OPEN);
+
+    /* 사람이 ROI 근처(확장 영역 안)에 있으면 아무것도 하지 않아야 합니다 */
+    {
+        GrayRect person = { 0.0f, 0.0f, 5.0f, 5.0f };
+        EXPECT_INT_EQ(door_auto_update(&d, frame, 16, 16, 48, &person, 1, 1, 3.0, NULL, NULL), 0);
+    }
+
+    /* 문 열림: ROI 안만 200, 밖은 0 → ROI L1(200) ≫ 전체 샘플 L1(50) */
+    for (y = 4; y < 12; y++) for (x = 4; x < 12; x++) {
+        frame[(y * 16 + x) * 3 + 0] = 200;
+        frame[(y * 16 + x) * 3 + 1] = 200;
+        frame[(y * 16 + x) * 3 + 2] = 200;
+    }
+    EXPECT_INT_EQ(door_auto_update(&d, frame, 16, 16, 48, NULL, 0, 1, 4.0, NULL, NULL), 0); /* 정지 판정용 첫 프레임 */
+    EXPECT_INT_EQ(door_auto_update(&d, frame, 16, 16, 48, NULL, 0, 1, 4.2, NULL, NULL), 0); /* 후보 시작 */
+    rc = door_auto_update(&d, frame, 16, 16, 48, NULL, 0, 1, 4.8, NULL, NULL);
+    EXPECT_INT_EQ(rc, 2);
+    ASSERT_TRUE(d.ref_open_rgb != NULL);
+    EXPECT_INT_EQ(d.auto_phase, DOOR_AUTO_DONE);
+    EXPECT_INT_EQ(door_auto_update(&d, frame, 16, 16, 48, NULL, 0, 1, 5.0, NULL, NULL), 0);
+    door_destroy(&d);
+}
+
+static void test_door_auto_stall_detection(void) {
+    /* 유리문 시나리오: ROI 안에서 계속 변화가 일어나면(유리 너머 사람·차) 정지 조건이 영원히
+       충족되지 않습니다. quiet 의 6배가 지나도록 누적 대기가 절반도 못 차면 auto_stalled=1 로
+       설정 점검을 알려야 합니다 — 조용히 대기만 하면 "켜져 있는데 아무 일도 없는" 상태가 됩니다. */
+    DoorMonitor d;
+    uint8_t frame[16 * 16 * 3];
+    int i, x, y;
+    memset(&d, 0, sizeof(d));
+    d.enabled = 1; d.auto_enabled = 1;
+    d.roi_x = 4; d.roi_y = 4; d.roi_w = 8; d.roi_h = 8;
+    d.auto_quiet_seconds = 10.0; d.auto_open_hold_seconds = 1.0; d.auto_open_min_l1 = 25.0f;
+    memset(frame, 0, sizeof(frame));
+
+    for (i = 0; i < 12; i++) {
+        int v = (i % 2) ? 20 : 200;  /* 매 프레임 ROI 를 뒤집어 정지 조건을 계속 깨뜨림 */
+        for (y = 4; y < 12; y++) for (x = 4; x < 12; x++) {
+            frame[(y * 16 + x) * 3 + 0] = (uint8_t)v;
+            frame[(y * 16 + x) * 3 + 1] = (uint8_t)v;
+            frame[(y * 16 + x) * 3 + 2] = (uint8_t)v;
+        }
+        door_auto_update(&d, frame, 16, 16, 48, NULL, 0, 1, (double)i * 10.0, NULL, NULL);
+        if (i * 10 <= 60) EXPECT_INT_EQ(d.auto_stalled, 0); /* 임계 전에는 조용히 대기 */
+    }
+    EXPECT_INT_EQ(d.auto_phase, DOOR_AUTO_WAIT_CLOSED);
+    EXPECT_INT_EQ(d.auto_stalled, 1);
+    EXPECT_TRUE(d.ref_closed_rgb == NULL); /* 정체 중에 엉뚱한 기준을 잡아 버리면 안 됨 */
+
+    /* ROI 가 안정되면 정상 경로로 복귀해 기준을 잡고 정체 표시가 풀려야 합니다 */
+    for (i = 0; i < 3; i++)
+        door_auto_update(&d, frame, 16, 16, 48, NULL, 0, 1, 200.0 + i * 6.0, NULL, NULL);
+    EXPECT_INT_EQ(d.auto_stalled, 0);
+    ASSERT_TRUE(d.ref_closed_rgb != NULL);
+    EXPECT_INT_EQ(d.auto_phase, DOOR_AUTO_WAIT_OPEN);
+    door_destroy(&d);
+}
+
+/* 16x16 프레임, ROI (4,4)-(12,12) 인 DoorMonitor 를 만듭니다. band_ratio=0.3 → 밴드는 y 4..5. */
+static void door_band_fixture(DoorMonitor *d) {
+    memset(d, 0, sizeof(*d));
+    d->enabled = 1;
+    d->roi_x = 4; d->roi_y = 4; d->roi_w = 8; d->roi_h = 8;
+    d->confirm_frames = 1;
+    d->last_state = -1;
+    d->band_ratio = 0.3f;
+    d->band_valid = -1;
+    d->ref_closed_w = d->ref_open_w = 16;
+    d->ref_closed_h = d->ref_open_h = 16;
+    d->ref_closed_rgb = (uint8_t *)calloc(16 * 16 * 3, 1);
+    d->ref_open_rgb   = (uint8_t *)calloc(16 * 16 * 3, 1);
+}
+
+/* [y_from, y_to) × ROI 가로 범위를 값 v 로 채웁니다. */
+static void fill_rows(uint8_t *buf, int y_from, int y_to, int v) {
+    int x, y;
+    for (y = y_from; y < y_to; y++)
+        for (x = 4; x < 12; x++) {
+            buf[(y * 16 + x) * 3 + 0] = (uint8_t)v;
+            buf[(y * 16 + x) * 3 + 1] = (uint8_t)v;
+            buf[(y * 16 + x) * 3 + 2] = (uint8_t)v;
+        }
+}
+
+static void test_door_band_judges_while_occluded(void) {
+    /* 문 전체가 열림에서 달라지는 정상 케이스. 사람이 문 아래쪽을 가려도 머리 위 밴드로
+       열림을 맞혀야 합니다 — 전체 ROI 로 비교하면 사람 픽셀에 눌려 판정이 뒤집힙니다. */
+    DoorMonitor d;
+    uint8_t frame[16 * 16 * 3];
+    GrayRect person = { 4.0f, 7.0f, 12.0f, 14.0f }; /* ROI 아래쪽을 덮음 */
+    int changed = 0;
+    door_band_fixture(&d);
+    ASSERT_TRUE(d.ref_closed_rgb != NULL && d.ref_open_rgb != NULL);
+    fill_rows(d.ref_open_rgb, 4, 12, 200);          /* 열림: ROI 전체가 밝아짐 */
+
+    /* 현재 프레임: 문은 열려 있지만(밴드=200) 아래쪽은 어두운 옷을 입은 사람이 가려 0.
+       전체 ROI 평균: 닫힘까지 (2*200+6*0)/8=50, 열림까지 (2*0+6*200)/8=150 → 닫힘으로 오판.
+       밴드(y4..5)만 보면 닫힘까지 200, 열림까지 0 → 열림. 가림이 결과를 뒤집는 상황입니다. */
+    memset(frame, 0, sizeof(frame));
+    fill_rows(frame, 4, 6, 200);
+
+    EXPECT_INT_EQ(door_check(&d, frame, 16, 16, 48, &person, 1, &changed), 1);
+    EXPECT_INT_EQ(d.band_valid, 1);
+    EXPECT_INT_EQ(d.band_active, 1);
+
+    /* 같은 프레임을 가림 정보 없이 넣으면 전체 ROI 비교가 닫힘으로 오판합니다 —
+       밴드가 실제로 결과를 바로잡았다는 대조 확인입니다. */
+    d.last_state = -1; d.candidate_state = -1; d.candidate_frames = 0;
+    EXPECT_INT_EQ(door_check(&d, frame, 16, 16, 48, NULL, 0, &changed), 0);
+    EXPECT_INT_EQ(d.band_active, 0);
+    door_destroy(&d);
+}
+
+static void test_door_band_rejects_transom_roi(void) {
+    /* ROI 를 문틀 위(상인방)까지 잡아 밴드 구간이 열림·닫힘 간에 동일한 경우.
+       밴드를 믿고 판정하면 계속 틀리므로, 무효로 표시하고 가림 중에는 보류해야 합니다. */
+    DoorMonitor d;
+    uint8_t frame[16 * 16 * 3];
+    GrayRect person = { 4.0f, 7.0f, 12.0f, 14.0f };
+    int changed = 0;
+    door_band_fixture(&d);
+    ASSERT_TRUE(d.ref_closed_rgb != NULL && d.ref_open_rgb != NULL);
+    fill_rows(d.ref_open_rgb, 6, 12, 200);          /* 밴드(y4..5)는 그대로, 아래만 변함 */
+
+    memset(frame, 0, sizeof(frame));
+    fill_rows(frame, 6, 12, 200);
+
+    EXPECT_INT_EQ(door_check(&d, frame, 16, 16, 48, &person, 1, &changed), -1); /* 판정 보류 */
+    EXPECT_INT_EQ(d.band_valid, 0);
+    EXPECT_INT_EQ(d.band_active, 0);
+    /* 가림이 풀리면 전체 ROI 로 정상 판정 */
+    EXPECT_INT_EQ(door_check(&d, frame, 16, 16, 48, NULL, 0, &changed), 1);
+    door_destroy(&d);
+}
+
+static void test_door_band_disabled_holds_when_occluded(void) {
+    /* band_ratio=0 이면 밴드를 쓰지 않습니다. 이때 가려지면 억지 판정 대신 보류해야 합니다 —
+       문 앞에서 통화하는 손님 하나로 door_open 오탐이 나던 경로를 막습니다. */
+    DoorMonitor d;
+    uint8_t frame[16 * 16 * 3];
+    GrayRect person = { 4.0f, 4.0f, 12.0f, 12.0f }; /* ROI 전체를 덮음 */
+    int changed = 0;
+    door_band_fixture(&d);
+    ASSERT_TRUE(d.ref_closed_rgb != NULL && d.ref_open_rgb != NULL);
+    d.band_ratio = 0.0f;
+    fill_rows(d.ref_open_rgb, 4, 12, 200);
+    memset(frame, 0, sizeof(frame));
+    fill_rows(frame, 4, 12, 130);                   /* 사람 픽셀 — 열림 쪽에 더 가까움 */
+
+    EXPECT_INT_EQ(door_check(&d, frame, 16, 16, 48, &person, 1, &changed), -1);
+    EXPECT_INT_EQ(changed, 0);
+    door_destroy(&d);
+}
+
 int main(void) {
     TEST_SUITE_BEGIN(core_unit_tests);
     RUN_TEST(test_letterbox);
+    RUN_TEST(test_netaccess_subnet_and_pin_header);
+    RUN_TEST(test_door_auto_stall_detection);
+    RUN_TEST(test_door_band_judges_while_occluded);
+    RUN_TEST(test_door_band_rejects_transom_roi);
+    RUN_TEST(test_door_band_disabled_holds_when_occluded);
+    RUN_TEST(test_residue_downsamples_fullres_baseline);
+    RUN_TEST(test_residue_auto_init_waits_for_quiet);
+    RUN_TEST(test_door_auto_captures_closed_then_open);
     RUN_TEST(test_fast_letterbox_matches_reference);
     RUN_TEST(test_decode_and_nms);
     RUN_TEST(test_draw_bounds);
