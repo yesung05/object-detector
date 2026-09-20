@@ -894,6 +894,8 @@ static void apply_vanish_config(RulesConfig *rc, const Config *cfg) {
         config_float(cfg, "vanish_min_score", 0.35f, 0.0f, 1.0f);
     rc->vanish_edge_margin =
         config_float(cfg, "vanish_edge_margin", 0.08f, 0.0f, 0.4f);
+    rc->vanish_require_residue =
+        (int)config_long(cfg, "vanish_require_residue", 0, 0, 1);
 }
 
 /* 키오스크 ROI 를 rules 설정에 채웁니다. 미설정이면 roi_kiosk_set = 0 이 되어
@@ -1846,6 +1848,20 @@ static int process_frame(RgbFrame *frame, void *opaque,
             ev.near_edge = (t->box.x1 <= mx || t->box.y1 <= my ||
                             t->box.x2 >= (float)frame->width  - mx ||
                             t->box.y2 >= (float)frame->height - my);
+            /* 문 ROI 를 사방 25% 넓혀 문 앞에 선 사람까지 포함합니다. ROI 미지정이면
+               어디가 문인지 모르므로 0 — 이때는 가장자리 규칙만으로 판단합니다. */
+            if (app->door.roi_w > 0 && app->door.roi_h > 0) {
+                float dmx = (float)app->door.roi_w * 0.25f;
+                float dmy = (float)app->door.roi_h * 0.25f;
+                float dx0 = (float)app->door.roi_x - dmx;
+                float dy0 = (float)app->door.roi_y - dmy;
+                float dx1 = (float)(app->door.roi_x + app->door.roi_w) + dmx;
+                float dy1 = (float)(app->door.roi_y + app->door.roi_h) + dmy;
+                ev.near_door = !(t->box.x2 < dx0 || t->box.x1 > dx1 ||
+                                 t->box.y2 < dy0 || t->box.y1 > dy1);
+            } else {
+                ev.near_door = 0;
+            }
             ev.residue_at_spot = residue_at_box(app, &t->box);
             if (rules_check_vanish(&app->rules, t, &ev, now, &app->event_log) > 0)
                 app->event_count++;
