@@ -53,6 +53,15 @@ typedef struct {
     double     head_y_prev_time;           /* 직전 갱신 시각 */
     int        head_valid;                 /* 패치가 한 번이라도 캡처됐으면 1 */
     int        fall_sudden;               /* 머리 낙하 속도 임계 초과 시 1 (즉시 감지) */
+
+    /* ── 미확인 소실 래치 ────────────────────────────────────────────────
+     * rules.c 가 아니라 Track 에 두는 이유: rules.c 는 active=0 이 되는 즉시
+     * 트랙별 상태 슬롯을 반납하는데, 소실 판정이 필요한 시점이 바로 그때부터입니다.
+     * Track 슬롯은 limbo 동안 유지되므로 래치가 살아남습니다.
+     * 슬롯 재사용 시 tracks.c 가 memset 으로 0 초기화하므로 이전 사람의 상태가
+     * 새 사람에게 새지 않습니다. */
+    int        vanish_warned;              /* person_unaccounted 발화함 */
+    int        vanish_escalated;           /* person_unaccounted_residue 발화함 */
 } Track;
 
 typedef struct {

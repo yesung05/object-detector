@@ -39,6 +39,20 @@ typedef struct {
     /* Tier 2 물체 감지 설정 */
     float  animal_iou_threshold;  /* 기본 0.15 — 동물/가구 IoU 판정 기준 */
     int    no_cup_margin;         /* 기본 1    — 미구매 착석 판정 여유분 */
+    /* ── 미확인 소실 ─────────────────────────────────────────────────────
+     * CCTV 사각(斜角)에서 바닥에 누운 사람을 포즈 모델이 아예 탐지하지 못하는
+     * 화각이 있습니다. bbox 가 없으면 fall_aspect_ratio 경로가 통째로 죽으므로,
+     * "사라졌다" 자체를 별도 신호로 씁니다.
+     *
+     * 이름을 쓰러짐과 분리한 이유: 칸막이 뒤로 걸어간 경우도 똑같이 사라집니다.
+     * 이를 person_fallen 으로 올리면 오탐이 섞여 진짜 응급 알림의 신뢰가 무너집니다.
+     * 그래서 사실만 말하는 person_unaccounted(WARN)를 먼저 내고, 그 자리에 움직이지
+     * 않는 것이 남아 있을 때만 person_unaccounted_residue(ERROR)로 올립니다. */
+    int    vanish_enabled;            /* 기본 1 */
+    double vanish_hold_seconds;       /* 기본 5  — 이 시간 이상 미매칭이면 소실로 봄 */
+    double vanish_min_dwell_seconds;  /* 기본 3  — 이보다 짧게 추적된 트랙은 무시(깜빡임) */
+    float  vanish_min_score;          /* 기본 0.35 — 사라지기 직전 신뢰도가 이 이상이어야 함 */
+    float  vanish_edge_margin;        /* 기본 0.08 — 화면 가장자리 비율. 문 정보가 없을 때만 사용 */
 } RulesConfig;
 
 /*
@@ -86,5 +100,31 @@ void rules_evaluate(RulesEngine *re, TrackList *tl, double now, EventLog *elog);
  */
 void rules_evaluate_objects(RulesEngine *re, const DetectionList *objs,
                              const TrackList *tl, double now, EventLog *elog);
+
+/*
+ * 소실 판정에 필요한 외부 증거입니다. rules.c 는 프레임 크기·문 상태·픽셀을 모르므로
+ * 호출자(main.c)가 재서 넘깁니다. 이렇게 나눠 두면 규칙 자체를 영상 없이 시험할 수 있습니다.
+ */
+typedef struct {
+    /* 사라진 뒤 문이 열린 적이 있는가. 1=있음(정상 퇴장 가능) 0=닫힌 채였음 -1=알 수 없음.
+     * 문이 닫힌 채였다면 나갈 수 없었다는 뜻이라, 문 앞이라고 무시할 게 아니라
+     * 오히려 강한 이상 신호가 됩니다. */
+    int door_can_exit;
+    /* 마지막 위치에 청결 기준 대비 변화가 남아 있는가. 1=남음 0=없음 -1=확인 불가.
+     * 쓰러진 사람은 그 자리에 남고, 칸막이 뒤로 간 사람은 바닥이 기준으로 돌아옵니다. */
+    int residue_at_spot;
+    /* 마지막 위치가 화면 가장자리인가 — 화각 밖으로 걸어 나갔을 가능성. */
+    int near_edge;
+} VanishEvidence;
+
+/*
+ * 트랙 하나의 소실 여부를 판정합니다. 활성·비활성 트랙 모두에 대해 매 프레임 호출하세요.
+ * 추론 프레임으로 제한하면 안 됩니다 — 소실은 "추론이 사람을 못 찾는 상태"라서
+ * 추론 주기와 무관하게 시간이 흐릅니다.
+ *
+ * 반환: 0=변화 없음, 1=person_unaccounted 발화, 2=person_unaccounted_residue 발화
+ */
+int rules_check_vanish(RulesEngine *re, Track *t, const VanishEvidence *ev,
+                       double now, EventLog *elog);
 
 #endif /* RULES_H */
