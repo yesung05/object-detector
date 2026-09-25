@@ -161,7 +161,10 @@ $cmdArgs = @(
 )
 if ($cameraDevice) {
     $cmdArgs += "--camera-format", "dshow", "--camera-device", $cameraDevice
-    $cmdArgs += "--camera-size", "1280x720", "--camera-fps", "15"
+    # [수정 2026-09-21] HP TrueVision 등 내장 카메라는 YUY2에서 15fps를 지원하지 않아
+    # avformat_open_input I/O error가 발생했음. 30fps는 거의 모든 dshow 카메라가 지원.
+    # 발열 억제(15fps)는 media_ffmpeg.c 3차 폴백 + --detect-every 5 조합으로 대응.
+    $cmdArgs += "--camera-size", "1280x720", "--camera-fps", "30"
 }
 
 # Tier 2 (object): FP32 first, INT8 fallback -- same reasoning as Tier 1 above.

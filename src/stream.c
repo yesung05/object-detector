@@ -77,8 +77,11 @@ static uint32_t  g_seq    = 0;    /* 프레임 일련번호: 변경 감지용 */
 static HANDLE    g_accept_thread = NULL;
 static SOCKET    g_srv = INVALID_SOCKET;
 static char      g_data_dir[MAX_PATH] = "."; /* door_reference.raw 저장 위치 */
-static volatile int g_door_state   = -1; /* -1=알 수 없음, 0=닫힘, 1=열림 */
-static volatile int g_door_enabled =  0; /* 감지 활성 여부 */
+static volatile int  g_door_state   = -1; /* -1=알 수 없음, 0=닫힘, 1=열림 */
+static volatile int  g_door_enabled =  0; /* 감지 활성 여부 */
+/* POST /door/force-closed 요청 pending 플래그. InterlockedExchange 로만 건드립니다.
+ * 클라이언트 스레드가 1로 세팅 → main 스레드가 stream_pop_force_closed()로 꺼냄. */
+static volatile LONG g_force_closed =  0;
 static volatile LONG g_clients     =  0; /* /stream 연결 수 (Interlocked 로만 변경) */
 static ULONGLONG     g_last_push_ms = 0; /* 마지막으로 받아들인 프레임 시각 */
 /* 적응형 감속이 낮출 수 있는 전송 FPS. 키오스크가 바쁠 때 JPEG 인코딩 부하를 줄입니다. */
@@ -109,6 +112,11 @@ void stream_set_max_fps(int fps) {
 void stream_set_door_state  (int state)   { g_door_state   = state;   }
 void stream_set_door_enabled(int enabled) { g_door_enabled = enabled; }
 int  stream_client_count    (void)        { return (int)g_clients;    }
+
+/* 클라이언트 스레드가 세팅한 force-closed 요청을 꺼냅니다. main 스레드 전용. */
+int stream_pop_force_closed(void) {
+    return (int)InterlockedExchange(&g_force_closed, 0);
+}
 
 /* ── 개인정보 보호 · 접근 제어 상태 ─────────────────────────────────────────
  * g_running 이 0 인 동안(stream_start 전)은 다른 스레드가 없으므로 락 없이 씁니다 —
@@ -711,6 +719,14 @@ static DWORD WINAPI client_thread(LPVOID arg) {
         access_log(0, "door reference %s captured by %s (%s)",
                    is_open ? "open" : "closed", acc.ip, netaccess_tier_name(acc.tier));
         handle_door_save(s, is_open);
+
+    } else if (strcmp(url, "/door/force-closed") == 0 && is_post) {
+        /* POST /door/force-closed → DoorMonitor.last_state를 닫힘으로 강제 지정.
+         * 오탐(열려있다고 잘못 판정된 상황) 즉시 수정용. 이후 카메라 판정이 계속
+         * 열림을 반환하면 confirm_frames 후 다시 열림으로 전환됩니다. */
+        InterlockedExchange(&g_force_closed, 1);
+        access_log(0, "door force-closed by %s (%s)", acc.ip, netaccess_tier_name(acc.tier));
+        send_json(s, 200, "{\"ok\":true}");
 
     } else if (strcmp(url, "/residue/save") == 0 && is_post) {
         access_log(0, "residue clean reference captured by %s (%s)",

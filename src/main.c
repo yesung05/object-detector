@@ -605,9 +605,11 @@ static int parse_arguments(int argc, char **argv, Arguments *args) {
         if (!args->camera_device && args->input)
             fprintf(stderr, "camera: auto-detected %s\n", args->input);
         args->media.realtime = 1;
-        /* i5-4200U 발열 억제: --camera-fps 미지정 시 15fps로 고정 */
+        /* [수정 2026-09-21] 15fps → 30fps: HP TrueVision 등 내장 카메라는 YUY2 15fps를
+         * 지원하지 않아 avformat_open_input I/O error가 발생했음. 30fps는 거의 모든
+         * dshow 카메라가 지원하는 최소 공약수. 발열 억제는 --detect-every 5 가 담당. */
         if (!args->media.framerate)
-            args->media.framerate = "15";
+            args->media.framerate = "30";
         if (!args->media.input_format || !args->input) {
             fprintf(stderr,
                     "no default camera backend on this platform; use "
@@ -1828,6 +1830,21 @@ static int process_frame(RgbFrame *frame, void *opaque,
         } else if (!app->door.auto_stalled) {
             app->door_stall_logged = 0;
         }
+    }
+
+    /* 대시보드 "닫힘으로 리셋" 요청 처리.
+     * door.enabled 여부와 관계없이 확인합니다 — 감지가 꺼진 상태에서 눌러도 last_state가
+     * 초기화되어 감지를 다시 켰을 때 이전 열림 판정이 남아있지 않게 합니다. */
+    if (app->stream_port > 0 && stream_pop_force_closed()) {
+        app->door.last_state       = 0;
+        app->door.candidate_state  = 0;
+        app->door.candidate_frames = 0;
+        app->door.open_since       = -1.0;
+        app->door.open_event_fired = 0;
+        if (app->stream_port > 0)
+            stream_set_door_state(0);
+        event_log_write(&app->event_log, LOG_INFO, "door",
+                        "state=closed forced_by=dashboard");
     }
 
     /* ── 미확인 소실 ───────────────────────────────────────────────────────

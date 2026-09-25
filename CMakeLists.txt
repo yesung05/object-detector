@@ -22,22 +22,48 @@ set(ORT_ROOT "" CACHE PATH "ONNX Runtime or Microsoft.ML.OnnxRuntime.DirectML pa
 set(DIRECTML_ROOT "" CACHE PATH "Microsoft.AI.DirectML package root (optional DLL copy)")
 set(FFMPEG_ROOT "" CACHE PATH "FFmpeg development package root")
 
+# [수정 2026-09-21] 빌드 경로 자동화: -DORT_ROOT/-DFFMPEG_ROOT 없이도 동작하도록
+# 우선순위: (1) CMake 캐시 변수 (2) 환경 변수 (3) C:/dev/* 와일드카드 자동 탐색
+if(NOT ORT_ROOT AND DEFINED ENV{ORT_ROOT})
+    set(ORT_ROOT "$ENV{ORT_ROOT}")
+endif()
+if(NOT FFMPEG_ROOT AND DEFINED ENV{FFMPEG_ROOT})
+    set(FFMPEG_ROOT "$ENV{FFMPEG_ROOT}")
+endif()
+
+# 와일드카드로 C:/dev/onnxruntime-win-x64-* 중 가장 최신 버전을 선택합니다.
+if(NOT ORT_ROOT)
+    file(GLOB _ort_candidates LIST_DIRECTORIES true
+        "C:/dev/onnxruntime-win-x64-*"
+        "C:/dev/onnxruntime-win-x64-gpu-*")
+    if(_ort_candidates)
+        list(SORT _ort_candidates ORDER DESCENDING)
+        list(GET _ort_candidates 0 ORT_ROOT)
+    endif()
+endif()
+if(NOT FFMPEG_ROOT)
+    file(GLOB _ffmpeg_candidates LIST_DIRECTORIES true
+        "C:/dev/ffmpeg-*-win64-*-shared"
+        "C:/dev/ffmpeg-*-win64-*")
+    if(_ffmpeg_candidates)
+        list(SORT _ffmpeg_candidates ORDER DESCENDING)
+        list(GET _ffmpeg_candidates 0 FFMPEG_ROOT)
+    endif()
+endif()
+
 find_path(ORT_INCLUDE_DIR onnxruntime_c_api.h
     HINTS "${ORT_ROOT}"
-          "C:/dev/onnxruntime-win-x64-1.26.0"
           "C:/deps/onnxruntime"
           "C:/deps/Microsoft.ML.OnnxRuntime.DirectML"
     PATH_SUFFIXES include build/native/include)
 find_library(ORT_LIBRARY NAMES onnxruntime
     HINTS "${ORT_ROOT}"
-          "C:/dev/onnxruntime-win-x64-1.26.0"
           "C:/deps/onnxruntime"
           "C:/deps/Microsoft.ML.OnnxRuntime.DirectML"
     PATH_SUFFIXES lib lib64 runtimes/win-x64/native runtimes/win-x86/native)
 
 find_path(FFMPEG_INCLUDE_DIR libavformat/avformat.h
     HINTS "${FFMPEG_ROOT}"
-          "C:/dev/ffmpeg-master-latest-win64-gpl-shared"
           "C:/deps/ffmpeg"
     PATH_SUFFIXES include)
 set(FFMPEG_FOUND TRUE)
@@ -45,7 +71,6 @@ foreach(component avformat avcodec avutil swscale avdevice)
     string(TOUPPER "${component}" component_upper)
     find_library(FFMPEG_${component_upper}_LIBRARY NAMES ${component}
         HINTS "${FFMPEG_ROOT}"
-              "C:/dev/ffmpeg-master-latest-win64-gpl-shared"
               "C:/deps/ffmpeg"
         PATH_SUFFIXES lib lib64)
     if(NOT FFMPEG_${component_upper}_LIBRARY)
