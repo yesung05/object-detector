@@ -1,4 +1,6 @@
+#include "calib.h"
 #include "camera_health.h"
+#include "capture.h"
 #include "perf_log.h"
 #include "slot_monitor.h"
 #include "surface_monitor.h"
@@ -41,6 +43,14 @@
 typedef struct {
     Detector *detector;
     DetectionList detections;
+    /*
+     * 2단계 매칭용 낮은 신뢰도 박스. 추론 직후 detections 에서 keep_score 미만을 옮겨 둡니다.
+     * detections 에는 기준 이상만 남으므로 그리기·로그·규칙·잔류물 등 다른 소비자는
+     * 예전과 똑같은 박스만 봅니다. 트랙을 잇는 데만 쓰입니다.
+     * 소유: AppContext, detection_list_destroy 로 해제.
+     */
+    DetectionList low_detections;
+    float    keep_score;          /* 0 이면 2단계 매칭 비활성 (검출기 신뢰도를 낮추지 않음) */
     LightTracker *tracker;
     FILE *detection_log;
     FILE *keypoint_log;   /* --keypoints CSV (박스당 관절 좌표), NULL 이면 비활성 */
@@ -119,6 +129,7 @@ typedef struct {
     int          gray_from_luma; /* 1이면 디코더 Y 평면 직접 사용, 0이면 RGB 폴백 */
     int          gray_path_logged;
     CameraHealth cam_health;     /* 카메라 장애 감지 */
+    CameraHealthConfig cam_health_cfg; /* config.json 값 — 첫 프레임 초기화·재연결 시 사용 */
     int          cam_health_init_done;
     TrackList    tracks;
     RulesEngine  rules;
@@ -144,6 +155,14 @@ typedef struct {
      */
     GrayRect     ignore_roi[16];   /* x1,y1,x2,y2 로 변환해 보관 */
     int          ignore_roi_count;
+    /*
+     * ignore_roi 는 [0, manual) 수동 설정 + [manual, count) 안정화 자동 결과입니다.
+     * 두 출처를 따로 들고 있는 이유: config hot-reload 는 수동 부분만 다시 읽고,
+     * 안정화 결과는 calibration.json 에서만 오므로 한쪽 갱신이 다른 쪽을 지우면 안 됩니다.
+     */
+    int          ignore_manual_count;
+    GrayRect     auto_ignore[16];
+    int          auto_ignore_count;
     /* 영업시간. 이 밖에서는 추론을 아예 하지 않고 카메라 헬스만 봅니다. */
     int          active_hours_set;
     int          active_start_min;
@@ -217,6 +236,29 @@ typedef struct {
      * frame->luma가 있으면 그대로 사용하고, 없으면 RGB→Gray 변환 결과를 씁니다. */
     uint8_t       *full_luma;         /* width×height 바이트, stride=width */
     int            full_luma_size;
+
+    /* 설치 직후 안정화 — 반복 흔들림 구역 자동 학습 */
+    MotionCalib  calib;
+    CalibOptions calib_opt;
+    char         calib_path[600];    /* 비어 있으면(--config 미지정) 기능 비활성 */
+    double       calib_progress_log_time;
+    /*
+     * 안정화 시계. 카메라는 벽시계, 영상 파일은 영상 시간(index / fps)을 씁니다.
+     * 파일은 실시간보다 수백 배 빨리 디코딩되어 벽시계로는 10분 녹화본이
+     * 몇 초 만에 끝나고, 녹화본으로 현장 안정화를 재현·검증할 수 없게 됩니다.
+     */
+    int          realtime_input;
+    const MediaStats *media_stats;   /* main() 지역 변수를 빌려 씀 — media_process 동안 유효 */
+
+    /* 이벤트 캡처. capture.dir 가 비어 있으면(--config 미지정·폴더 생성 실패) 비활성 */
+    EventCapture capture;
+    int          capture_fall;       /* config capture_fall, 기본 1 */
+    int          capture_quality;    /* config capture_quality, 기본 85 */
+
+    /* 카메라 재연결 */
+    int          force_detect;       /* 재연결 직후 다음 프레임에서 한 번 추론 */
+    int64_t      camera_attempt_logs;
+    double       camera_down_at;     /* 끊김을 알린 시각 — 복귀 시 트랙 시각을 이만큼 미룹니다 */
 } AppContext;
 
 /* 명령줄에서 읽은 경로와 프로그램 내부 기본 설정을 한곳에 모읍니다. */
@@ -259,6 +301,14 @@ static void request_stop(int signal_number) {
  * 정상 종료(0)·예약 재시작(10)·비정상 종료(그 외)를 구분해 다르게 반응합니다. */
 #define EXIT_RESTART_REQUESTED 10
 static int restart_requested = 0;
+
+/*
+ * 카메라 입력이 비정상으로 끝났음(재연결 포기·해상도 변경·캡처 스레드 멈춤).
+ * 0 을 이 경우에 절대 쓰지 않는 이유: run-all.ps1 은 0 을 "운영자가 멈춤"으로 보고
+ * 재시작하지 않으므로, 무인 매장에서 감시가 영구히 꺼진 채로 남습니다.
+ * 감시 루프는 0·10 이 아닌 코드를 모두 재시작하므로 이 값은 새 프로세스로 복구됩니다.
+ */
+#define EXIT_CAMERA_LOST 3
 
 static int should_stop(void *opaque) {
     (void)opaque;
@@ -710,6 +760,62 @@ static void preview_frame(AppContext *app, const RgbFrame *frame) {
  * 읽지 않는 키는 파일에 적어도 재시작 전까지 반영되지 않았습니다.
  * roi_kiosk 처럼 한쪽에만 추가되면 조용히 동작하지 않는 원인이 됩니다.
  */
+/*
+ * 카메라 장애 임계값. 시작과 hot-reload 양쪽에서 호출합니다.
+ *
+ * 예전에는 reload 에서만 읽고, 첫 프레임의 camera_health_init(NULL) 이 기본값으로
+ * 덮어써서 config.json 의 값이 파일이 한 번 바뀌기 전까지 적용되지 않았습니다.
+ * 키가 없을 때의 기본값도 두 경로가 달랐으므로(40/45 vs 12/150) camera_health 의
+ * 기본값 하나로 통일합니다.
+ */
+static void apply_camera_health_config(AppContext *app, const Config *cfg) {
+    CameraHealthConfig d, *c = &app->cam_health_cfg;
+    camera_health_default_config(&d);
+    *c = d;
+    c->luma_black_threshold =
+        (int)config_long(cfg, "luma_black_threshold", d.luma_black_threshold, 0, 255);
+    c->luma_white_threshold =
+        (int)config_long(cfg, "luma_white_threshold", d.luma_white_threshold, 0, 255);
+    c->frozen_frames_threshold =
+        (int)config_long(cfg, "frozen_frames_threshold", d.frozen_frames_threshold, 1, 10000);
+    c->low_contrast_ratio =
+        config_float(cfg, "camera_low_contrast_ratio", d.low_contrast_ratio, 0.0f, 1.0f);
+    c->low_contrast_hold_frames =
+        (int)config_long(cfg, "camera_low_contrast_hold_frames",
+                         d.low_contrast_hold_frames, 1, 100000);
+    /* 이미 동작 중이면 연속 카운터는 두고 임계값만 교체합니다. */
+    app->cam_health.config = *c;
+}
+
+/*
+ * detections 에서 keep_score 미만 박스를 low_detections 로 옮깁니다.
+ * reset=1 이면 low 목록을 비우고 시작합니다(추론 직후 첫 호출). 회전 재탐지가 박스를
+ * 덧붙인 뒤에는 reset=0 으로 다시 불러 그 박스들도 나눕니다.
+ */
+static void split_low_detections(AppContext *app, int reset) {
+    size_t i, kept = 0;
+    if (app->keep_score <= 0.0f) return;
+    if (reset) app->low_detections.count = 0;
+    for (i = 0; i < app->detections.count; ++i) {
+        const Detection *d = &app->detections.items[i];
+        if (d->score >= app->keep_score) {
+            app->detections.items[kept++] = *d;
+        } else if (app->low_detections.count < app->low_detections.capacity) {
+            app->low_detections.items[app->low_detections.count++] = *d;
+        }
+    }
+    app->detections.count = kept;
+}
+
+static void rebuild_ignore_roi(AppContext *app) {
+    int n = app->ignore_manual_count;
+    int max = (int)(sizeof(app->ignore_roi) / sizeof(app->ignore_roi[0]));
+    int i;
+    for (i = 0; i < app->auto_ignore_count && n < max; ++i)
+        app->ignore_roi[n++] = app->auto_ignore[i];
+    app->ignore_roi_count = n;
+}
+
 static void apply_gate_config(AppContext *app, const Config *cfg) {
     app->block_gate_enabled = (int)config_long(cfg, "block_gate", 1, 0, 1);
     app->block_min_changed  = (int)config_long(cfg, "block_min_changed", 2, 1, 64);
@@ -730,12 +836,33 @@ static void apply_gate_config(AppContext *app, const Config *cfg) {
             app->ignore_roi[i].x2 = raw[i].x + raw[i].w;
             app->ignore_roi[i].y2 = raw[i].y + raw[i].h;
         }
-        app->ignore_roi_count = n;
+        app->ignore_manual_count = n;
+        rebuild_ignore_roi(app);
     }
 
     app->active_hours_set =
         config_time_range(cfg, "active_hours",
                           &app->active_start_min, &app->active_end_min);
+
+    /* 안정화 설정. 진행 중인 안정화는 시작 시점 값(MotionCalib.opt)을 유지합니다. */
+    app->calib_opt.duration_seconds =
+        60.0 * (double)config_float(cfg, "calibration_minutes", 10.0f, 0.0f, 240.0f);
+    app->calib_opt.sample_seconds =
+        (double)config_float(cfg, "calib_sample_seconds", 0.5f, 0.1f, 10.0f);
+    app->calib_opt.noise_ratio =
+        config_float(cfg, "calib_noise_ratio", 0.3f, 0.05f, 1.0f);
+    app->calib_opt.max_area_ratio =
+        config_float(cfg, "calib_max_area_ratio", 0.15f, 0.01f, 0.5f);
+}
+
+/*
+ * 캡처 설정. 품질 기본값 85: 쓰러짐 확인용 증거 사진이라 스트림(75)보다
+ * 조금 높게 둡니다. 720p 기준 한 장 60~150KB 수준입니다.
+ */
+static void apply_capture_config(AppContext *app, const Config *cfg) {
+    app->capture_fall    = (int)config_long(cfg, "capture_fall", 1, 0, 1);
+    app->capture_quality = (int)config_long(cfg, "capture_quality", 85, 30, 100);
+    if (app->capture.dir[0]) app->capture.quality = app->capture_quality;
 }
 
 static void apply_residue_config(AppContext *app, const Config *cfg) {
@@ -856,6 +983,363 @@ static int collect_person_rects(const AppContext *app, GrayRect *out, int max) {
     return n;
 }
 
+/* ── 설치 직후 안정화 (흔들림 구역 자동 무시) ─────────────────────────────── */
+
+/*
+ * calibration.json 에서 이전 안정화 결과를 읽습니다.
+ * 반환 1 = 적용함, 0 = 파일 없음·해상도 불일치 등으로 새로 안정화해야 함.
+ *
+ * 해상도를 확인하는 이유: ROI 는 원본 픽셀 좌표라 카메라 해상도가 바뀌면
+ * 엉뚱한 곳을 무시하게 됩니다. 그 상태가 조용히 유지되는 것이 가장 위험합니다.
+ */
+static int calib_load_file(AppContext *app, int frame_w, int frame_h) {
+    Config cfg;
+    ConfigRect raw[16];
+    const char *frame_text = NULL;
+    const char *created = NULL;
+    char msg[256];
+    char err[128] = {0};
+    int saved_w = 0, saved_h = 0, n, i;
+
+    if (config_load(&cfg, app->calib_path, err, sizeof(err)) != 0) {
+        snprintf(msg, sizeof(msg), "file=%s 없음 — 새로 안정화합니다", app->calib_path);
+        event_log_write(&app->event_log, LOG_INFO, "calib", msg);
+        return 0;
+    }
+    if (config_get(&cfg, "calib_frame", &frame_text) != 0 ||
+        sscanf(frame_text, "%dx%d", &saved_w, &saved_h) != 2 ||
+        saved_w != frame_w || saved_h != frame_h) {
+        snprintf(msg, sizeof(msg),
+                 "file=%s saved_frame=%s current_frame=%dx%d 불일치 — 다시 안정화합니다",
+                 app->calib_path, frame_text ? frame_text : "(없음)", frame_w, frame_h);
+        event_log_write(&app->event_log, LOG_WARN, "calib", msg);
+        config_destroy(&cfg);
+        return 0;
+    }
+    config_get(&cfg, "calib_created", &created);
+
+    n = config_rect_list(&cfg, "auto_ignore_roi", raw, 16);
+    for (i = 0; i < n; ++i) {
+        app->auto_ignore[i].x1 = raw[i].x;
+        app->auto_ignore[i].y1 = raw[i].y;
+        app->auto_ignore[i].x2 = raw[i].x + raw[i].w;
+        app->auto_ignore[i].y2 = raw[i].y + raw[i].h;
+        snprintf(msg, sizeof(msg), "auto_ignore_roi_%d=%.0f,%.0f,%.0f,%.0f",
+                 i + 1, raw[i].x, raw[i].y, raw[i].w, raw[i].h);
+        event_log_write(&app->event_log, LOG_INFO, "calib", msg);
+    }
+    app->auto_ignore_count = n;
+    rebuild_ignore_roi(app);
+
+    snprintf(msg, sizeof(msg),
+             "loaded file=%s created=%s auto_ignore_roi=%d ignore_roi_total=%d "
+             "(재보정하려면 파일을 지우고 재시작)",
+             app->calib_path, created ? created : "?", n, app->ignore_roi_count);
+    event_log_write(&app->event_log, LOG_INFO, "calib", msg);
+    config_destroy(&cfg);
+    return 1;
+}
+
+/*
+ * 임시 파일에 쓴 뒤 교체합니다. 쓰는 도중 전원이 나가도 반쯤 쓴 파일이
+ * 남지 않고, 최악의 경우 파일이 없어 다음 시작 때 다시 안정화할 뿐입니다.
+ * config.json 이 아니라 별도 파일인 이유: config.json 은 대시보드도 쓰는
+ * 파일이라 두 프로세스가 동시에 쓰면 한쪽 저장이 사라질 수 있습니다.
+ */
+static int calib_save_file(const char *path, int frame_w, int frame_h,
+                           const GrayRect *rects, int count, int samples) {
+    char tmp[640];
+    char created[32];
+    time_t raw = time(NULL);
+    struct tm tmv;
+    FILE *f;
+    int i;
+
+#if defined(_WIN32)
+    localtime_s(&tmv, &raw);
+#else
+    localtime_r(&raw, &tmv);
+#endif
+    strftime(created, sizeof(created), "%Y-%m-%dT%H:%M:%S", &tmv);
+    snprintf(tmp, sizeof(tmp), "%s.tmp", path);
+
+    f = fopen(tmp, "w");
+    if (!f) return -1;
+    fprintf(f,
+            "{\n"
+            "  \"calib_version\": 1,\n"
+            "  \"calib_created\": \"%s\",\n"
+            "  \"calib_frame\": \"%dx%d\",\n"
+            "  \"calib_samples\": %d",
+            created, frame_w, frame_h, samples);
+    for (i = 0; i < count; ++i) {
+        fprintf(f, ",\n  \"auto_ignore_roi_%d\": \"%.0f,%.0f,%.0f,%.0f\"",
+                i + 1, rects[i].x1, rects[i].y1,
+                rects[i].x2 - rects[i].x1, rects[i].y2 - rects[i].y1);
+    }
+    fprintf(f, "\n}\n");
+    if (fclose(f) != 0) {
+        remove(tmp);
+        return -1;
+    }
+    /* Windows rename() 은 대상이 있으면 실패하므로 먼저 지웁니다. */
+    remove(path);
+    return rename(tmp, path) == 0 ? 0 : -1;
+}
+
+/*
+ * 표본이 이보다 적으면 결과를 믿을 수 없어 저장하지 않습니다.
+ * 0.5초 간격 기준 30초 분량입니다. 대부분 조명 변화로 표본이 버려졌거나
+ * 영상이 너무 짧은 경우이고, 다음 시작 때 다시 시도하는 편이 안전합니다.
+ */
+#define CALIB_MIN_SAMPLES 60
+
+static void calib_finish(AppContext *app) {
+    /* 문 + 키오스크 + 활성 가구 슬롯. 흔들려 보여도 무시하면 안 되는 구역입니다 —
+     * 슬롯을 무시하면 그 테이블·의자의 청결 감지가 통째로 꺼집니다. */
+    GrayRect protect[2 + SLOT_MAX];
+    CalibRegion regions[16];
+    char msg[256];
+    int protect_count = 0, total = 0, n, i, slots;
+    int frame_w = app->calib.frame_width, frame_h = app->calib.frame_height;
+    int samples = app->calib.samples;
+
+    if (samples < CALIB_MIN_SAMPLES) {
+        snprintf(msg, sizeof(msg),
+                 "done 표본 부족 samples=%d skipped_global=%d (최소 %d) — "
+                 "저장하지 않음, 다음 시작 시 재시도",
+                 samples, app->calib.skipped_global, CALIB_MIN_SAMPLES);
+        event_log_write(&app->event_log, LOG_WARN, "calib", msg);
+        calib_destroy(&app->calib);
+        return;
+    }
+
+    if (app->door.enabled && app->door.roi_w > 0 && app->door.roi_h > 0) {
+        protect[protect_count].x1 = (float)app->door.roi_x;
+        protect[protect_count].y1 = (float)app->door.roi_y;
+        protect[protect_count].x2 = (float)(app->door.roi_x + app->door.roi_w);
+        protect[protect_count].y2 = (float)(app->door.roi_y + app->door.roi_h);
+        protect_count++;
+    }
+    if (app->rules.config.roi_kiosk_set) {
+        protect[protect_count].x1 = app->rules.config.roi_kiosk_x;
+        protect[protect_count].y1 = app->rules.config.roi_kiosk_y;
+        protect[protect_count].x2 = app->rules.config.roi_kiosk_x + app->rules.config.roi_kiosk_w;
+        protect[protect_count].y2 = app->rules.config.roi_kiosk_y + app->rules.config.roi_kiosk_h;
+        protect_count++;
+    }
+    for (i = 0; i < app->slot_mon.count && i < SLOT_MAX; ++i)
+        protect[protect_count++] = app->slot_mon.slots[i].bbox;
+
+    n = calib_extract(&app->calib, protect, protect_count, regions, 16, &total);
+    slots = 16 - app->ignore_manual_count;
+    app->auto_ignore_count = 0;
+    for (i = 0; i < n; ++i) {
+        const CalibRegion *r = &regions[i];
+        const GrayRect *b = &r->rect;
+        int accepted = r->status == CALIB_REGION_OK && app->auto_ignore_count < slots;
+        const char *reason = r->status != CALIB_REGION_OK
+                                 ? calib_region_status_name(r->status)
+                                 : (accepted ? "ok" : "no_slot");
+        snprintf(msg, sizeof(msg),
+                 "region %s rect=%.0f,%.0f,%.0f,%.0f blocks=%d ratio=%.2f",
+                 accepted ? "accepted" : "rejected",
+                 b->x1, b->y1, b->x2 - b->x1, b->y2 - b->y1,
+                 r->blocks, r->mean_ratio);
+        if (!accepted) {
+            size_t len = strlen(msg);
+            snprintf(msg + len, sizeof(msg) - len, " reason=%s", reason);
+        }
+        event_log_write(&app->event_log, accepted ? LOG_INFO : LOG_WARN, "calib", msg);
+        if (accepted) app->auto_ignore[app->auto_ignore_count++] = *b;
+    }
+    if (total > n) {
+        snprintf(msg, sizeof(msg), "흔들림 구역 %d개 중 작은 %d개는 상한(16) 초과로 버림",
+                 total, total - n);
+        event_log_write(&app->event_log, LOG_WARN, "calib", msg);
+    }
+    rebuild_ignore_roi(app);
+
+    if (calib_save_file(app->calib_path, frame_w, frame_h, app->auto_ignore,
+                        app->auto_ignore_count, samples) != 0) {
+        snprintf(msg, sizeof(msg),
+                 "save failed file=%s — 이번 실행에만 적용, 다음 시작 시 재안정화",
+                 app->calib_path);
+        event_log_write(&app->event_log, LOG_ERROR, "calib", msg);
+    }
+
+    snprintf(msg, sizeof(msg),
+             "done samples=%d skipped_global=%d found=%d auto_ignore_roi=%d "
+             "ignore_roi_total=%d protected=%d file=%s",
+             samples, app->calib.skipped_global, total, app->auto_ignore_count,
+             app->ignore_roi_count, protect_count, app->calib_path);
+    event_log_write(&app->event_log, LOG_INFO, "calib", msg);
+    calib_destroy(&app->calib);
+}
+
+static double calib_clock(const AppContext *app, const RgbFrame *frame, double now) {
+    double fps = app->media_stats ? app->media_stats->frame_rate : 0.0;
+    if (app->realtime_input || fps <= 0.0) return now;
+    return (double)frame->index / fps;
+}
+
+/* 첫 프레임에서 한 번 호출합니다. 해상도는 프레임이 와야 알 수 있기 때문입니다. */
+static void calib_boot(AppContext *app, int frame_w, int frame_h, double now) {
+    char msg[256];
+    char err[128] = {0};
+
+    if (app->calib_opt.duration_seconds <= 0.0) {
+        event_log_write(&app->event_log, LOG_INFO, "calib",
+                        "calibration_minutes=0 — 자동 무시 구역 비활성");
+        return;
+    }
+    /* --config 없이 돌리는 영상 파일 테스트에서 작업 디렉터리에
+     * calibration.json 이 생기는 부작용을 막습니다. */
+    if (!app->calib_path[0]) {
+        event_log_write(&app->event_log, LOG_INFO, "calib",
+                        "--config 미지정 — 결과 저장 위치가 없어 안정화 비활성");
+        return;
+    }
+    if (calib_load_file(app, frame_w, frame_h)) return;
+
+    if (calib_start(&app->calib, &app->gray, frame_w, frame_h, &app->calib_opt,
+                    now, err, sizeof(err)) != 0) {
+        snprintf(msg, sizeof(msg), "start failed: %s", err);
+        event_log_write(&app->event_log, LOG_ERROR, "calib", msg);
+        return;
+    }
+    app->calib_progress_log_time = now;
+    snprintf(msg, sizeof(msg),
+             "start duration=%.1fmin sample=%.1fs noise_ratio=%.2f max_area=%.2f "
+             "grid=%dx%d — 빈 매장 상태에서 진행해야 정확합니다",
+             app->calib_opt.duration_seconds / 60.0, app->calib_opt.sample_seconds,
+             app->calib_opt.noise_ratio, app->calib_opt.max_area_ratio,
+             app->calib.blocks_x, app->calib.blocks_y);
+    event_log_write(&app->event_log, LOG_INFO, "calib", msg);
+}
+
+/* 매 프레임 호출. 비활성이면 즉시 반환합니다. */
+static void calib_step(AppContext *app, double now) {
+    GrayRect people[64];
+    int n;
+    if (!calib_active(&app->calib)) return;
+
+    n = collect_person_rects(app, people, 64);
+    calib_tick(&app->calib, &app->gray, people, n, app->block_min_changed, now);
+
+    if (now - app->calib_progress_log_time >= 60.0) {
+        char msg[160];
+        app->calib_progress_log_time = now;
+        snprintf(msg, sizeof(msg),
+                 "progress=%.1f/%.1fmin samples=%d skipped_global=%d people=%d",
+                 (now - app->calib.started) / 60.0,
+                 app->calib.opt.duration_seconds / 60.0,
+                 app->calib.samples, app->calib.skipped_global, n);
+        event_log_write(&app->event_log, LOG_INFO, "calib", msg);
+    }
+    if (calib_elapsed_done(&app->calib, now)) calib_finish(app);
+}
+
+/*
+ * 이번 추론에서 새로 발화한 쓰러짐마다 프레임 한 장을 저장합니다.
+ *
+ * 호출 시점이 그리기·보호 모드 가림 전이라 frame->data 는 원본입니다. 보호 모드가
+ * 켜져 있으면 capture_save 가 영상을 지우고 박스·관절만 남깁니다(출력 정책과 동일).
+ *
+ * JPEG 인코딩(720p 기준 수십 ms)을 처리 스레드에서 동기로 하는 이유:
+ * 쓰러짐은 트랙당 한 번만 발화(latch)하므로 드물고, 그때 한두 프레임 늦는
+ * 것보다 별도 스레드·프레임 복사 큐를 유지하는 비용이 더 큽니다.
+ */
+static void capture_fall_events(AppContext *app, const RgbFrame *frame) {
+    int i;
+    if (app->rules.fall_fired_count <= 0) return;
+    if (!app->capture_fall) return;
+    if (!app->capture.dir[0]) {
+        event_log_write(&app->event_log, LOG_WARN, "capture",
+                        "person_fallen 발생했지만 캡처 비활성 (--config 미지정 또는 폴더 생성 실패)");
+        return;
+    }
+    for (i = 0; i < app->rules.fall_fired_count; ++i) {
+        char path[720];
+        char err[256] = {0};
+        char msg[900];
+        int track = app->rules.fall_fired_track[i];
+        if (capture_save(&app->capture, "person_fallen", track,
+                         frame->data, frame->width, frame->height, frame->stride,
+                         &app->rules.fall_fired_box[i], app->privacy_mode,
+                         path, sizeof(path), err, sizeof(err)) == 0) {
+            snprintf(msg, sizeof(msg), "kind=person_fallen track=%d privacy=%s file=%s",
+                     track, app->privacy_mode ? "masked" : "raw", path);
+            event_log_write(&app->event_log, LOG_INFO, "capture", msg);
+        } else {
+            snprintf(msg, sizeof(msg), "kind=person_fallen track=%d failed: %s",
+                     track, err);
+            event_log_write(&app->event_log, LOG_ERROR, "capture", msg);
+        }
+    }
+}
+
+/*
+ * 미디어 계층의 연결 상태 알림을 이벤트 로그와 파이프라인 상태에 반영합니다.
+ * process_frame 과 같은 처리 스레드에서 호출되므로 AppContext·EventLog(SQLite
+ * 준비문은 main 스레드 전용)를 락 없이 만져도 됩니다.
+ */
+static void on_camera_event(void *opaque, MediaEventKind kind, const char *detail) {
+    AppContext *app = (AppContext *)opaque;
+    char msg[400];
+    switch (kind) {
+    case MEDIA_EVENT_DISCONNECTED:
+        app->camera_attempt_logs = 0;
+        app->camera_down_at = platform_monotonic_seconds();
+        snprintf(msg, sizeof(msg), "state=disconnected %s", detail);
+        event_log_write(&app->event_log, LOG_ERROR, "camera", msg);
+        if (app->stream_port > 0) stream_set_camera_connected(0);
+        break;
+    case MEDIA_EVENT_RECONNECT_ATTEMPT:
+        /* 백오프 상한(30초)에서도 시간당 120줄이 쌓이므로 처음 5회와 이후 10회마다만 남깁니다.
+         * 끊김이 계속된다는 사실은 60초마다 오는 STILL 이벤트가 따로 알립니다. */
+        app->camera_attempt_logs++;
+        if (app->camera_attempt_logs <= 5 || app->camera_attempt_logs % 10 == 0) {
+            snprintf(msg, sizeof(msg), "state=reconnecting %s", detail);
+            event_log_write(&app->event_log, LOG_INFO, "camera", msg);
+        }
+        break;
+    case MEDIA_EVENT_STILL_DISCONNECTED:
+        snprintf(msg, sizeof(msg), "state=still_disconnected %s", detail);
+        event_log_write(&app->event_log, LOG_WARN, "camera", msg);
+        break;
+    case MEDIA_EVENT_GIVE_UP:
+        snprintf(msg, sizeof(msg), "state=give_up %s — 프로세스 종료(exit 3), 감시 루프가 재시작",
+                 detail);
+        event_log_write(&app->event_log, LOG_ERROR, "camera", msg);
+        break;
+    case MEDIA_EVENT_RECONNECTED: {
+        double now = platform_monotonic_seconds();
+        double gap = app->camera_down_at > 0.0 ? now - app->camera_down_at : 0.0;
+        CameraHealthConfig health_cfg = app->cam_health.config;
+        snprintf(msg, sizeof(msg), "state=reconnected %s", detail);
+        event_log_write(&app->event_log, LOG_INFO, "camera", msg);
+        if (app->stream_port > 0) stream_set_camera_connected(1);
+        /*
+         * 끊기기 전 프레임을 기준으로 비교하면 복귀 첫 프레임이 "화면 전체 변화"가
+         * 되어 게이트·카메라 헬스가 오판합니다. 기준을 버리고 새로 쌓게 합니다.
+         * 카메라 헬스는 연속 카운터만 초기화하고 config.json 에서 읽은 임계값은 유지합니다.
+         * 트랙·쓰러짐 타이머는 끊긴 시간만큼 뒤로 미뤄, 못 본 시간이 소실·체류로
+         * 세어지지 않게 합니다.
+         */
+        app->gray_ready = 0;
+        app->gray_ref_ready = 0;
+        camera_health_init(&app->cam_health, &health_cfg, NULL, 0);
+        tracks_shift_time(&app->tracks, gap);
+        rules_shift_time(&app->rules, gap);
+        app->last_frame_time = 0.0;   /* 카메라 FPS EMA 에 끊긴 구간이 섞이지 않게 */
+        app->force_detect = 1;
+        app->camera_down_at = 0.0;
+        break;
+    }
+    }
+}
+
 /* 예약 재시작 설정. 시각 문자열이 잘못되면 기본값(04:00)을 쓰고 경고는 호출자가 남깁니다. */
 static void apply_restart_config(AppContext *app, const Config *cfg) {
     RestartConfig rc;
@@ -904,6 +1388,11 @@ static void apply_vanish_config(RulesConfig *rc, const Config *cfg) {
  * 주문 상태 전환 자체가 비활성화됩니다(호출자가 로그로 알립니다). */
 static void apply_roi_kiosk(RulesConfig *rc, const Config *cfg) {
     ConfigRect r;
+    const char *anchor = NULL;
+    /* "foot" 만 발밑, 그 외(미설정·오타)는 기존 동작인 중심으로 둡니다. */
+    rc->roi_anchor_foot =
+        (config_get(cfg, "roi_anchor", &anchor) == 0 && anchor &&
+         strcmp(anchor, "foot") == 0) ? 1 : 0;
     if (config_rect(cfg, "roi_kiosk", &r)) {
         rc->roi_kiosk_x = r.x;
         rc->roi_kiosk_y = r.y;
@@ -945,13 +1434,7 @@ static void reload_config(AppContext *app) {
     if (app->stream_port > 0)
         stream_set_door_enabled(app->door.enabled);
 
-    /* 카메라 장애 임계값 — setter가 없으므로 config 구조체에 직접 대입합니다. */
-    app->cam_health.config.luma_black_threshold    =
-        (int)config_long(&cfg, "luma_black_threshold",    40,  0, 255);
-    app->cam_health.config.luma_white_threshold    =
-        (int)config_long(&cfg, "luma_white_threshold",   240,  0, 255);
-    app->cam_health.config.frozen_frames_threshold =
-        (int)config_long(&cfg, "frozen_frames_threshold",  45,  1, 10000);
+    apply_camera_health_config(app, &cfg);
 
     /* 체류/쓰러짐 룰 임계값 */
     RulesConfig rules_cfg = app->rules.config; /* 기존값으로 초기화 (roi_kiosk 등 유지) */
@@ -990,6 +1473,7 @@ static void reload_config(AppContext *app) {
         int prev_privacy = app->privacy_mode;
         apply_security_config(app, &cfg);
         apply_auto_capture_config(app, &cfg);
+        apply_capture_config(app, &cfg);
         if (prev_privacy != app->privacy_mode) {
             char msg[96];
             snprintf(msg, sizeof(msg), "stream_privacy_mode=%d (config reload)", app->privacy_mode);
@@ -1303,6 +1787,12 @@ static int process_frame(RgbFrame *frame, void *opaque,
         (now - app->last_detection_time) < (1.0 / app->detect_fps_limit)) {
         run_detector = 0;
     }
+    /* 카메라 재연결 직후 한 번은 주기와 무관하게 추론합니다. 끊긴 동안 사람이
+     * 들어오거나 나갔을 수 있어 트랙 상태를 빨리 맞춰야 하기 때문입니다. */
+    if (app->force_detect) {
+        app->force_detect = 0;
+        run_detector = 1;
+    }
 
     /* 첫 프레임에서 GrayBuf와 CameraHealth를 지연 초기화합니다.
      * frame->width/height는 콜백이 와야 알 수 있습니다. */
@@ -1325,10 +1815,11 @@ static int process_frame(RgbFrame *frame, void *opaque,
             snprintf(error, error_size, "gray_prev/gray_ref: out of memory");
             return -1;
         }
-        if (camera_health_init(&app->cam_health, NULL,
+        if (camera_health_init(&app->cam_health, &app->cam_health_cfg,
                                error, error_size) != 0)
             return -1;
         app->cam_health_init_done = 1;
+        calib_boot(app, frame->width, frame->height, calib_clock(app, frame, now));
     }
     started = platform_monotonic_seconds();
     /*
@@ -1497,6 +1988,9 @@ static int process_frame(RgbFrame *frame, void *opaque,
             }
         }
     }
+    /* 안정화는 게이트와 무관하게 같은 gray 로 진행합니다. 이번 프레임의 게이트는
+     * 기존 ignore_roi 로 이미 판정됐고, 새 결과는 다음 프레임부터 적용됩니다. */
+    calib_step(app, calib_clock(app, frame, now));
     app->gray_seconds += platform_monotonic_seconds() - started;
 
     /* 추적기도 같은 luma 평면을 쓰게 합니다. 프레임마다 갱신해야 합니다 —
@@ -1531,6 +2025,8 @@ static int process_frame(RgbFrame *frame, void *opaque,
                          frame->height, frame->stride, &app->detections,
                          error, error_size) != 0)
             return -1;
+        /* 다른 모든 소비자보다 먼저 나눠, 낮은 박스는 트랙 잇기에만 쓰이게 합니다. */
+        split_low_detections(app, 1);
         detector_get_last_stats(app->detector, &run_stats);
         app->detector_stats.preprocess_seconds += run_stats.preprocess_seconds;
         app->detector_stats.inference_seconds += run_stats.inference_seconds;
@@ -1641,9 +2137,12 @@ static int process_frame(RgbFrame *frame, void *opaque,
                     }
                 }
             }
+            /* 회전 프레임 결과에도 낮은 박스가 섞이므로 같은 기준으로 나눕니다(목록은 이어 붙임). */
+            split_low_detections(app, 0);
         }
 
-        tracks_update(&app->tracks, &app->detections,
+        tracks_update_ex(&app->tracks, &app->detections,
+                         app->keep_score > 0.0f ? &app->low_detections : NULL,
                       frame->data, frame->width, frame->height, frame->stride,
                       now);
         /* full_luma 준비: 원본 해상도 그레이스케일.
@@ -1682,6 +2181,7 @@ static int process_frame(RgbFrame *frame, void *opaque,
         /* 쓰러짐 판정이 bbox 잘림을 확인할 수 있도록 프레임 크기를 알려 줍니다. */
         rules_set_frame_size(&app->rules, frame->width, frame->height);
         rules_evaluate(&app->rules, &app->tracks, now, &app->event_log);
+        capture_fall_events(app, frame);
 
         /* Tier 2: detect_every_obj 주기마다 실행.
          * 이전 코드는 && (frame->index % detect_every != 0) 조건 때문에
@@ -2292,6 +2792,10 @@ int main(int argc, char **argv) {
     app.has_output = args.output != NULL;
     memset(&media_stats, 0, sizeof(media_stats));
     args.media.stats = &media_stats;
+    app.media_stats = &media_stats;
+    app.realtime_input = args.media.realtime;
+    args.media.on_event = on_camera_event;
+    args.media.event_opaque = &app;
 
     /*
      * 후보 배열은 여기서 딱 한 번 만들고 모든 프레임에서 재사용합니다.
@@ -2313,6 +2817,27 @@ int main(int argc, char **argv) {
                             args.detector.max_candidates) != 0) {
         fprintf(stderr, "failed to allocate rotated detection buffer\n");
         goto done;
+    }
+    if (detection_list_init(&app.low_detections,
+                            args.detector.max_candidates) != 0) {
+        fprintf(stderr, "failed to allocate low-score detection buffer\n");
+        goto done;
+    }
+    /*
+     * 2단계 매칭 하한. 검출기는 생성 시점의 신뢰도로 박스를 걸러 내므로, 낮은 박스를
+     * 받으려면 detector_create 전에 알아야 합니다. 그래서 전체 설정 로드(아래)와 별도로
+     * 이 키 하나만 먼저 읽습니다. --confidence 값은 "기준(keep_score)"으로 남습니다.
+     */
+    {
+        Config pre;
+        float low;
+        config_load(&pre, args.config_path, NULL, 0);
+        low = config_float(&pre, "track_low_score", 0.10f, 0.0f, 0.9f);
+        config_destroy(&pre);
+        if (low > 0.0f && low < args.detector.confidence) {
+            app.keep_score = args.detector.confidence;
+            args.detector.confidence = low;
+        }
     }
 
     /* --model에 디렉터리가 지정된 경우: 입력 해상도를 먼저 파악하고
@@ -2354,6 +2879,8 @@ int main(int argc, char **argv) {
         /* Tier 2는 단독 추론 옵션으로 생성하되, 스레드 수는 Tier 1과 동일하게 공유합니다.
          * 두 세션이 동시에 실행되지 않으므로 스레드 경합이 없습니다. */
         DetectorOptions obj_opts = args.detector;  /* 스레드 수 등 공유 */
+        /* 2단계 매칭으로 낮춘 신뢰도는 사람 추적 전용입니다. 물체 감지는 원래 기준을 씁니다. */
+        if (app.keep_score > 0.0f) obj_opts.confidence = app.keep_score;
         app.obj_detector = detector_create(args.obj_model, &obj_opts,
                                            error, sizeof(error));
         if (!app.obj_detector) {
@@ -2410,6 +2937,7 @@ int main(int argc, char **argv) {
         app.idle_refresh_seconds  =
             (double)config_float(&cfg, "idle_refresh_seconds", 10.0f, 1.0f, 3600.0f);
         apply_gate_config(&app, &cfg);
+        apply_camera_health_config(&app, &cfg);
         apply_vanish_config(&rules_cfg, &cfg);
         apply_roi_kiosk(&rules_cfg, &cfg);
         /* 문 여닫이 설정 — door_load는 cfg 블록 밖에서 (data_dir 필요) */
@@ -2432,6 +2960,20 @@ int main(int argc, char **argv) {
         apply_restart_config(&app, &cfg);
         apply_security_config(&app, &cfg);
         apply_auto_capture_config(&app, &cfg); /* surface_monitor 는 아직 없음 — 생성 직후 다시 넘깁니다 */
+        apply_capture_config(&app, &cfg);
+        /*
+         * 카메라 재연결. 시작 시에만 읽습니다 — media_process 가 도는 중에는
+         * MediaOptions 를 바꾸지 않아 미디어 계층에 락이 필요 없습니다.
+         * giveup 기본 300초: 장치 문자열은 시작 때 한 번 탐지하므로 카메라 교체·이름
+         * 변경은 재연결로 복구되지 않습니다. 그때는 exit 3 으로 끝내 감시 루프가 재탐지하게 합니다.
+         */
+        args.media.reconnect = (int)config_long(&cfg, "camera_reconnect", 1, 0, 1);
+        args.media.stall_seconds =
+            (double)config_float(&cfg, "camera_stall_seconds", 5.0f, 2.0f, 60.0f);
+        args.media.reconnect_max_backoff =
+            (double)config_float(&cfg, "camera_reconnect_max_backoff", 30.0f, 1.0f, 300.0f);
+        args.media.reconnect_giveup_seconds =
+            (double)config_float(&cfg, "camera_reconnect_giveup_seconds", 300.0f, 0.0f, 86400.0f);
         if (!args.stream_port_set)
             app.stream_port = (int)config_long(&cfg, "stream_port", 0, 1024, 65535);
         config_destroy(&cfg);
@@ -2506,9 +3048,10 @@ int main(int argc, char **argv) {
                             "order_unverified 판정 근거 없음");
         else {
             snprintf(msg, sizeof(msg),
-                     "roi_kiosk=%.0f,%.0f,%.0f,%.0f 주문 상태 전환 활성",
+                     "roi_kiosk=%.0f,%.0f,%.0f,%.0f anchor=%s 주문 상태 전환 활성",
                      app.rules.config.roi_kiosk_x, app.rules.config.roi_kiosk_y,
-                     app.rules.config.roi_kiosk_w, app.rules.config.roi_kiosk_h);
+                     app.rules.config.roi_kiosk_w, app.rules.config.roi_kiosk_h,
+                     app.rules.config.roi_anchor_foot ? "foot" : "center");
             event_log_write(&app.event_log, LOG_INFO, "startup", msg);
         }
 
@@ -2535,6 +3078,23 @@ int main(int argc, char **argv) {
         if (!app.residue.config.enabled)
             event_log_write(&app.event_log, LOG_INFO, "startup",
                             "residue_enabled=0 — 잔류물 감지 비활성");
+
+        if (app.keep_score > 0.0f)
+            snprintf(msg, sizeof(msg),
+                     "track_two_stage=on keep_score=%.2f low_score=%.2f — 낮은 박스는 기존 트랙 잇기에만 사용",
+                     app.keep_score, args.detector.confidence);
+        else
+            snprintf(msg, sizeof(msg), "track_two_stage=off (track_low_score=0 또는 --confidence 이상)");
+        event_log_write(&app.event_log, LOG_INFO, "startup", msg);
+
+        if (args.camera) {
+            snprintf(msg, sizeof(msg),
+                     "camera_reconnect=%s stall=%.0fs max_backoff=%.0fs giveup=%.0fs",
+                     args.media.reconnect ? "on" : "off", args.media.stall_seconds,
+                     args.media.reconnect_max_backoff,
+                     args.media.reconnect_giveup_seconds);
+            event_log_write(&app.event_log, LOG_INFO, "startup", msg);
+        }
     }
 
     fprintf(stderr,
@@ -2583,6 +3143,37 @@ int main(int argc, char **argv) {
         char *last = (bs > fs) ? bs : fs;
         if (last) *last = '\0';
         else { data_dir[0] = '.'; data_dir[1] = '\0'; }
+        /* '/' 는 Windows fopen 도 받아들이므로 플랫폼 분기 없이 씁니다. */
+        snprintf(app.calib_path, sizeof(app.calib_path), "%s/calibration.json",
+                 data_dir);
+    }
+
+    /*
+     * 이벤트 캡처 폴더. 설정으로 경로를 받지 않고 data_dir 아래로 고정합니다 —
+     * "\\server\share" 같은 네트워크 경로가 들어가면 영상이 기기 밖으로 나갑니다.
+     */
+    {
+        char capture_dir[600];
+        char cap_err[256] = {0};
+        char cap_msg[900];
+        if (!args.config_path) {
+            event_log_write(&app.event_log, LOG_INFO, "startup",
+                            "capture 비활성 — --config 미지정 (저장 위치 없음)");
+        } else {
+            snprintf(capture_dir, sizeof(capture_dir), "%s/captures", data_dir);
+            if (capture_init(&app.capture, capture_dir, app.capture_quality,
+                             cap_err, sizeof(cap_err)) != 0) {
+                snprintf(cap_msg, sizeof(cap_msg), "capture 비활성 — %s", cap_err);
+                event_log_write(&app.event_log, LOG_ERROR, "startup", cap_msg);
+            } else {
+                snprintf(cap_msg, sizeof(cap_msg),
+                         "capture_fall=%s dir=%s quality=%d privacy=%s",
+                         app.capture_fall ? "on" : "off", capture_dir,
+                         app.capture_quality,
+                         app.privacy_mode ? "masked(stream_privacy_mode=1)" : "raw");
+                event_log_write(&app.event_log, LOG_INFO, "startup", cap_msg);
+            }
+        }
     }
 
     {
@@ -2596,8 +3187,16 @@ int main(int argc, char **argv) {
         surface_reload(&app,platform_monotonic_seconds());
     }
     if (app.stream_port > 0) {
-        if (stream_start(app.stream_port, data_dir) != 0)
+        if (stream_start(app.stream_port, data_dir) != 0) {
+            /* 감시 루프가 재시작한 직후 이전 프로세스가 포트를 아직 쥐고 있으면 여기서
+             * 실패합니다. 감지는 계속되지만 대시보드 화면이 안 나오므로 로그에 남깁니다. */
+            char stream_msg[96];
             fprintf(stderr, "stream: failed to start on port %d\n", app.stream_port);
+            snprintf(stream_msg, sizeof(stream_msg),
+                     "stream start failed port=%d — 대시보드 영상 없음, 감지는 계속",
+                     app.stream_port);
+            event_log_write(&app.event_log, LOG_ERROR, "startup", stream_msg);
+        }
         /* 시작 즉시 door 활성 상태를 대시보드에 노출 — process_frame 첫 호출을 기다리지 않음 */
         stream_set_door_enabled(app.door.enabled);
         {
@@ -2739,7 +3338,19 @@ int main(int argc, char **argv) {
      */
     if (media_process(args.input, args.output, &args.media, process_frame, &app,
                       error, sizeof(error)) != 0) {
+        char fail_msg[640];
         fprintf(stderr, "processing failed: %s\n", error);
+        snprintf(fail_msg, sizeof(fail_msg), "exit=%d reason=%s",
+                 args.camera ? EXIT_CAMERA_LOST : EXIT_FAILURE, error);
+        event_log_write(&app.event_log, LOG_ERROR, "shutdown", fail_msg);
+        if (args.camera) result = EXIT_CAMERA_LOST;
+        goto done;
+    }
+    /* 카메라는 운영자 정지·예약 재시작이 아니면 끝나면 안 됩니다. 정상 반환이어도 비정상으로 봅니다. */
+    if (args.camera && !stop_requested && args.media.max_frames == 0) {
+        event_log_write(&app.event_log, LOG_ERROR, "shutdown",
+                        "exit=3 reason=camera_stream_ended_without_stop_request");
+        result = EXIT_CAMERA_LOST;
         goto done;
     }
     end = platform_monotonic_seconds();
@@ -2763,6 +3374,22 @@ int main(int argc, char **argv) {
         }
     }
     result = EXIT_SUCCESS;
+    {
+        /* captured(카메라가 보낸 프레임) 대비 processed(처리·변환한 프레임)가 작을수록
+         * 추론이 밀려 최신 프레임만 가져갔다는 뜻입니다. 현장에서 "추론이 카메라를
+         * 못 따라가는가"를 이 한 줄로 판단할 수 있습니다. */
+        char bye[240];
+        snprintf(bye, sizeof(bye),
+                 "exit=%d reason=%s reconnects=%lld disconnected=%.0fs "
+                 "captured=%lld processed=%lld convert=%.2fs",
+                 restart_requested ? EXIT_RESTART_REQUESTED : 0,
+                 restart_requested ? "scheduled_restart"
+                                   : (stop_requested ? "operator_stop" : "input_finished"),
+                 (long long)media_stats.reconnects, media_stats.disconnected_seconds,
+                 (long long)media_stats.frames, (long long)app.frames,
+                 media_stats.input_convert_seconds);
+        event_log_write(&app.event_log, LOG_INFO, "shutdown", bye);
+    }
 
 done:
     if (app.stream_port > 0) stream_stop();
@@ -2777,6 +3404,8 @@ done:
     perf_log_close(&app.perf_log);
     door_destroy(&app.door);
     residue_destroy(&app.residue);
+    calib_destroy(&app.calib);
+    capture_destroy(&app.capture);
     slot_monitor_destroy(&app.slot_mon);
     rules_destroy(&app.rules);
     tracks_destroy(&app.tracks);
@@ -2792,6 +3421,7 @@ done:
     detection_list_destroy(&app.surface_detections);
     surface_monitor_destroy(app.surface_monitor);
     detection_list_destroy(&app.rotated_dets);
+    detection_list_destroy(&app.low_detections);
     free(app.rotated_rgb);
     free(app.full_luma);
     /* 예약 재시작은 "실패"가 아니라 "다시 띄워 달라"는 뜻입니다. 감시 루프가 비정상

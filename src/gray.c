@@ -83,6 +83,7 @@ void gray_analyze(const GrayBuf *cur, const uint8_t *prev, const uint8_t *ref,
                   GrayStats *out, MotionMap *map) {
     int w, h, x, y;
     unsigned long luma_sum = 0;
+    unsigned long grad_sum = 0;
     size_t changed_motion = 0;
     size_t changed_health = 0;
     /* 블록 행 하나만큼의 카운터. 전체 블록 배열을 스택에 잡지 않기 위해
@@ -115,11 +116,19 @@ void gray_analyze(const GrayBuf *cur, const uint8_t *prev, const uint8_t *ref,
     }
 
     if (!prev) {
-        int n = w * h;
-        int i;
-        for (i = 0; i < n; ++i) luma_sum += cur->data[i];
-        out->luma_sum = luma_sum;
-        out->pixels   = n;
+        for (y = 0; y < h; ++y) {
+            const uint8_t *c = cur->data + (size_t)y * (size_t)w;
+            luma_sum += c[0];
+            for (x = 1; x < w; ++x) {
+                int g = (int)c[x] - (int)c[x - 1];
+                luma_sum += c[x];
+                grad_sum += (unsigned long)(g < 0 ? -g : g);
+            }
+        }
+        out->luma_sum   = luma_sum;
+        out->pixels     = w * h;
+        out->grad_sum   = grad_sum;
+        out->grad_count = w > 1 ? (w - 1) * h : 0;
         return;
     }
 
@@ -154,6 +163,10 @@ void gray_analyze(const GrayBuf *cur, const uint8_t *prev, const uint8_t *ref,
             if (dp < 0) dp = -dp;
             if (dr < 0) dr = -dr;
             luma_sum += (unsigned long)v;
+            if (x > 0) {
+                int g = v - (int)c[x - 1];
+                grad_sum += (unsigned long)(g < 0 ? -g : g);
+            }
             if (dr >  motion_gt) {
                 changed_motion++;
                 if (map) row_counts[x / GRAY_BLOCK_SIZE]++;
@@ -177,6 +190,8 @@ void gray_analyze(const GrayBuf *cur, const uint8_t *prev, const uint8_t *ref,
     out->pixels         = w * h;
     out->changed_motion = changed_motion;
     out->changed_health = changed_health;
+    out->grad_sum       = grad_sum;
+    out->grad_count     = w > 1 ? (w - 1) * h : 0;
 }
 
 int gray_blocks_outside(const MotionMap *map, const GrayRect *boxes,

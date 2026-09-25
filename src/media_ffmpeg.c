@@ -1,5 +1,6 @@
 #include "media.h"
 #include "platform.h"
+#include "reconnect.h"
 
 #include <libavcodec/avcodec.h>
 #include <libavdevice/avdevice.h>
@@ -560,6 +561,45 @@ static int lc_cond_timedwait(lc_cond_t *c, lc_mutex_t *m, int ms) {
 }
 #endif
 
+/*
+ * 입력 감시 문맥 — FFmpeg interrupt 콜백이 읽는 값들입니다.
+ *
+ *   abort          처리 스레드가 1로 만들면 캡처 스레드의 막힌 읽기가 즉시 풀립니다.
+ *                  dshow 는 NONBLOCK 으로 돌아오지만 UDP·RTSP 같은 프로토콜 입력은
+ *                  이 콜백으로만 멈출 수 있습니다.
+ *   open_deadline  열기(장치 그래프 구성 + find_stream_info) 중에만 0 보다 큽니다.
+ *                  카메라가 열리다 멈추면 이 시각에 포기합니다.
+ *
+ * open_deadline 은 캡처 스레드를 띄우기 전에 처리 스레드가 0 으로 되돌려 두므로
+ * 두 스레드가 동시에 쓰는 일이 없습니다. abort 는 처리 스레드만 쓰고 캡처 스레드는
+ * 읽기만 합니다(이 파일의 다른 플래그와 같은 volatile int 규약).
+ */
+typedef struct {
+    const MediaOptions *options;  /* 빌려 씀 — media_process 동안 유효 */
+    double       open_deadline;
+    volatile int abort;
+    int          timed_out;
+} InputWatch;
+
+static int watch_interrupt(void *opaque) {
+    InputWatch *w = (InputWatch *)opaque;
+    if (w->abort) return 1;
+    if (interrupt_ffmpeg((void *)w->options)) return 1;
+    if (w->open_deadline > 0.0 && monotonic_seconds() > w->open_deadline) {
+        w->timed_out = 1;
+        return 1;
+    }
+    return 0;
+}
+
+/* 캡처 스레드가 스스로 끝난 이유. 처리 스레드가 재연결 원인을 로그에 남기는 데 씁니다. */
+enum {
+    LC_END_NONE = 0,
+    LC_END_READ,    /* av_read_frame 오류 — dshow 장치 분리는 AVERROR(EIO) */
+    LC_END_EOF,
+    LC_END_DECODE   /* 패킷/프레임 디코딩 또는 색 변환 실패 */
+};
+
 typedef struct {
     /* 삼중 버퍼 인덱스 (각각 0·1·2 중 하나, 세 값이 서로 다름을 보장) */
     int write_idx;   /* 캡처 스레드가 현재 쓰는 버퍼 */
@@ -567,32 +607,61 @@ typedef struct {
     int read_idx;    /* 처리 스레드가 안전하게 읽는 버퍼 */
     int fresh_ready; /* fresh_idx에 새 프레임이 있으면 1 */
 
-    uint8_t  *rgb[3];    /* [width × height × 3], LiveCapture 소유 */
+    /*
+     * 삼중 버퍼의 각 칸은 RGB 가 아니라 디코더가 만든 프레임(참조)입니다.
+     * 소유: LiveCapture. live_capture_start 에서 av_frame_alloc, stop 에서 av_frame_free.
+     *
+     * 예전에는 캡처 스레드가 모든 프레임을 RGB 로 바꿨습니다. 처리 스레드는 최신 프레임만
+     * 가져가므로(추론이 느리면 중간 프레임은 덮어써짐) 버려질 프레임까지 720p sws_scale 을
+     * 하고 있었습니다. 이제 처리 스레드가 가져간 프레임만 변환하고, 덮어써지는 칸은
+     * av_frame_unref 한 번으로 끝납니다. 디코더 프레임을 들고 있으므로 luma(Y) 평면도
+     * 그대로 넘겨 main.c 의 RGB→그레이 재계산을 없앱니다.
+     */
+    AVFrame  *slot[3];
+    /* 처리 스레드 전용 RGB 변환 결과. 소유: LiveCapture, stop 에서 free. */
+    uint8_t  *rgb;
     int       rgb_stride;
+    struct SwsContext *out_sws;  /* 처리 스레드 전용 — sws_freeContext 로 해제 */
     int       width, height;
-    int64_t   frame_index; /* 캡처가 완성한 누적 프레임 수 */
+    int64_t   frame_index; /* 누적 프레임 번호. 재연결 후에도 이어지도록 시작값을 받습니다 */
 
     lc_mutex_t lock;
     lc_cond_t  cond;
 
     volatile int stop;  /* 1이면 캡처 스레드 종료 */
     int          error; /* 캡처 스레드 에러 시 1 */
+    /* 스레드가 스스로 끝났을 때 lock 아래에서 채웁니다. */
+    int          ended;
+    int          end_cause;  /* LC_END_* */
+    int          end_ret;    /* FFmpeg 오류 코드 */
 
     /* 캡처 스레드 전용 — 처리 스레드에서 접근 금지 */
     AVFormatContext  *fmt;
     AVCodecContext   *dec;
     int               video_stream;
-    struct SwsContext *sws;
     AVFrame           *av_frame;
     AVPacket          *av_packet;
     const MediaOptions *options;
+    InputWatch        *watch;  /* MediaInput 소유, 빌려 씀 — stop 시 abort 를 켭니다 */
 
 #ifdef _WIN32
     HANDLE thread_handle;
 #else
     pthread_t thread;
+    int       thread_started;
 #endif
 } LiveCapture;
+
+static void lc_finish(LiveCapture *lc, int cause, int ret) {
+    lc_mutex_lock(&lc->lock);
+    if (!lc->ended) {
+        lc->ended = 1;
+        lc->end_cause = cause;
+        lc->end_ret = ret;
+    }
+    lc_cond_signal(&lc->cond);
+    lc_mutex_unlock(&lc->lock);
+}
 
 #ifdef _WIN32
 static DWORD WINAPI live_capture_thread(LPVOID arg)
@@ -605,8 +674,19 @@ static void *live_capture_thread(void *arg)
 
     while (!lc->stop) {
         ret = av_read_frame(lc->fmt, lc->av_packet);
-        if (ret == AVERROR(EAGAIN)) { platform_sleep_milliseconds(1); continue; }
-        if (ret < 0) break;
+        if (ret == AVERROR(EAGAIN)) {
+            /* 5ms 를 요청해도 Windows 기본 타이머 해상도(15.6ms) 때문에 실제로는
+             * 약 15ms 잡니다. 15fps 기준 프레임당 4회 정도 깨어나는 수준이라 CPU
+             * 영향은 무시할 만하고, 전력을 더 쓰는 timeBeginPeriod 는 쓰지 않습니다. */
+            platform_sleep_milliseconds(5);
+            continue;
+        }
+        if (ret < 0) {
+            /* 예전에는 여기서 조용히 빠져나가 처리 스레드가 영원히 새 프레임을
+             * 기다렸습니다. 카메라를 뽑으면 로그도 없이 감시가 멈춘 채로 남았습니다. */
+            lc_finish(lc, ret == AVERROR_EOF ? LC_END_EOF : LC_END_READ, ret);
+            goto cap_done;
+        }
 
         if (lc->av_packet->stream_index != lc->video_stream) {
             av_packet_unref(lc->av_packet);
@@ -614,34 +694,28 @@ static void *live_capture_thread(void *arg)
         }
         ret = avcodec_send_packet(lc->dec, lc->av_packet);
         av_packet_unref(lc->av_packet);
-        if (ret < 0) break;
+        if (ret < 0) {
+            lc_finish(lc, LC_END_DECODE, ret);
+            goto cap_done;
+        }
 
         while (!lc->stop) {
-            uint8_t *dst[4];
-            int dst_stride[4];
-            int back;
+            AVFrame *back;
 
             ret = avcodec_receive_frame(lc->dec, lc->av_frame);
             if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) break;
-            if (ret < 0) { lc->error = 1; goto cap_done; }
+            if (ret < 0) {
+                lc->error = 1;
+                lc_finish(lc, LC_END_DECODE, ret);
+                goto cap_done;
+            }
 
-            lc->sws = sws_getCachedContext(
-                lc->sws,
-                lc->av_frame->width, lc->av_frame->height,
-                (enum AVPixelFormat)lc->av_frame->format,
-                lc->width, lc->height,
-                AV_PIX_FMT_RGB24, SWS_FAST_BILINEAR, NULL, NULL, NULL);
-            if (!lc->sws) { lc->error = 1; goto cap_done; }
-
-            /* write_idx 버퍼에 씁니다 (lock 불필요: 이 스레드만 접근). */
-            back = lc->write_idx;
-            dst[0] = lc->rgb[back]; dst[1] = dst[2] = dst[3] = NULL;
-            dst_stride[0] = lc->rgb_stride; dst_stride[1] = dst_stride[2] = dst_stride[3] = 0;
-            sws_scale(lc->sws,
-                      (const uint8_t *const *)lc->av_frame->data,
-                      lc->av_frame->linesize,
-                      0, lc->av_frame->height, dst, dst_stride);
-            av_frame_unref(lc->av_frame);
+            /* write_idx 칸에 참조만 옮깁니다 (lock 불필요: 이 스레드만 접근).
+             * 이전에 이 칸에 있던 프레임은 처리 스레드가 가져가지 않은 프레임이라
+             * 변환 없이 참조만 놓습니다. */
+            back = lc->slot[lc->write_idx];
+            av_frame_unref(back);
+            av_frame_move_ref(back, lc->av_frame);
 
             /* write ↔ fresh 스왑 후 시그널 */
             lc_mutex_lock(&lc->lock);
@@ -660,25 +734,31 @@ cap_done:
 #endif
 }
 
+/* first_index: 이 연결의 첫 프레임 번호. 재연결 후에도 detect_every 주기가 이어지게 합니다. */
 static int live_capture_start(LiveCapture *lc,
                                AVFormatContext *fmt, AVCodecContext *dec,
                                int video_stream, int width, int height,
+                               int64_t first_index, InputWatch *watch,
                                const MediaOptions *options,
                                char *error, size_t error_size) {
     int i;
     lc->fmt = fmt; lc->dec = dec; lc->video_stream = video_stream;
     lc->width = width; lc->height = height; lc->options = options;
+    lc->watch = watch;
     lc->rgb_stride = width * 3;
     lc->write_idx = 0; lc->fresh_idx = 1; lc->read_idx = 2;
-    lc->fresh_ready = 0; lc->stop = 0; lc->error = 0; lc->frame_index = 0;
+    lc->fresh_ready = 0; lc->stop = 0; lc->error = 0; lc->frame_index = first_index;
+    lc->ended = 0; lc->end_cause = LC_END_NONE; lc->end_ret = 0;
 
     lc_mutex_init(&lc->lock);
     lc_cond_init(&lc->cond);
 
     for (i = 0; i < 3; i++) {
-        lc->rgb[i] = (uint8_t *)malloc((size_t)width * height * 3);
-        if (!lc->rgb[i]) { set_error(error, error_size, "live_capture: OOM"); return -1; }
+        lc->slot[i] = av_frame_alloc();
+        if (!lc->slot[i]) { set_error(error, error_size, "live_capture: OOM"); return -1; }
     }
+    lc->rgb = (uint8_t *)malloc((size_t)width * height * 3);
+    if (!lc->rgb) { set_error(error, error_size, "live_capture: OOM (rgb)"); return -1; }
     lc->av_frame = av_frame_alloc();
     lc->av_packet = av_packet_alloc();
     if (!lc->av_frame || !lc->av_packet) {
@@ -691,31 +771,57 @@ static int live_capture_start(LiveCapture *lc,
     if (pthread_create(&lc->thread, NULL, live_capture_thread, lc) != 0) {
         set_error(error, error_size, "pthread_create 실패"); return -1;
     }
+    lc->thread_started = 1;
 #endif
     return 0;
 }
 
-static void live_capture_stop(LiveCapture *lc) {
+/*
+ * 캡처 스레드를 멈추고 자원을 해제합니다. 반환 0 = 정상, -1 = 스레드가 5초 안에 끝나지 않음.
+ *
+ * -1 이면 스레드가 아직 fmt·dec·rgb 를 쓰고 있을 수 있어 아무것도 해제하지 않습니다.
+ * 예전에는 기다림이 끝나면 무조건 해제해, 드라이버가 멈춘 경우 해제된 메모리를
+ * 스레드가 계속 쓰는 크래시 위험이 있었습니다. 호출자는 -1 이면 입력도 닫지 말고
+ * 프로세스를 끝내야 합니다(exit 3 → 래퍼가 새 프로세스로 복구).
+ */
+static int live_capture_stop(LiveCapture *lc) {
     int i;
+    int joined = 1;
     lc->stop = 1;
+    if (lc->watch) lc->watch->abort = 1;
     lc_mutex_lock(&lc->lock);
     lc_cond_signal(&lc->cond);
     lc_mutex_unlock(&lc->lock);
 #ifdef _WIN32
     if (lc->thread_handle) {
-        WaitForSingleObject(lc->thread_handle, 5000);
-        CloseHandle(lc->thread_handle);
-        lc->thread_handle = NULL;
+        if (WaitForSingleObject(lc->thread_handle, 5000) != WAIT_OBJECT_0) {
+            joined = 0;
+        } else {
+            CloseHandle(lc->thread_handle);
+            lc->thread_handle = NULL;
+        }
     }
 #else
-    pthread_join(lc->thread, NULL);
+    /* pthread 에는 이식 가능한 시간 제한 join 이 없어 그대로 기다립니다.
+     * 프로토콜 입력은 abort 콜백으로, 장치 입력은 NONBLOCK 으로 풀리므로 무한 대기하지 않습니다. */
+    if (lc->thread_started) {
+        pthread_join(lc->thread, NULL);
+        lc->thread_started = 0;
+    }
 #endif
-    sws_freeContext(lc->sws);
+    if (!joined) return -1;
+    sws_freeContext(lc->out_sws);
+    lc->out_sws = NULL;
     av_frame_free(&lc->av_frame);
     av_packet_free(&lc->av_packet);
     lc_cond_destroy(&lc->cond);
     lc_mutex_destroy(&lc->lock);
-    for (i = 0; i < 3; i++) { free(lc->rgb[i]); lc->rgb[i] = NULL; }
+    /* av_frame_free 는 참조를 놓고 구조체까지 해제하며 NULL 도 안전합니다. */
+    for (i = 0; i < 3; i++) av_frame_free(&lc->slot[i]);
+    free(lc->rgb);
+    lc->rgb = NULL;
+    if (lc->watch) lc->watch->abort = 0;
+    return 0;
 }
 
 /*
@@ -803,36 +909,74 @@ int media_first_video_device(const char *format, char *buf, size_t bufsize) {
     return rc;
 }
 
-int media_process(const char *input_path, const char *output_path,
-                  const MediaOptions *options, FrameCallback callback,
-                  void *opaque, char *error, size_t error_size) {
-    AVFormatContext *input = NULL;
-    const AVInputFormat *input_format = NULL;
-    AVCodecContext *decoder = NULL;
-    const AVCodec *codec;
-    AVFrame *frame = NULL;
-    AVPacket *packet = NULL;
-    AVDictionary *input_options = NULL;
-    Pipeline pipeline;
+/*
+ * 입력 장치/파일 하나의 FFmpeg 자원입니다. 재연결 때는 이것만 닫고 다시 엽니다.
+ * watch 는 format->interrupt_callback.opaque 가 가리키므로, 입력이 열려 있는 동안
+ * 이 구조체의 주소가 바뀌면 안 됩니다(media_process 지역 변수로만 둡니다).
+ */
+typedef struct {
+    AVFormatContext *format;  /* MediaInput 소유 — close_input 이 avformat_close_input 으로 해제 */
+    AVCodecContext *decoder;  /* MediaInput 소유 — close_input 이 avcodec_free_context 로 해제 */
     int video_stream;
+    AVRational frame_rate;
+    InputWatch watch;
+} MediaInput;
+
+/* 첫 프레임 전 유예. dshow 는 그래프 시작 후 첫 프레임까지 1~3초 걸릴 수 있습니다. */
+#define MEDIA_FIRST_FRAME_GRACE_SECONDS 10.0
+/* 열기 전체(dshow 폴백 3단계 + find_stream_info 탐색)의 상한. */
+#define MEDIA_OPEN_GRACE_SECONDS 20.0
+
+static double media_stall_seconds(const MediaOptions *options) {
+    return options->stall_seconds > 0.0 ? options->stall_seconds : 5.0;
+}
+
+/* NULL·이미 닫힌 상태에서도 안전합니다. FFmpeg 의 두 해제 함수가 포인터를 NULL 로 만듭니다. */
+static void close_input(MediaInput *in) {
+    if (!in) return;
+    avcodec_free_context(&in->decoder);
+    avformat_close_input(&in->format);
+    in->video_stream = -1;
+}
+
+/* avformat_open_input 이 실패하면 컨텍스트를 해제하므로 시도마다 새로 만듭니다. */
+static AVFormatContext *new_input_context(MediaInput *in, const MediaOptions *options) {
+    AVFormatContext *f = avformat_alloc_context();
+    if (!f) return NULL;
+    f->interrupt_callback.callback = watch_interrupt;
+    f->interrupt_callback.opaque = &in->watch;
+    if (options->realtime) {
+        f->flags |= AVFMT_FLAG_NOBUFFER;
+        f->max_delay = 0;
+    }
+    return f;
+}
+
+/*
+ * 입력을 열고 디코더까지 준비합니다.
+ * pin_size: NULL 이 아니면 options->video_size 대신 이 해상도로 장치를 엽니다(재연결용).
+ * 반환 0 = 성공, 1 = 종료 요청으로 중단, -1 = 실패, -2 = 열기 도중 데이터가 끊김.
+ * 실패·중단 시 in 은 닫힌 상태입니다.
+ * -2 를 따로 두는 이유: 데이터가 아예 안 오는 상태를 일반 실패와 구분해 로그에 남깁니다.
+ */
+static int open_input(MediaInput *in, const char *input_path,
+                      const MediaOptions *options, const char *pin_size,
+                      char *error, size_t error_size) {
+    const AVInputFormat *input_format = NULL;
+    AVDictionary *input_options = NULL;  /* open_input 소유 — done 에서 av_dict_free */
+    const AVCodec *codec;
+    const char *video_size = pin_size ? pin_size : options->video_size;
     int ret;
     int result = -1;
-    int finish_output = 0;
 
-    /* Pipeline의 모든 포인터와 카운터를 안전한 0/NULL 상태로 시작합니다. */
-    memset(&pipeline, 0, sizeof(pipeline));
-    av_log_set_level(AV_LOG_ERROR);
-    if (!input_path || !options || !callback ||
-        (output_path && strcmp(input_path, output_path) == 0)) {
-        set_error(error, error_size,
-                  "input must be present and differ from an optional output");
-        return -1;
-    }
-    pipeline.output_path = output_path;
-    pipeline.options = options;
-    pipeline.callback = callback;
-    pipeline.opaque = opaque;
-    if (options->stats) memset(options->stats, 0, sizeof(*options->stats));
+    in->format = NULL;
+    in->decoder = NULL;
+    in->video_stream = -1;
+    in->watch.options = options;
+    in->watch.abort = 0;
+    in->watch.timed_out = 0;
+    in->watch.open_deadline =
+        options->realtime ? monotonic_seconds() + MEDIA_OPEN_GRACE_SECONDS : 0.0;
 
     /*
      * input_format이 있으면 파일 자동 감지가 아니라 libavdevice의 카메라 입력을
@@ -848,8 +992,8 @@ int media_process(const char *input_path, const char *output_path,
                       options->input_format);
             goto done;
         }
-        if (options->video_size)
-            av_dict_set(&input_options, "video_size", options->video_size, 0);
+        if (video_size)
+            av_dict_set(&input_options, "video_size", video_size, 0);
         if (options->framerate)
             av_dict_set(&input_options, "framerate", options->framerate, 0);
         if (strcmp(options->input_format, "avfoundation") == 0) {
@@ -868,16 +1012,10 @@ int media_process(const char *input_path, const char *output_path,
     }
 
     /* 카메라 읽기가 블로킹 중이어도 Ctrl+C 요청을 감지할 수 있게 미리 설정합니다. */
-    input = avformat_alloc_context();
-    if (!input) {
+    in->format = new_input_context(in, options);
+    if (!in->format) {
         set_error(error, error_size, "out of memory creating input context");
         goto done;
-    }
-    input->interrupt_callback.callback = interrupt_ffmpeg;
-    input->interrupt_callback.opaque = (void *)options;
-    if (options->realtime) {
-        input->flags |= AVFMT_FLAG_NOBUFFER;
-        input->max_delay = 0;
     }
 
     /*
@@ -885,7 +1023,7 @@ int media_process(const char *input_path, const char *output_path,
      * 제공합니다. 여기서는 가장 적합한 비디오 스트림 하나만 선택하고 오디오는
      * 의도적으로 무시합니다.
      */
-    ret = avformat_open_input(&input, input_path, input_format, &input_options);
+    ret = avformat_open_input(&in->format, input_path, input_format, &input_options);
 
     /* [수정 2026-09-21] dshow 폴백 순서:
      *   1차: MJPEG + video_size + framerate (USB 대역폭 최소화)
@@ -896,194 +1034,485 @@ int media_process(const char *input_path, const char *output_path,
      *   실패하므로, 옵션을 제거하고 카메라 기본 협상에 맡기는 경로를 추가합니다. */
 
     /* 2차: MJPEG 미지원 → YUY2 + 지정 해상도·FPS 재시도 */
-    if (ret < 0 && options->input_format &&
+    if (ret < 0 && !in->watch.timed_out && options->input_format &&
         strcmp(options->input_format, "dshow") == 0) {
         fprintf(stderr, "info: dshow MJPEG 미지원, YUY2로 재시도합니다\n");
-        /* avformat_open_input 실패 시 input은 이미 NULL로 해제됩니다. */
+        /* avformat_open_input 실패 시 in->format 은 이미 NULL로 해제됩니다. */
         av_dict_free(&input_options);
         input_options = NULL;
-        if (options->video_size)
-            av_dict_set(&input_options, "video_size", options->video_size, 0);
+        if (video_size)
+            av_dict_set(&input_options, "video_size", video_size, 0);
         if (options->framerate)
             av_dict_set(&input_options, "framerate", options->framerate, 0);
         av_dict_set(&input_options, "rtbufsize", "60M", 0);
-        input = avformat_alloc_context();
-        if (!input) {
+        in->format = new_input_context(in, options);
+        if (!in->format) {
             set_error(error, error_size, "out of memory creating input context");
             goto done;
         }
-        input->interrupt_callback.callback = interrupt_ffmpeg;
-        input->interrupt_callback.opaque = (void *)options;
-        if (options->realtime) {
-            input->flags |= AVFMT_FLAG_NOBUFFER;
-            input->max_delay = 0;
-        }
-        ret = avformat_open_input(&input, input_path, input_format, &input_options);
+        ret = avformat_open_input(&in->format, input_path, input_format, &input_options);
     }
 
     /* 3차: video_size·framerate 조합을 카메라 드라이버가 거부 → 기본값 협상 */
-    if (ret < 0 && options->input_format &&
+    if (ret < 0 && !in->watch.timed_out && options->input_format &&
         strcmp(options->input_format, "dshow") == 0) {
         fprintf(stderr,
                 "info: dshow YUY2 %s%s%s 미지원, 카메라 기본 해상도로 재시도합니다\n",
-                options->video_size ? options->video_size : "",
-                (options->video_size && options->framerate) ? "@" : "",
+                video_size ? video_size : "",
+                (video_size && options->framerate) ? "@" : "",
                 options->framerate  ? options->framerate  : "");
         av_dict_free(&input_options);
         input_options = NULL;
         av_dict_set(&input_options, "rtbufsize", "60M", 0);
-        input = avformat_alloc_context();
-        if (!input) {
+        in->format = new_input_context(in, options);
+        if (!in->format) {
             set_error(error, error_size, "out of memory creating input context");
             goto done;
         }
-        input->interrupt_callback.callback = interrupt_ffmpeg;
-        input->interrupt_callback.opaque = (void *)options;
-        if (options->realtime) {
-            input->flags |= AVFMT_FLAG_NOBUFFER;
-            input->max_delay = 0;
-        }
-        ret = avformat_open_input(&input, input_path, input_format, &input_options);
+        ret = avformat_open_input(&in->format, input_path, input_format, &input_options);
     }
 
     if (ret < 0) {
         if (interrupt_ffmpeg((void *)options)) {
-            result = 0;
+            result = 1;
             goto done;
         }
-        set_av_error(error, error_size, "avformat_open_input", ret);
+        if (in->watch.timed_out) {
+            set_error(error, error_size, "avformat_open_input: no response for %.0fs",
+                      MEDIA_OPEN_GRACE_SECONDS);
+            result = -2;
+        } else {
+            set_av_error(error, error_size, "avformat_open_input", ret);
+        }
         goto done;
     }
-    ret = avformat_find_stream_info(input, NULL);
+    ret = avformat_find_stream_info(in->format, NULL);
     if (ret < 0) {
         if (interrupt_ffmpeg((void *)options)) {
-            result = 0;
+            result = 1;
             goto done;
         }
-        set_av_error(error, error_size, "avformat_find_stream_info", ret);
+        if (in->watch.timed_out) {
+            set_error(error, error_size, "avformat_find_stream_info: no data for %.0fs",
+                      MEDIA_OPEN_GRACE_SECONDS);
+            result = -2;
+        } else {
+            set_av_error(error, error_size, "avformat_find_stream_info", ret);
+        }
         goto done;
     }
-    video_stream = av_find_best_stream(input, AVMEDIA_TYPE_VIDEO, -1, -1,
-                                       &codec, 0);
-    if (video_stream < 0) {
-        set_av_error(error, error_size, "av_find_best_stream", video_stream);
+    /* 열기가 끝났으므로 열기 시간 제한을 풉니다. 이후 끊김은 처리 스레드가
+     * "새 프레임이 N초 동안 없음"으로 판정합니다. */
+    in->watch.open_deadline = 0.0;
+    /*
+     * 실시간 입력은 열기가 끝난 뒤에 비차단 읽기로 바꿉니다.
+     *
+     * 차단 모드의 dshow 는 패킷이 없으면 무한 대기하고 interrupt 콜백도 보지 않아,
+     * 카메라가 프레임만 멈추면 캡처 스레드를 멈출 방법이 없었습니다. 비차단이면
+     * EAGAIN 이 돌아와 stop 플래그를 확인할 수 있습니다. dshow 는 EAGAIN 을 주기 전에
+     * 장치 이벤트를 먼저 확인하므로 분리(EIO) 감지는 그대로입니다.
+     * find_stream_info 이전에 켜지 않는 이유: 탐색 중 EAGAIN 은 sleep 없이 재시도되어
+     * 코어 하나를 소모합니다.
+     */
+    if (options->realtime) in->format->flags |= AVFMT_FLAG_NONBLOCK;
+
+    in->video_stream = av_find_best_stream(in->format, AVMEDIA_TYPE_VIDEO, -1, -1,
+                                           &codec, 0);
+    if (in->video_stream < 0) {
+        set_av_error(error, error_size, "av_find_best_stream", in->video_stream);
         goto done;
     }
-    decoder = avcodec_alloc_context3(codec);
-    frame = av_frame_alloc();
-    packet = av_packet_alloc();
-    if (!decoder || !frame || !packet) {
-        set_error(error, error_size, "out of memory creating video reader");
+    in->decoder = avcodec_alloc_context3(codec);
+    if (!in->decoder) {
+        set_error(error, error_size, "out of memory creating video decoder");
         goto done;
     }
     ret = avcodec_parameters_to_context(
-        decoder, input->streams[video_stream]->codecpar);
+        in->decoder, in->format->streams[in->video_stream]->codecpar);
     if (ret < 0) {
         set_av_error(error, error_size, "avcodec_parameters_to_context", ret);
         goto done;
     }
     /* 디코더 역시 한 스레드로 제한해 자원 사용량을 예측하기 쉽게 합니다. */
-    decoder->thread_count = 1;
-    if (options->realtime) decoder->flags |= AV_CODEC_FLAG_LOW_DELAY;
-    ret = avcodec_open2(decoder, codec, NULL);
+    in->decoder->thread_count = 1;
+    if (options->realtime) in->decoder->flags |= AV_CODEC_FLAG_LOW_DELAY;
+    ret = avcodec_open2(in->decoder, codec, NULL);
     if (ret < 0) {
         set_av_error(error, error_size, "avcodec_open2(decoder)", ret);
         goto done;
     }
-    pipeline.frame_rate =
-        av_guess_frame_rate(input, input->streams[video_stream], NULL);
+    in->frame_rate = av_guess_frame_rate(in->format,
+                                         in->format->streams[in->video_stream], NULL);
+    result = 0;
+
+done:
+    av_dict_free(&input_options);
+    if (result != 0) close_input(in);
+    return result;
+}
+
+/*
+ * 캡처 해상도. 일부 카메라는 avformat_find_stream_info 이후에도 codecpar 해상도가
+ * 0이라 요청한 video_size 문자열로 대신합니다. 반환 0 = 성공.
+ */
+static int input_resolution(const MediaInput *in, const char *video_size,
+                            int *w, int *h) {
+    *w = in->decoder ? in->decoder->width : 0;
+    *h = in->decoder ? in->decoder->height : 0;
+    if ((*w <= 0 || *h <= 0) && video_size)
+        sscanf(video_size, "%dx%d", w, h);
+    return (*w > 0 && *h > 0) ? 0 : -1;
+}
+
+static void notify_event(const MediaOptions *options, MediaEventKind kind,
+                         const char *detail) {
+    if (options->on_event) options->on_event(options->event_opaque, kind, detail);
+}
+
+/* seconds 동안 기다리되 100ms 마다 종료 요청을 확인합니다. 반환 1 = 중단 요청. */
+static int wait_interruptible(const MediaOptions *options, double seconds) {
+    double until = monotonic_seconds() + seconds;
+    while (monotonic_seconds() < until) {
+        if (interrupt_ffmpeg((void *)options)) return 1;
+        platform_sleep_milliseconds(100);
+    }
+    return interrupt_ffmpeg((void *)options) ? 1 : 0;
+}
+
+/*
+ * 끊긴 입력을 닫고 백오프하며 다시 엽니다. in 은 호출 시점에 이미 닫혀 있어야 합니다.
+ * want_w/h: 첫 연결 해상도. 다르게 열리면 버퍼·게이트·안정화 결과를 이어 쓸 수 없어 포기합니다.
+ * 반환 0 = 재연결 성공, 1 = 종료 요청, -1 = 포기·해상도 변경(error 채움).
+ */
+static int reconnect_input(MediaInput *in, const char *input_path,
+                           const MediaOptions *options, int want_w, int want_h,
+                           char *error, size_t error_size) {
+    char detail[320];
+    char open_error[256] = "";
+    char pin[32];
+    double down_start = monotonic_seconds();
+    double last_still = down_start;
+    double max_backoff = options->reconnect_max_backoff > 0.0
+                             ? options->reconnect_max_backoff : 30.0;
+    int attempt = 0;
+
+    /* 장치 기본 해상도로 열렸던 경우에도 같은 해상도를 요청합니다. */
+    if (options->video_size) snprintf(pin, sizeof(pin), "%s", options->video_size);
+    else snprintf(pin, sizeof(pin), "%dx%d", want_w, want_h);
+
+    for (;;) {
+        double wait = reconnect_backoff_seconds(attempt, 1.0, max_backoff);
+        double now, down;
+        int r, got_w = 0, got_h = 0;
+
+        snprintf(detail, sizeof(detail), "attempt=%d wait=%.0fs", attempt + 1, wait);
+        notify_event(options, MEDIA_EVENT_RECONNECT_ATTEMPT, detail);
+        if (wait_interruptible(options, wait)) return 1;
+        attempt++;
+
+        r = open_input(in, input_path, options, pin, open_error, sizeof(open_error));
+        if (r > 0) return 1;
+        now = monotonic_seconds();
+        down = now - down_start;
+        if (r == 0) {
+            input_resolution(in, pin, &got_w, &got_h);
+            if (got_w != want_w || got_h != want_h) {
+                set_error(error, error_size,
+                          "camera resolution changed after reconnect: %dx%d -> %dx%d",
+                          want_w, want_h, got_w, got_h);
+                snprintf(detail, sizeof(detail),
+                         "down=%.1fs reason=resolution_changed %dx%d->%dx%d",
+                         down, want_w, want_h, got_w, got_h);
+                notify_event(options, MEDIA_EVENT_GIVE_UP, detail);
+                close_input(in);
+                if (options->stats) options->stats->disconnected_seconds += down;
+                return -1;
+            }
+            if (options->stats) {
+                options->stats->reconnects++;
+                options->stats->disconnected_seconds += down;
+            }
+            snprintf(detail, sizeof(detail), "down=%.1fs attempts=%d", down, attempt);
+            notify_event(options, MEDIA_EVENT_RECONNECTED, detail);
+            return 0;
+        }
+        if (options->reconnect_giveup_seconds > 0.0 &&
+            down >= options->reconnect_giveup_seconds) {
+            set_error(error, error_size, "camera reconnect gave up after %.0fs: %s",
+                      down, open_error);
+            snprintf(detail, sizeof(detail), "down=%.0fs attempts=%d last_error=%s",
+                     down, attempt, open_error);
+            notify_event(options, MEDIA_EVENT_GIVE_UP, detail);
+            if (options->stats) options->stats->disconnected_seconds += down;
+            return -1;
+        }
+        if (now - last_still >= 60.0) {
+            last_still = now;
+            snprintf(detail, sizeof(detail), "down=%.0fs attempts=%d last_error=%s",
+                     down, attempt, open_error);
+            notify_event(options, MEDIA_EVENT_STILL_DISCONNECTED, detail);
+        }
+    }
+}
+
+/* 카메라 한 연결이 끝난 이유. */
+typedef enum {
+    CAM_END_INTERRUPTED = 0,
+    CAM_END_MAX_FRAMES,
+    CAM_END_STALL,
+    CAM_END_THREAD,      /* 캡처 스레드가 스스로 끝남 — 원인은 LiveCapture.end_cause */
+    CAM_END_CALLBACK     /* 처리 콜백 실패 — 재연결로 해결되지 않음 */
+} CamEnd;
+
+/*
+ * 캡처 스레드가 채운 최신 프레임을 받아 콜백을 돌립니다. 한 연결이 끝날 때까지 반복합니다.
+ *
+ * 끊김을 처리 스레드에서 판정하는 이유: 캡처 스레드는 av_read_frame 에 막혀 있을 수
+ * 있어 스스로 시간을 잴 수 없습니다. 기준 시각은 콜백이 끝난 직후로 잡아, 추론이
+ * 느린 프레임 뒤에 멀쩡한 카메라를 끊김으로 오판하지 않게 합니다.
+ */
+static CamEnd camera_loop(LiveCapture *lc, Pipeline *pipeline,
+                          char *error, size_t error_size) {
+    const MediaOptions *options = pipeline->options;
+    double stall = media_stall_seconds(options);
+    double last_frame_at = monotonic_seconds();
+    int got_first = 0;
+
+    while (!interrupt_ffmpeg((void *)options)) {
+        int64_t seq;
+        int     ridx;
+        int     stalled = 0;
+
+        lc_mutex_lock(&lc->lock);
+        /* 새 프레임이 올 때까지 최대 100ms씩 대기합니다. */
+        while (!lc->fresh_ready && !lc->ended) {
+            lc_cond_timedwait(&lc->cond, &lc->lock, 100);
+            if (interrupt_ffmpeg((void *)options)) break;
+            if (reconnect_stalled(monotonic_seconds(), last_frame_at, got_first,
+                                  stall, MEDIA_FIRST_FRAME_GRACE_SECONDS)) {
+                stalled = 1;
+                break;
+            }
+        }
+        if (interrupt_ffmpeg((void *)options)) {
+            lc_mutex_unlock(&lc->lock);
+            return CAM_END_INTERRUPTED;
+        }
+        if (!lc->fresh_ready) {
+            lc_mutex_unlock(&lc->lock);
+            return stalled ? CAM_END_STALL : CAM_END_THREAD;
+        }
+        /* fresh ↔ read 스왑: read_idx 버퍼가 처리 전용으로 안전해집니다.
+         * 캡처 스레드는 write_idx(≠ read_idx)에만 씁니다. */
+        { int tmp = lc->read_idx; lc->read_idx = lc->fresh_idx; lc->fresh_idx = tmp; }
+        lc->fresh_ready = 0;
+        seq  = lc->frame_index;
+        ridx = lc->read_idx;
+        lc_mutex_unlock(&lc->lock);
+
+        {
+            RgbFrame rgb;
+            double   started;
+            /* read_idx 칸은 다음 스왑 전까지 캡처 스레드가 건드리지 않습니다. */
+            const AVFrame *src = lc->slot[ridx];
+            uint8_t *dst[4];
+            int dst_stride[4];
+            const AVPixFmtDescriptor *desc;
+
+            started = monotonic_seconds();
+            lc->out_sws = sws_getCachedContext(
+                lc->out_sws, src->width, src->height, (enum AVPixelFormat)src->format,
+                lc->width, lc->height, AV_PIX_FMT_RGB24, SWS_FAST_BILINEAR,
+                NULL, NULL, NULL);
+            if (!lc->out_sws) {
+                set_error(error, error_size, "failed to create camera color converter");
+                return CAM_END_CALLBACK;
+            }
+            dst[0] = lc->rgb; dst[1] = dst[2] = dst[3] = NULL;
+            dst_stride[0] = lc->rgb_stride; dst_stride[1] = dst_stride[2] = dst_stride[3] = 0;
+            sws_scale(lc->out_sws, (const uint8_t *const *)src->data, src->linesize,
+                      0, src->height, dst, dst_stride);
+            if (options->stats)
+                options->stats->input_convert_seconds += monotonic_seconds() - started;
+
+            memset(&rgb, 0, sizeof(rgb));
+            rgb.data   = lc->rgb;
+            rgb.width  = lc->width;
+            rgb.height = lc->height;
+            rgb.stride = lc->rgb_stride;
+            rgb.index  = seq;
+            /*
+             * luma: 디코더 출력이 8비트 평면 YUV(MJPEG → yuvj422p 등)이고 크기가 같으면
+             * Y 평면을 그대로 넘깁니다. 판정 기준은 파일 경로(handle_decoded_frame)와 같습니다.
+             * YUY2 같은 packed 형식은 Y 가 섞여 있어 NULL 로 두고 main.c 의 RGB 폴백을 씁니다.
+             */
+            desc = av_pix_fmt_desc_get((enum AVPixelFormat)src->format);
+            if (desc && desc->nb_components >= 3 &&
+                !(desc->flags & (AV_PIX_FMT_FLAG_RGB | AV_PIX_FMT_FLAG_PAL |
+                                 AV_PIX_FMT_FLAG_BITSTREAM)) &&
+                desc->comp[0].plane == 0 && desc->comp[0].depth == 8 &&
+                desc->comp[0].step == 1 && src->data[0] &&
+                src->width == lc->width && src->height == lc->height &&
+                src->linesize[0] >= src->width) {
+                rgb.luma        = src->data[0];
+                rgb.luma_stride = src->linesize[0];
+            } else {
+                rgb.luma        = NULL;
+                rgb.luma_stride = 0;
+            }
+
+            started = monotonic_seconds();
+            if (pipeline->callback(&rgb, pipeline->opaque, error, error_size) != 0)
+                return CAM_END_CALLBACK;
+            if (options->stats) {
+                options->stats->callback_seconds += monotonic_seconds() - started;
+                options->stats->frames = seq;
+            }
+        }
+        last_frame_at = monotonic_seconds();
+        got_first = 1;
+        if (options->max_frames > 0 && seq >= options->max_frames)
+            return CAM_END_MAX_FRAMES;
+    }
+    return CAM_END_INTERRUPTED;
+}
+
+int media_process(const char *input_path, const char *output_path,
+                  const MediaOptions *options, FrameCallback callback,
+                  void *opaque, char *error, size_t error_size) {
+    MediaInput in;
+    AVFrame *frame = NULL;    /* media_process 소유 — done 에서 av_frame_free */
+    AVPacket *packet = NULL;  /* media_process 소유 — done 에서 av_packet_free */
+    Pipeline pipeline;
+    int ret;
+    int result = -1;
+    int finish_output = 0;
+    /* 캡처 스레드가 멈추지 않아 입력을 닫으면 안 되는 상태. 프로세스가 끝나면 OS 가 회수합니다. */
+    int input_leaked = 0;
+
+    /* Pipeline의 모든 포인터와 카운터를 안전한 0/NULL 상태로 시작합니다. */
+    memset(&pipeline, 0, sizeof(pipeline));
+    memset(&in, 0, sizeof(in));
+    in.video_stream = -1;
+    av_log_set_level(AV_LOG_ERROR);
+    if (!input_path || !options || !callback ||
+        (output_path && strcmp(input_path, output_path) == 0)) {
+        set_error(error, error_size,
+                  "input must be present and differ from an optional output");
+        return -1;
+    }
+    pipeline.output_path = output_path;
+    pipeline.options = options;
+    pipeline.callback = callback;
+    pipeline.opaque = opaque;
+    if (options->stats) memset(options->stats, 0, sizeof(*options->stats));
+
+    ret = open_input(&in, input_path, options, NULL, error, error_size);
+    if (ret > 0) {
+        result = 0;
+        goto done;
+    }
+    if (ret < 0) goto done;
+    /* 프레임률은 첫 연결 값을 끝까지 씁니다. 안정화 시계와 출력 writer 가 이 값을 씁니다. */
+    pipeline.frame_rate = in.frame_rate;
     if (options->stats && pipeline.frame_rate.num > 0 &&
         pipeline.frame_rate.den > 0)
         options->stats->frame_rate = av_q2d(pipeline.frame_rate);
 
-    /* ── 카메라 입력: 캡처 스레드 분리 ──────────────────────────────────
+    /* ── 카메라 입력: 캡처 스레드 분리 + 끊김 시 재연결 ─────────────────
      * 파일 입력은 기존 단일 스레드 루프를 그대로 씁니다.
      * 카메라 입력(dshow·avfoundation·v4l2)만 LiveCapture 경로로 분기합니다. */
     if (options->input_format) {
         LiveCapture lc;
-        int lc_w = decoder->width, lc_h = decoder->height;
-        /* 일부 카메라는 avformat_find_stream_info 이후에도 codecpar 해상도가 0입니다.
-         * --camera-size 옵션에서 직접 파싱합니다. */
-        if ((lc_w <= 0 || lc_h <= 0) && options->video_size)
-            sscanf(options->video_size, "%dx%d", &lc_w, &lc_h);
-        if (lc_w <= 0 || lc_h <= 0) {
+        int64_t next_index = 0;
+        int want_w = 0, want_h = 0;
+
+        if (input_resolution(&in, options->video_size, &want_w, &want_h) != 0) {
             set_error(error, error_size,
                       "카메라 해상도를 알 수 없습니다. --camera-size 옵션을 지정하세요.");
             goto done;
         }
-        memset(&lc, 0, sizeof(lc));
-        if (live_capture_start(&lc, input, decoder, video_stream,
-                               lc_w, lc_h, options, error, error_size) != 0)
-            goto done;
+        for (;;) {
+            CamEnd end;
+            char detail[200];
+            char av_message[AV_ERROR_MAX_STRING_SIZE] = "";
+            const char *cause;
 
-        while (!interrupt_ffmpeg((void *)options)) {
-            int64_t seq;
-            int     ridx;
-
-            lc_mutex_lock(&lc.lock);
-            /* 새 프레임이 올 때까지 최대 100ms씩 대기합니다. */
-            while (!lc.fresh_ready && !lc.error && !lc.stop) {
-                lc_cond_timedwait(&lc.cond, &lc.lock, 100);
-                if (interrupt_ffmpeg((void *)options)) break;
+            /*
+             * 연결마다 삼중 버퍼를 새로 만듭니다. 재연결은 드문 사건이라 그때의
+             * 할당 비용보다, 이전 연결의 스레드 상태가 새 연결에 섞이지 않는 편이 중요합니다.
+             */
+            memset(&lc, 0, sizeof(lc));
+            if (live_capture_start(&lc, in.format, in.decoder, in.video_stream,
+                                   want_w, want_h, next_index, &in.watch,
+                                   options, error, error_size) != 0) {
+                if (live_capture_stop(&lc) != 0) input_leaked = 1;
+                goto done;
             }
-            if (lc.error || lc.stop || interrupt_ffmpeg((void *)options)) {
-                lc_mutex_unlock(&lc.lock);
-                break;
+            end = camera_loop(&lc, &pipeline, error, error_size);
+            if (live_capture_stop(&lc) != 0) {
+                input_leaked = 1;
+                set_error(error, error_size,
+                          "capture thread did not stop within 5s — exiting for restart");
+                notify_event(options, MEDIA_EVENT_GIVE_UP,
+                             "reason=capture_thread_stuck");
+                goto done;
             }
-            /* fresh ↔ read 스왑: read_idx 버퍼가 처리 전용으로 안전해집니다.
-             * 캡처 스레드는 write_idx(≠ read_idx)에만 씁니다. */
-            { int tmp = lc.read_idx; lc.read_idx = lc.fresh_idx; lc.fresh_idx = tmp; }
-            lc.fresh_ready = 0;
-            seq  = lc.frame_index;
-            ridx = lc.read_idx;
-            lc_mutex_unlock(&lc.lock);
+            next_index = lc.frame_index;
 
-            {
-                RgbFrame rgb;
-                double   started;
-                memset(&rgb, 0, sizeof(rgb));
-                rgb.data   = lc.rgb[ridx];
-                rgb.width  = lc.width;
-                rgb.height = lc.height;
-                rgb.stride = lc.rgb_stride;
-                rgb.index  = seq;
-                /* luma: MJPEG/YUY2 캡처 후 RGB 변환 시 별도 Y 평면 없음.
-                 * main.c 의 full_luma(BT.601 RGB→Y) 폴백이 처리합니다. */
-                rgb.luma        = NULL;
-                rgb.luma_stride = 0;
-
-                started = monotonic_seconds();
-                if (pipeline.callback(&rgb, pipeline.opaque, error, error_size) != 0) {
-                    live_capture_stop(&lc);
-                    goto done;
-                }
-                if (options->stats) {
-                    options->stats->callback_seconds +=
-                        monotonic_seconds() - started;
-                    options->stats->frames = seq;
-                }
+            if (end == CAM_END_INTERRUPTED || end == CAM_END_MAX_FRAMES) {
+                result = 0;
+                goto done;
             }
+            if (end == CAM_END_CALLBACK) goto done;
+
+            if (end == CAM_END_STALL) cause = "stall";
+            else if (lc.end_cause == LC_END_EOF) cause = "eof";
+            else if (lc.end_cause == LC_END_DECODE) cause = "decode";
+            else if (lc.end_ret == AVERROR(EIO)) cause = "device_lost";
+            else cause = "av_err";
+            if (end == CAM_END_THREAD && lc.end_ret < 0)
+                av_strerror(lc.end_ret, av_message, sizeof(av_message));
+            snprintf(detail, sizeof(detail), "cause=%s%s%s frame=%lld", cause,
+                     av_message[0] ? " err=" : "", av_message, (long long)next_index);
+            notify_event(options, MEDIA_EVENT_DISCONNECTED, detail);
+
+            close_input(&in);
+            if (!options->reconnect) {
+                set_error(error, error_size, "camera disconnected (%s), reconnect disabled",
+                          cause);
+                goto done;
+            }
+            ret = reconnect_input(&in, input_path, options, want_w, want_h,
+                                  error, error_size);
+            if (ret > 0) {
+                result = 0;
+                goto done;
+            }
+            if (ret < 0) goto done;
         }
-
-        live_capture_stop(&lc);
-        result = 0;
-        goto done;
     }
 
+    frame = av_frame_alloc();
+    packet = av_packet_alloc();
+    if (!frame || !packet) {
+        set_error(error, error_size, "out of memory creating video reader");
+        goto done;
+    }
     /*
      * av_read_frame이 주는 AVPacket은 아직 압축된 데이터입니다.
      * 비디오 패킷만 decoder에 보내고, 오디오/자막 패킷은 즉시 unref합니다.
      */
     while (!interrupt_ffmpeg((void *)options)) {
-        ret = av_read_frame(input, packet);
+        ret = av_read_frame(in.format, packet);
         if (ret == AVERROR(EAGAIN)) {
             /* Live capture may temporarily have no frame; this is not EOF. */
             platform_sleep_milliseconds(1);
             continue;
         }
         if (ret < 0) break;
-        if (packet->stream_index == video_stream) {
-            ret = avcodec_send_packet(decoder, packet);
+        if (packet->stream_index == in.video_stream) {
+            ret = avcodec_send_packet(in.decoder, packet);
 
             /* decoder가 패킷 데이터를 참조한 뒤에는 이 Packet을 다음 읽기에 재사용합니다. */
             av_packet_unref(packet);
@@ -1091,7 +1520,7 @@ int media_process(const char *input_path, const char *output_path,
                 set_av_error(error, error_size, "avcodec_send_packet", ret);
                 goto done;
             }
-            ret = drain_decoder(decoder, frame, &pipeline, error, error_size);
+            ret = drain_decoder(in.decoder, frame, &pipeline, error, error_size);
             if (ret < 0) goto done;
             if (ret > 0) {
                 finish_output = 1;
@@ -1112,12 +1541,12 @@ int media_process(const char *input_path, const char *output_path,
         goto done;
     }
     /* 입력 끝에서 NULL 패킷을 보내 디코더 내부에 남은 프레임까지 모두 받습니다. */
-    ret = avcodec_send_packet(decoder, NULL);
+    ret = avcodec_send_packet(in.decoder, NULL);
     if (ret < 0) {
         set_av_error(error, error_size, "flush decoder", ret);
         goto done;
     }
-    ret = drain_decoder(decoder, frame, &pipeline, error, error_size);
+    ret = drain_decoder(in.decoder, frame, &pipeline, error, error_size);
     if (ret < 0) goto done;
     if (pipeline.frame_index == 0) {
         set_error(error, error_size, "input contains no decoded video frames");
@@ -1137,10 +1566,8 @@ done:
     av_freep(&pipeline.rgb_data[0]);
     av_packet_free(&packet);
     av_frame_free(&frame);
-    avcodec_free_context(&decoder);
-    avformat_close_input(&input);
-    av_dict_free(&input_options);
-    if (options && options->stats)
+    if (!input_leaked) close_input(&in);
+    if (options && options->stats && !options->input_format)
         options->stats->frames = pipeline.frame_index;
     return result;
 }

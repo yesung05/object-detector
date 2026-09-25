@@ -184,45 +184,70 @@ if ($objModel) {
 # detector cannot restart itself, so it signals intent through the exit code:
 #   0   normal stop (user pressed Ctrl+C)  -> we stop too
 #   10  scheduled restart                  -> relaunch immediately, no backoff
+#   3   camera lost (reconnect gave up)    -> relaunch; new process re-detects the camera
 #   any other                              -> crash; relaunch with growing backoff
 #
 # The log file stays the same across restarts so the dashboard does not lose the
 # day's history when a scheduled restart happens mid-session.
 #
 # Crash backoff exists to avoid a spin loop when startup itself fails (missing
-# model, camera in use). After too many quick failures we stop and say so --
-# silently restarting forever would hide the real problem.
+# model, camera in use). We never give up permanently: this is an unattended
+# store, and a camera that is unplugged at boot must be picked up once someone
+# plugs it back in. Repeated quick failures only stretch the wait (max 300s) and
+# are written to logs\restarts.log so the problem is still visible.
+# Remote stop: create logs\STOP; the loop exits after the current run ends.
 $ErrorActionPreference = 'Continue'
 $backoff  = 5
 $quickFails = 0
+$restartLog = Join-Path $ROOT 'logs\restarts.log'
+$stopFile   = Join-Path $ROOT 'logs\STOP'
+if (Test-Path $stopFile) { Remove-Item $stopFile -Force }
 while ($true) {
     $startedAt = Get-Date
     & $exe @cmdArgs
     $code = $LASTEXITCODE
     $ranSeconds = ((Get-Date) - $startedAt).TotalSeconds
+    $when = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
 
-    if ($code -eq 0) { break }
+    if ($code -eq 0) {
+        Add-Content -Path $restartLog -Value "$when exit=0 runtime=$([int]$ranSeconds)s action=stop"
+        break
+    }
+    if (Test-Path $stopFile) {
+        Add-Content -Path $restartLog -Value "$when exit=$code action=stop reason=STOP_file"
+        Remove-Item $stopFile -Force
+        break
+    }
 
     if ($code -eq 10) {
         Write-Host ""
         Write-Host "[restart] scheduled restart -- relaunching" -ForegroundColor Cyan
+        Add-Content -Path $restartLog -Value "$when exit=10 runtime=$([int]$ranSeconds)s action=scheduled_restart"
         $backoff = 5; $quickFails = 0
         Start-Sleep -Seconds 2
         continue
     }
 
-    # Crash path.
+    # Crash / camera-lost path.
     if ($ranSeconds -lt 30) { $quickFails++ } else { $quickFails = 0; $backoff = 5 }
     if ($quickFails -ge 5) {
+        # Keep trying, but slowly, and say so loudly.
+        $backoff = 300
         Write-Host ""
-        Write-Host "[ERROR] detector exited $code within 30s, 5 times in a row." -ForegroundColor Red
-        Write-Host "        Not relaunching. Check the model path, camera, and the log:" -ForegroundColor Red
+        Write-Host "[ERROR] detector exited $code within 30s, $quickFails times in a row." -ForegroundColor Red
+        Write-Host "        Retrying every ${backoff}s. Check the model path, camera, and the log:" -ForegroundColor Red
         Write-Host "        $logFile"
+    }
+    $reason = if ($code -eq 3) { 'camera_lost' } else { 'crash' }
+    Add-Content -Path $restartLog -Value "$when exit=$code runtime=$([int]$ranSeconds)s action=restart reason=$reason wait=${backoff}s quick_fails=$quickFails"
+    Write-Host ""
+    Write-Host "[warn] detector exited with code $code ($reason) -- relaunching in ${backoff}s" -ForegroundColor Yellow
+    Start-Sleep -Seconds $backoff
+    if (Test-Path $stopFile) {
+        Add-Content -Path $restartLog -Value "$((Get-Date).ToString('yyyy-MM-dd HH:mm:ss')) action=stop reason=STOP_file"
+        Remove-Item $stopFile -Force
         break
     }
-    Write-Host ""
-    Write-Host "[warn] detector exited with code $code -- relaunching in ${backoff}s" -ForegroundColor Yellow
-    Start-Sleep -Seconds $backoff
     $backoff = [Math]::Min($backoff * 2, 300)
 }
 

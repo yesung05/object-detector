@@ -44,6 +44,26 @@ typedef int (*FrameCallback)(RgbFrame *frame, void *opaque,
  */
 typedef int (*MediaInterruptCallback)(void *opaque);
 
+/*
+ * 실시간 입력의 연결 상태 변화입니다. detail 은 사람이 읽을 key=value 문자열이며
+ * 콜백이 반환하면 무효가 됩니다(보관 금지).
+ *
+ * 콜백은 FrameCallback 과 같은 스레드(처리 루프)에서 호출되므로 락이 필요 없습니다.
+ * 캡처 스레드에서는 절대 호출하지 않습니다.
+ * 미디어 계층이 직접 로그를 쓰지 않고 콜백으로 넘기는 이유: 이벤트 로그와
+ * 파이프라인 상태(게이트 기준 프레임·트랙 시각 등)는 main 이 소유하기 때문입니다.
+ */
+typedef enum {
+    MEDIA_EVENT_DISCONNECTED = 0,   /* detail: cause=device_lost|stall|eof|av_err|decode */
+    MEDIA_EVENT_RECONNECT_ATTEMPT,  /* detail: attempt=N wait=Ns */
+    MEDIA_EVENT_RECONNECTED,        /* detail: down=Ns attempts=N */
+    MEDIA_EVENT_STILL_DISCONNECTED, /* detail: down=Ns — 60초마다 */
+    MEDIA_EVENT_GIVE_UP             /* detail: down=Ns — 재연결 포기, media_process 실패 반환 */
+} MediaEventKind;
+
+typedef void (*MediaEventCallback)(void *opaque, MediaEventKind kind,
+                                   const char *detail);
+
 /* 출력 및 선택적인 실시간 입력 장치 설정입니다. */
 typedef struct {
     const char *codec;
@@ -56,6 +76,13 @@ typedef struct {
     void *interrupt_opaque;
     int realtime;
     struct MediaStats *stats;
+    /* 재연결 — 카메라 입력(input_format 지정)에서만 사용합니다. 파일 입력은 EOF 가 정상 종료입니다. */
+    MediaEventCallback on_event;     /* NULL 이면 상태 알림 없음 */
+    void *event_opaque;              /* 호출자 소유, 빌려 씀 — media_process 동안 유효해야 함 */
+    int reconnect;                   /* 0 이면 끊김 즉시 실패 반환 */
+    double stall_seconds;            /* 이 시간 동안 새 프레임이 없으면 끊김 (0 이면 5초) */
+    double reconnect_max_backoff;    /* 백오프 상한 (0 이면 30초) */
+    double reconnect_giveup_seconds; /* 이 시간 동안 못 붙으면 포기 (0 이면 무한) */
 } MediaOptions;
 
 typedef struct MediaStats {
@@ -64,6 +91,8 @@ typedef struct MediaStats {
     double input_convert_seconds;
     double callback_seconds;
     double output_seconds;
+    int64_t reconnects;              /* 성공한 재연결 횟수 */
+    double disconnected_seconds;     /* 끊겨 있던 누적 시간 */
 } MediaStats;
 
 /*

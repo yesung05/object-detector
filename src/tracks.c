@@ -155,33 +155,109 @@ void tracks_destroy(TrackList *tl) {
  *   IoU 매칭 성공 시: dwell += now - last_seen (연속 체류 누적)
  *   Re-ID 부활 시  : dwell 그대로 유지 (limbo 기간은 제외)
  */
+/*
+ * 예측 박스: 마지막 박스를 속도 × 경과 시간만큼 옮깁니다.
+ * 경과 시간을 1초로 자르는 이유: 오래 안 보인 트랙을 멀리 외삽하면 엉뚱한 사람과
+ * 매칭됩니다. 1초면 걷는 사람(추론 10fps 기준 10회 분량)을 따라가기에 충분합니다.
+ */
+#define TRACK_PREDICT_MAX_DT 1.0
+/* 속도 추정에 쓰는 간격 범위. 너무 짧으면 박스 떨림이 속도로 증폭되고,
+ * 너무 길면 그 사이의 방향 전환이 섞입니다. */
+#define TRACK_VEL_MIN_DT 0.03
+#define TRACK_VEL_MAX_DT 2.0
+/* 속도 상한(px/s). 720p 에서 화면을 0.6초에 가로지르는 속도라 사람에게는 넉넉하고,
+ * 박스가 튀어서 생긴 비정상 속도가 예측을 망치는 것은 막습니다. */
+#define TRACK_VEL_MAX 2000.0f
+
+static Detection predicted_box(const Track *t, double now) {
+    Detection p = t->box;
+    double dt = now - t->last_seen;
+    float dx, dy;
+    if (dt <= 0.0) return p;
+    if (dt > TRACK_PREDICT_MAX_DT) dt = TRACK_PREDICT_MAX_DT;
+    dx = t->vx * (float)dt;
+    dy = t->vy * (float)dt;
+    p.x1 += dx; p.x2 += dx;
+    p.y1 += dy; p.y2 += dy;
+    return p;
+}
+
+static float clampf_abs(float v, float lim) {
+    if (v > lim) return lim;
+    if (v < -lim) return -lim;
+    return v;
+}
+
+/* 매칭된 새 박스로 속도를 갱신합니다. 반드시 last_seen 갱신 전에 호출합니다. */
+static void update_velocity(Track *t, const Detection *d, double now) {
+    double dt = now - t->last_seen;
+    if (dt >= TRACK_VEL_MIN_DT && dt <= TRACK_VEL_MAX_DT) {
+        float cx0 = (t->box.x1 + t->box.x2) * 0.5f, cy0 = (t->box.y1 + t->box.y2) * 0.5f;
+        float cx1 = (d->x1 + d->x2) * 0.5f,         cy1 = (d->y1 + d->y2) * 0.5f;
+        float ivx = (float)((cx1 - cx0) / dt), ivy = (float)((cy1 - cy0) / dt);
+        /* α=0.5: 한 번의 튀는 박스는 절반만 반영하고, 실제 방향 전환은 2~3회 안에 따라갑니다. */
+        t->vx = clampf_abs(0.5f * t->vx + 0.5f * ivx, TRACK_VEL_MAX);
+        t->vy = clampf_abs(0.5f * t->vy + 0.5f * ivy, TRACK_VEL_MAX);
+    } else if (dt > TRACK_VEL_MAX_DT) {
+        t->vx = t->vy = 0.0f;
+    }
+}
+
+/* det 목록에서 트랙의 예측 박스와 IoU 가 가장 큰 미매칭 박스를 찾습니다. */
+static int best_match(const Track *t, const DetectionList *dets, size_t count,
+                      const int *used, double now, float *best_iou_out) {
+    Detection p = predicted_box(t, now);
+    float best_iou = 0.0f;
+    int best_j = -1;
+    size_t j;
+    for (j = 0; j < count; ++j) {
+        float v;
+        if (used[j]) continue;
+        v = iou(&p, &dets->items[j]);
+        if (v > best_iou) { best_iou = v; best_j = (int)j; }
+    }
+    *best_iou_out = best_iou;
+    return best_j;
+}
+
 void tracks_update(TrackList *tl, const DetectionList *detections,
                    const uint8_t *rgb, int img_w, int img_h, int img_stride,
                    double now) {
+    tracks_update_ex(tl, detections, NULL, rgb, img_w, img_h, img_stride, now);
+}
+
+void tracks_update_ex(TrackList *tl, const DetectionList *detections,
+                      const DetectionList *low,
+                      const uint8_t *rgb, int img_w, int img_h, int img_stride,
+                      double now) {
     size_t i, j, k;
     int    matched_det[1024];
-    size_t det_count;
+    int    matched_low[1024];
+    /* 1차에서 이어진 트랙 표시. 트랙 수가 상한을 넘으면 넘는 트랙은 2차를 건너뜁니다. */
+    unsigned char track_matched[1024];
+    size_t det_count, low_count = 0;
 
     if (!tl || !detections) return;
     det_count = detections->count;
     if (det_count > 1024) det_count = 1024;
     memset(matched_det, 0, det_count * sizeof(matched_det[0]));
+    if (low) {
+        low_count = low->count > 1024 ? 1024 : low->count;
+        memset(matched_low, 0, low_count * sizeof(matched_low[0]));
+    }
+    memset(track_matched, 0, sizeof(track_matched));
 
-    /* ── Phase 1: 활성 트랙 IoU 매칭 ──────────────────────────────── */
+    /* ── Phase 1: 활성 트랙 ↔ 기준 이상 박스 (예측 위치 IoU) ─────────── */
     for (i = 0; i < tl->count; ++i) {
         Track *t = &tl->items[i];
-        float best_iou = 0.0f;
-        int   best_j   = -1;
+        float best_iou;
+        int   best_j;
         if (!t->active) continue;
-        for (j = 0; j < det_count; ++j) {
-            if (matched_det[j]) continue;
-            {
-                float v = iou(&t->box, &detections->items[j]);
-                if (v > best_iou) { best_iou = v; best_j = (int)j; }
-            }
-        }
+        best_j = best_match(t, detections, det_count, matched_det, now, &best_iou);
         if (best_j >= 0 && best_iou >= tl->iou_threshold) {
             matched_det[best_j] = 1;
+            if (i < sizeof(track_matched)) track_matched[i] = 1;
+            update_velocity(t, &detections->items[best_j], now);
             t->dwell_seconds   += now - t->last_seen;
             t->last_seen        = now;
             t->box              = detections->items[best_j];
@@ -202,13 +278,43 @@ void tracks_update(TrackList *tl, const DetectionList *detections,
                                            + 0.15f * new_hist[kk];
                 }
             }
-        } else {
-            t->misses++;
-            if (t->misses > tl->max_misses) {
-                t->active           = 0;
-                /* limbo 시작. 이 기간 동안 Re-ID로 부활할 수 있습니다. */
-                t->limbo_expired_at = now + tl->limbo_seconds;
-            }
+        }
+    }
+
+    /* ── Phase 1b: 못 이어진 활성 트랙 ↔ 낮은 신뢰도 박스 ─────────────────
+     * 위치·관절만 갱신하고 score 는 직전 값을 유지합니다(헤더 설명 참조).
+     * 외관 히스토그램은 갱신하지 않습니다 — 흐릿한 박스는 배경이 섞여 Re-ID 를 흐립니다. */
+    if (low && low_count > 0) {
+        for (i = 0; i < tl->count && i < sizeof(track_matched); ++i) {
+            Track *t = &tl->items[i];
+            float best_iou;
+            int   best_j;
+            float keep_score;
+            if (!t->active || track_matched[i]) continue;
+            best_j = best_match(t, low, low_count, matched_low, now, &best_iou);
+            if (best_j < 0 || best_iou < tl->iou_threshold) continue;
+            matched_low[best_j] = 1;
+            track_matched[i] = 1;
+            keep_score = t->box.score;
+            update_velocity(t, &low->items[best_j], now);
+            t->dwell_seconds += now - t->last_seen;
+            t->last_seen      = now;
+            t->box            = low->items[best_j];
+            t->box.score      = keep_score;
+            t->misses         = 0;
+        }
+    }
+
+    /* ── 미매칭 활성 트랙: misses 누적, 한도 초과 시 limbo ──────────────── */
+    for (i = 0; i < tl->count; ++i) {
+        Track *t = &tl->items[i];
+        if (!t->active) continue;
+        if (i < sizeof(track_matched) && track_matched[i]) continue;
+        t->misses++;
+        if (t->misses > tl->max_misses) {
+            t->active           = 0;
+            /* limbo 시작. 이 기간 동안 Re-ID로 부활할 수 있습니다. */
+            t->limbo_expired_at = now + tl->limbo_seconds;
         }
     }
 
@@ -250,6 +356,8 @@ void tracks_update(TrackList *tl, const DetectionList *detections,
             best_limbo->limbo_expired_at = 0.0;
             best_limbo->box              = detections->items[j];
             best_limbo->last_seen        = now;
+            /* 다른 곳에서 다시 나타났으므로 떠나기 전 속도는 의미가 없습니다. */
+            best_limbo->vx = best_limbo->vy = 0.0f;
             {
                 int kk;
                 for (kk = 0; kk < APPEAR_HIST_BINS; ++kk)
@@ -311,6 +419,18 @@ void tracks_update(TrackList *tl, const DetectionList *detections,
                 slot->appear_valid = 1;
             }
         }
+    }
+}
+
+void tracks_shift_time(TrackList *tl, double gap) {
+    size_t i;
+    if (!tl || gap <= 0.0) return;
+    for (i = 0; i < tl->count; ++i) {
+        Track *t = &tl->items[i];
+        if (t->id <= 0) continue;
+        t->last_seen += gap;
+        if (t->limbo_expired_at > 0.0) t->limbo_expired_at += gap;
+        if (t->head_y_prev_time > 0.0) t->head_y_prev_time += gap;
     }
 }
 

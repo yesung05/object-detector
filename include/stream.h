@@ -85,6 +85,10 @@ void stream_set_door_enabled(int enabled);
  * 1=요청 있었음(꺼내면서 플래그 리셋), 0=없음. */
 int  stream_pop_force_closed(void);
 
+/* 카메라 연결 상태. 0 이면 /snapshot·기준 저장이 503 을 반환하고
+ * /door/state 응답의 camera_connected 가 0 이 됩니다. */
+void stream_set_camera_connected(int connected);
+
 /* ── 개인정보 보호 · 접근 제어 ─────────────────────────────────────────────
  * 스트림/스냅샷에 실제 영상을 내보내지 않는 모드입니다. 가리는 일은 main.c 가
  * 그리기 직전에 프레임을 단색으로 채워서 하고(그 위에 박스·스켈레톤만 그림),
@@ -133,6 +137,7 @@ static inline int  stream_client_count(void) { return 0; }
 static inline void stream_set_door_state(int state) { (void)state; }
 static inline void stream_set_door_enabled(int enabled) { (void)enabled; }
 static inline int  stream_pop_force_closed(void) { return 0; }
+static inline void stream_set_camera_connected(int connected) { (void)connected; }
 static inline void stream_set_access_pin(const char *pin) { (void)pin; }
 static inline void stream_set_privacy_mode(int enabled) { (void)enabled; }
 static inline void stream_set_privacy_unlock_max(int seconds) { (void)seconds; }
