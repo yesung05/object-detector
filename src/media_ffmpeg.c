@@ -887,7 +887,15 @@ int media_process(const char *input_path, const char *output_path,
      */
     ret = avformat_open_input(&input, input_path, input_format, &input_options);
 
-    /* dshow에서 MJPEG 미지원 카메라 → YUY2로 재시도 */
+    /* [수정 2026-09-21] dshow 폴백 순서:
+     *   1차: MJPEG + video_size + framerate (USB 대역폭 최소화)
+     *   2차: YUY2 + video_size + framerate  (MJPEG 미지원 카메라)
+     *   3차: YUY2, 해상도·FPS 없음          (카메라가 요청 조합 자체를 거부할 때)
+     * "Could not set video options" 후 I/O error가 나는 원인:
+     *   dshow가 video_size/framerate 조합을 지원하지 않으면 avformat_open_input이
+     *   실패하므로, 옵션을 제거하고 카메라 기본 협상에 맡기는 경로를 추가합니다. */
+
+    /* 2차: MJPEG 미지원 → YUY2 + 지정 해상도·FPS 재시도 */
     if (ret < 0 && options->input_format &&
         strcmp(options->input_format, "dshow") == 0) {
         fprintf(stderr, "info: dshow MJPEG 미지원, YUY2로 재시도합니다\n");
@@ -898,6 +906,31 @@ int media_process(const char *input_path, const char *output_path,
             av_dict_set(&input_options, "video_size", options->video_size, 0);
         if (options->framerate)
             av_dict_set(&input_options, "framerate", options->framerate, 0);
+        av_dict_set(&input_options, "rtbufsize", "60M", 0);
+        input = avformat_alloc_context();
+        if (!input) {
+            set_error(error, error_size, "out of memory creating input context");
+            goto done;
+        }
+        input->interrupt_callback.callback = interrupt_ffmpeg;
+        input->interrupt_callback.opaque = (void *)options;
+        if (options->realtime) {
+            input->flags |= AVFMT_FLAG_NOBUFFER;
+            input->max_delay = 0;
+        }
+        ret = avformat_open_input(&input, input_path, input_format, &input_options);
+    }
+
+    /* 3차: video_size·framerate 조합을 카메라 드라이버가 거부 → 기본값 협상 */
+    if (ret < 0 && options->input_format &&
+        strcmp(options->input_format, "dshow") == 0) {
+        fprintf(stderr,
+                "info: dshow YUY2 %s%s%s 미지원, 카메라 기본 해상도로 재시도합니다\n",
+                options->video_size ? options->video_size : "",
+                (options->video_size && options->framerate) ? "@" : "",
+                options->framerate  ? options->framerate  : "");
+        av_dict_free(&input_options);
+        input_options = NULL;
         av_dict_set(&input_options, "rtbufsize", "60M", 0);
         input = avformat_alloc_context();
         if (!input) {

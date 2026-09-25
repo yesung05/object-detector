@@ -1060,7 +1060,16 @@ details.dev-accordion[open] > summary { color: var(--red) !important; }
             <div class="stat-label">문 현재 상태</div>
             <div id="door-state-badge" class="door-pill unknown" style="margin-top:4px">— 확인 중</div>
           </div>
-          <div class="stat-value blue" id="cnt-total">0</div>
+          <div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px">
+            <div class="stat-value blue" id="cnt-total">0</div>
+            <!-- 열림 오탐 즉시 수정용. 카메라가 계속 열림으로 판정하면 confirm_frames 후 다시 열림으로 돌아옴 -->
+            <button id="btn-force-closed" onclick="forceDoorClosed()"
+                    style="display:none;font-size:11px;padding:3px 9px;border-radius:6px;
+                           border:1px solid var(--muted);background:var(--bg);
+                           color:var(--text);cursor:pointer;white-space:nowrap">
+              닫힘으로 리셋
+            </button>
+          </div>
         </div>
       </div>
       <div class="surface-summary">
@@ -2565,18 +2574,23 @@ async function pollStatus() {
     const st  = await res.json();
     const d   = st.door || {};
     const collecting = d.auto_phase === 2 || d.auto_phase === 3;
+    const btnForce = document.getElementById("btn-force-closed");
     if (d.state === 1) {
       badge.className = "door-pill open"; badge.textContent = "🔴 열림";
       doorIsOpen = true;  updateCardState("door", "warn", "현재 열려 있음");
+      if (btnForce) btnForce.style.display = "";
     } else if (d.state === 0) {
       badge.className = "door-pill closed"; badge.textContent = "🟢 닫힘";
       doorIsOpen = false; updateCardState("door", "normal", "닫힘 정상");
+      if (btnForce) btnForce.style.display = "none";
     } else if (d.enabled) {
       badge.className = "door-pill unknown"; badge.textContent = collecting ? "기준 자동 수집 중" : "기준 없음";
       updateCardState("door", "normal", collecting ? "기준 자동 수집 중" : "기준 미설정");
+      if (btnForce) btnForce.style.display = "none";
     } else {
       badge.className = "door-pill unknown"; badge.textContent = "비활성";
       updateCardState("door", "normal", "감지 비활성");
+      if (btnForce) btnForce.style.display = "none";
     }
     /* 설정 탭 문·잔류물 상태 문구에 자동 캡처 진행을 표시 (간단·고급 양쪽) */
     const quiet = parseFloat(document.getElementById("cfg-door_auto_quiet_seconds")?.value) || 20;
@@ -2610,6 +2624,21 @@ async function pollStatus() {
 }
 setInterval(pollStatus, 3000);
 pollStatus();
+
+/* ── 문 닫힘 강제 리셋 ───────────────────────────────────────────────────────── */
+async function forceDoorClosed() {
+  const port = getStreamPort();
+  const btn = document.getElementById("btn-force-closed");
+  if (btn) btn.disabled = true;
+  try {
+    await fetch(`http://${location.hostname}:${port}/door/force-closed`, { method: "POST" });
+    /* 즉시 배지 갱신 — pollStatus가 3초 뒤 덮어씀 */
+    const badge = document.getElementById("door-state-badge");
+    if (badge) { badge.className = "door-pill closed"; badge.textContent = "🟢 닫힘"; }
+    if (btn) btn.style.display = "none";
+  } catch (_) {}
+  if (btn) btn.disabled = false;
+}
 
 /* ── 개인정보 보호 임시 해제 ─────────────────────────────────────────────────── */
 async function privacyUnlock(seconds) {
