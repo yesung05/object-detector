@@ -14,6 +14,17 @@
 #include "throttle.h"
 #include "restart.h"
 #include "slot_monitor.h"
+#include "calib.h"
+#include "capture.h"
+#include "reconnect.h"
+
+#if defined(_WIN32)
+#include <direct.h>
+#define test_rmdir _rmdir
+#else
+#include <unistd.h>
+#define test_rmdir rmdir
+#endif
 
 #include <math.h>
 #include <stdio.h>
@@ -2468,6 +2479,465 @@ static void test_fall_unclipped_path_unchanged(void) {
     EXPECT_INT_EQ(is_horizontal_pose_for_test(&d, 1.8f, 2.2f, 1280, 720), 0);
 }
 
+/* ── 카메라 재연결 · 쓰러짐 캡처 · 흔들림 안정화 ────────────────────────── */
+
+static void test_reconnect_backoff(void) {
+    EXPECT_FLOAT_NEAR((float)reconnect_backoff_seconds(0, 1.0, 30.0), 1.0f, 1e-6f);
+    EXPECT_FLOAT_NEAR((float)reconnect_backoff_seconds(1, 1.0, 30.0), 2.0f, 1e-6f);
+    EXPECT_FLOAT_NEAR((float)reconnect_backoff_seconds(4, 1.0, 30.0), 16.0f, 1e-6f);
+    EXPECT_FLOAT_NEAR((float)reconnect_backoff_seconds(5, 1.0, 30.0), 30.0f, 1e-6f);   /* 32 → 상한 */
+    EXPECT_FLOAT_NEAR((float)reconnect_backoff_seconds(100000, 1.0, 30.0), 30.0f, 1e-6f); /* 오버플로 없음 */
+    EXPECT_FLOAT_NEAR((float)reconnect_backoff_seconds(3, 1.0, 0.5), 1.0f, 1e-6f);   /* 상한<base → base */
+}
+
+static void test_reconnect_stall_boundary(void) {
+    /* 첫 프레임 이후: 정확히 5.0초에서 stall */
+    EXPECT_INT_EQ(reconnect_stalled(104.99, 100.0, 1, 5.0, 10.0), 0);
+    EXPECT_INT_EQ(reconnect_stalled(105.0, 100.0, 1, 5.0, 10.0), 1);
+    /* 첫 프레임 전에는 유예 10초 — 카메라 그래프 시작 지연을 끊김으로 오판하지 않음 */
+    EXPECT_INT_EQ(reconnect_stalled(107.0, 100.0, 0, 5.0, 10.0), 0);
+    EXPECT_INT_EQ(reconnect_stalled(110.0, 100.0, 0, 5.0, 10.0), 1);
+    EXPECT_INT_EQ(reconnect_stalled(115.0, 100.0, 0, 20.0, 10.0), 0);
+}
+
+static void test_tracks_shift_time_after_camera_gap(void) {
+    /* 끊긴 30초가 소실·limbo 판정에 섞이지 않게 시간 기준이 함께 밀려야 합니다. */
+    TrackList tl;
+    char error[128] = {0};
+    ASSERT_INT_EQ(tracks_init(&tl, 8, 0.3f, 5, 1800.0, 0.45f, error, sizeof(error)), 0);
+    tl.count = 2;
+    tl.items[0].id = 1;
+    tl.items[0].active = 0;                 /* limbo 트랙 */
+    tl.items[0].last_seen = 100.0;
+    tl.items[0].limbo_expired_at = 200.0;
+    tl.items[0].head_y_prev_time = 99.0;
+    tl.items[1].id = 0;                     /* 미사용 슬롯 — 건드리지 않음 */
+    tl.items[1].last_seen = 50.0;
+    tracks_shift_time(&tl, 30.0);
+    EXPECT_FLOAT_NEAR((float)tl.items[0].last_seen, 130.0f, 1e-4f);
+    EXPECT_FLOAT_NEAR((float)tl.items[0].limbo_expired_at, 230.0f, 1e-4f);
+    EXPECT_FLOAT_NEAR((float)tl.items[0].head_y_prev_time, 129.0f, 1e-4f);
+    EXPECT_FLOAT_NEAR((float)tl.items[1].last_seen, 50.0f, 1e-4f);
+    tracks_destroy(&tl);
+}
+
+static void test_rules_fall_once_and_gap_shift(void) {
+    /* 발화한 호출에서만 fall_fired 에 담기고(캡처 1회), 카메라 공백은 유지 시간에서 빠져야 합니다. */
+    TrackList tl;
+    RulesEngine re;
+    EventLog elog;
+    RulesConfig rcfg = {3600.0, 300.0, 5.0, 1.8f, 2.2f, 0, 0, 0, 0, 0};
+    char error[128] = {0};
+    event_log_open(&elog, ":memory:", LOG_INFO, 0);
+    ASSERT_INT_EQ(tracks_init(&tl, 16, 0.3f, 5, 1800.0, 0.45f, error, sizeof(error)), 0);
+    ASSERT_INT_EQ(rules_init(&re, 16, &rcfg, error, sizeof(error)), 0);
+    tl.count = 1;
+    tl.items[0].id = 7;
+    tl.items[0].active = 1;
+    tl.items[0].box = (Detection){0, 70, 200, 130, 0.9f};  /* 수평 */
+    tl.items[0].box.keypoint_count = 0;
+
+    rules_evaluate(&re, &tl, 100.0, &elog);                /* fall_start = 100 */
+    EXPECT_INT_EQ(re.fall_fired_count, 0);
+    rules_shift_time(&re, 30.0);                           /* 100~130 카메라 공백 */
+    rules_evaluate(&re, &tl, 133.0, &elog);                /* 실제로 본 시간 3초 → 미발화 */
+    EXPECT_INT_EQ(re.fall_fired_count, 0);
+    rules_evaluate(&re, &tl, 135.5, &elog);                /* 5.5초 → 발화 */
+    ASSERT_INT_EQ(re.fall_fired_count, 1);
+    EXPECT_INT_EQ(re.fall_fired_track[0], 7);
+    EXPECT_FLOAT_NEAR(re.fall_fired_box[0].x2, 200.0f, 0.01f);
+    rules_evaluate(&re, &tl, 137.0, &elog);                /* latch — 재발화 없음 */
+    EXPECT_INT_EQ(re.fall_fired_count, 0);
+
+    rules_destroy(&re);
+    tracks_destroy(&tl);
+    event_log_close(&elog);
+}
+
+static void test_capture_writes_jpeg_and_respects_privacy(void) {
+    enum { W = 64, H = 48 };
+    EventCapture cap;
+    uint8_t frame[W * H * 3];
+    uint8_t before[W * H * 3];
+    Detection box;
+    char path[720];
+    char error[256] = {0};
+    unsigned char head[2] = {0, 0};
+    FILE *f;
+    long size;
+    const char *dir = "test_capture_tmp";
+
+    memset(frame, 90, sizeof(frame));
+    memcpy(before, frame, sizeof(frame));
+    memset(&box, 0, sizeof(box));
+    box.x1 = 10; box.y1 = 10; box.x2 = 40; box.y2 = 30; box.score = 0.9f;
+
+    ASSERT_INT_EQ(capture_init(&cap, dir, 85, error, sizeof(error)), 0);
+    ASSERT_INT_EQ(capture_save(&cap, "person_fallen", 3, frame, W, H, W * 3,
+                               &box, 0, path, sizeof(path), error, sizeof(error)), 0);
+    EXPECT_TRUE(strstr(path, "person_fallen_") != NULL);
+    EXPECT_TRUE(strstr(path, "_track3.jpg") != NULL);
+    /* 캡처용 박스는 사본에만 그려야 합니다 — 원본은 스트림·녹화로 이어집니다. */
+    EXPECT_TRUE(memcmp(frame, before, sizeof(frame)) == 0);
+    EXPECT_TRUE(memcmp(cap.buf + (10 * W + 10) * 3, before, 3) != 0);
+    /* 박스 밖은 원본 픽셀 그대로 */
+    EXPECT_INT_EQ(cap.buf[(45 * W + 60) * 3], 90);
+
+    f = fopen(path, "rb");
+    ASSERT_TRUE(f != NULL);
+    EXPECT_INT_EQ((int)fread(head, 1, 2, f), 2);
+    fseek(f, 0, SEEK_END);
+    size = ftell(f);
+    fclose(f);
+    EXPECT_INT_EQ(head[0], 0xFF);    /* JPEG SOI 마커 */
+    EXPECT_INT_EQ(head[1], 0xD8);
+    EXPECT_TRUE(size > 100);
+    remove(path);
+
+    /* 보호 모드: 박스 밖 픽셀이 원본(90)이 아니라 단색으로 지워져야 합니다. */
+    ASSERT_INT_EQ(capture_save(&cap, "person_fallen", 4, frame, W, H, W * 3,
+                               &box, 1, path, sizeof(path), error, sizeof(error)), 0);
+    EXPECT_INT_EQ(cap.buf[(45 * W + 60) * 3], 0x30);
+    remove(path);
+
+    capture_destroy(&cap);
+    capture_destroy(&cap);           /* 이중 해제 안전 */
+    EXPECT_INT_EQ(test_rmdir(dir), 0);
+}
+
+/* 256x128, 다운샘플 1 → 블록 격자 32x16 (블록 하나 = 8px) */
+enum { CAL_W = 256, CAL_H = 128 };
+
+static void calib_setup(MotionCalib *c, GrayBuf *g) {
+    CalibOptions opt;
+    opt.duration_seconds = 600.0;
+    opt.sample_seconds   = 0.5;
+    opt.noise_ratio      = 0.3f;
+    opt.max_area_ratio   = 0.15f;
+    memset(c, 0, sizeof(*c));
+    ASSERT_INT_EQ(gray_buf_init(g, CAL_W, CAL_H, 1), 0);
+    memset(g->data, 100, (size_t)g->width * (size_t)g->height);
+    ASSERT_INT_EQ(calib_start(c, g, CAL_W, CAL_H, &opt, 0.0, NULL, 0), 0);
+    EXPECT_INT_EQ(c->blocks_x, 32);
+    EXPECT_INT_EQ(c->blocks_y, 16);
+}
+
+static void map_reset(MotionMap *m) {
+    memset(m, 0, sizeof(*m));
+    m->blocks_x = 32;
+    m->blocks_y = 16;
+}
+
+static void map_set(MotionMap *m, int bx, int by) {
+    int idx = by * m->blocks_x + bx;
+    if (motion_map_get(m, idx)) return;
+    m->bits[idx >> 5] |= 1u << (idx & 31);
+    m->changed_blocks++;
+}
+
+static void test_calib_learns_flicker_region(void) {
+    /* 2x2 블록이 절반의 표본에서 변함 → 흔들림. 먼 블록(20,10)은 10% → 미달. */
+    MotionCalib c;
+    GrayBuf g;
+    MotionMap m;
+    CalibRegion out[4];
+    int i, n, total = -1;
+    calib_setup(&c, &g);
+    for (i = 0; i < 100; ++i) {
+        map_reset(&m);
+        if (i % 2 == 0) {
+            map_set(&m, 2, 1); map_set(&m, 3, 1);
+            map_set(&m, 2, 2); map_set(&m, 3, 2);
+        }
+        if (i % 10 == 0) map_set(&m, 20, 10);
+        calib_accumulate(&c, &m, NULL, 0);
+    }
+    EXPECT_INT_EQ(c.samples, 100);
+    n = calib_extract(&c, NULL, 0, out, 4, &total);
+    ASSERT_INT_EQ(n, 1);
+    EXPECT_INT_EQ(total, 1);
+    EXPECT_INT_EQ(out[0].status, CALIB_REGION_OK);
+    EXPECT_INT_EQ(out[0].blocks, 4);
+    EXPECT_FLOAT_NEAR(out[0].rect.x1, 16.0f, 0.01f);
+    EXPECT_FLOAT_NEAR(out[0].rect.y1, 8.0f, 0.01f);
+    EXPECT_FLOAT_NEAR(out[0].rect.x2, 32.0f, 0.01f);
+    EXPECT_FLOAT_NEAR(out[0].rect.y2, 24.0f, 0.01f);
+    EXPECT_FLOAT_NEAR(out[0].mean_ratio, 0.5f, 0.01f);
+    calib_destroy(&c);
+    gray_buf_destroy(&g);
+}
+
+static void test_calib_grows_into_swing_fringe(void) {
+    /* 씨앗 (5,5) 50% 옆의 (6,5) 15% 는 편입, 떨어진 (15,5) 15% 는 제외. */
+    MotionCalib c;
+    GrayBuf g;
+    MotionMap m;
+    CalibRegion out[4];
+    int i, n, total = -1;
+    calib_setup(&c, &g);
+    for (i = 0; i < 100; ++i) {
+        map_reset(&m);
+        if (i % 2 == 0) map_set(&m, 5, 5);
+        if (i % 20 < 3) { map_set(&m, 6, 5); map_set(&m, 15, 5); }
+        calib_accumulate(&c, &m, NULL, 0);
+    }
+    n = calib_extract(&c, NULL, 0, out, 4, &total);
+    ASSERT_INT_EQ(n, 1);
+    EXPECT_INT_EQ(total, 1);
+    EXPECT_INT_EQ(out[0].blocks, 2);
+    EXPECT_FLOAT_NEAR(out[0].rect.x1, 40.0f, 0.01f);
+    EXPECT_FLOAT_NEAR(out[0].rect.x2, 56.0f, 0.01f);
+    calib_destroy(&c);
+    gray_buf_destroy(&g);
+}
+
+static void test_calib_ignores_people_and_global_change(void) {
+    MotionCalib c;
+    GrayBuf g;
+    MotionMap m;
+    CalibRegion out[4];
+    GrayRect person;
+    int i, x, y;
+    calib_setup(&c, &g);
+    person.x1 = 80.0f; person.y1 = 40.0f; person.x2 = 95.0f; person.y2 = 55.0f;
+    for (i = 0; i < 100; ++i) {
+        map_reset(&m);
+        map_set(&m, 10, 5); map_set(&m, 11, 6);
+        calib_accumulate(&c, &m, &person, 1);
+    }
+    for (i = 0; i < 10; ++i) {
+        map_reset(&m);
+        for (y = 0; y < 16; ++y)
+            for (x = 0; x < 20; ++x) map_set(&m, x, y);
+        calib_accumulate(&c, &m, NULL, 0);
+    }
+    EXPECT_INT_EQ(c.samples, 100);
+    EXPECT_INT_EQ(c.skipped_global, 10);
+    EXPECT_INT_EQ((int)c.observed[5 * 32 + 10], 0);
+    EXPECT_INT_EQ(calib_extract(&c, NULL, 0, out, 4, NULL), 0);
+    calib_destroy(&c);
+    gray_buf_destroy(&g);
+}
+
+static void test_calib_rejects_protected_and_large(void) {
+    MotionCalib c;
+    GrayBuf g;
+    MotionMap m;
+    CalibRegion out[4];
+    GrayRect protect[2];
+    int i, x, y, n;
+    calib_setup(&c, &g);
+    for (i = 0; i < 100; ++i) {
+        map_reset(&m);
+        map_set(&m, 25, 2);                                  /* 문 ROI 안 */
+        map_set(&m, 4, 11); map_set(&m, 5, 11); map_set(&m, 6, 11);
+        map_set(&m, 4, 12); map_set(&m, 6, 12);              /* 보호 블록 (5,12) 를 둘러쌈 */
+        for (y = 0; y < 9; ++y)                              /* 10x9 = 90블록 > 76.8 */
+            for (x = 10; x < 20; ++x) map_set(&m, x, y);
+        calib_accumulate(&c, &m, NULL, 0);
+    }
+    protect[0].x1 = 200.0f; protect[0].y1 = 16.0f; protect[0].x2 = 207.0f; protect[0].y2 = 23.0f;
+    protect[1].x1 = 40.0f;  protect[1].y1 = 96.0f; protect[1].x2 = 47.0f;  protect[1].y2 = 103.0f;
+    n = calib_extract(&c, protect, 2, out, 4, NULL);
+    ASSERT_INT_EQ(n, 2);
+    EXPECT_INT_EQ(out[0].blocks, 90);
+    EXPECT_INT_EQ(out[0].status, CALIB_REGION_TOO_LARGE);
+    EXPECT_INT_EQ(out[1].blocks, 5);
+    EXPECT_INT_EQ(out[1].status, CALIB_REGION_PROTECTED);
+    calib_destroy(&c);
+    gray_buf_destroy(&g);
+}
+
+static void test_calib_tick_samples_on_interval(void) {
+    MotionCalib c;
+    GrayBuf g;
+    calib_setup(&c, &g);
+    EXPECT_INT_EQ(calib_tick(&c, &g, NULL, 0, 2, 0.0), 0);
+    EXPECT_INT_EQ(calib_tick(&c, &g, NULL, 0, 2, 0.2), 0);
+    memset(g.data, 200, 8 * (size_t)g.width);
+    EXPECT_INT_EQ(calib_tick(&c, &g, NULL, 0, 2, 0.6), 1);
+    EXPECT_INT_EQ(c.samples, 1);
+    EXPECT_INT_EQ((int)c.changed[0], 1);
+    EXPECT_INT_EQ((int)c.changed[32], 0);
+    EXPECT_TRUE(!calib_elapsed_done(&c, 599.0));
+    EXPECT_TRUE(calib_elapsed_done(&c, 600.0));
+    calib_destroy(&c);
+    EXPECT_TRUE(!calib_active(&c));
+    calib_destroy(&c);
+    gray_buf_destroy(&g);
+}
+
+/* ── 대비 저하 · 2단계 매칭 · 이동 예측 · 발밑 기준점 ──────────────────── */
+
+static GrayStats contrast_stats(unsigned long luma_avg, double grad_avg) {
+    GrayStats s;
+    memset(&s, 0, sizeof(s));
+    s.pixels = 1000;
+    s.luma_sum = luma_avg * 1000u;
+    s.changed_health = 100;            /* 정지(frozen) 판정에 걸리지 않게 변화는 있음 */
+    s.grad_count = 1000;
+    s.grad_sum = (unsigned long)(grad_avg * 1000.0);
+    return s;
+}
+
+static void test_camera_health_low_contrast(void) {
+    /* hold=3 으로 줄여 3프레임 연속이면 확정되는지, 한 프레임 회복이면 풀리는지 봅니다. */
+    CameraHealth h;
+    CameraHealthConfig cfg = {240, 12, 150, 5, 8, 0.045f, 3};
+    CamState st;
+    GrayStats fog = contrast_stats(200, 3.0);    /* 비율 0.015 — 김서림 */
+    GrayStats ok  = contrast_stats(110, 10.0);   /* 비율 0.091 — 정상 */
+    GrayStats dim = contrast_stats(30, 2.8);     /* 비율 0.093 — 어둡지만 선명 */
+    char error[64] = {0};
+    int i;
+    ASSERT_INT_EQ(camera_health_init(&h, &cfg, error, sizeof(error)), 0);
+    EXPECT_INT_EQ(camera_health_update(&h, &fog, &st), 0);
+    EXPECT_INT_EQ(camera_health_update(&h, &fog, &st), 0);
+    EXPECT_INT_EQ(camera_health_update(&h, &fog, &st), 1);
+    EXPECT_INT_EQ(st, CAM_LOW_CONTRAST);
+    EXPECT_TRUE(strcmp(cam_state_name(st), "low_contrast") == 0);
+    EXPECT_INT_EQ(camera_health_update(&h, &ok, &st), 1);
+    EXPECT_INT_EQ(st, CAM_OK);
+    /* 조명만 낮춘 매장은 절대 기울기가 김서림과 비슷해도 비율이 정상이라 걸리면 안 됩니다. */
+    for (i = 0; i < 10; ++i) camera_health_update(&h, &dim, &st);
+    EXPECT_INT_EQ(st, CAM_OK);
+    /* 비율 0 이면 판정 자체를 끕니다(기존 위치 초기화 코드의 기본 동작). */
+    {
+        CameraHealthConfig off = {240, 12, 150, 5, 8};
+        ASSERT_INT_EQ(camera_health_init(&h, &off, error, sizeof(error)), 0);
+        for (i = 0; i < 10; ++i) camera_health_update(&h, &fog, &st);
+        EXPECT_INT_EQ(st, CAM_OK);
+    }
+}
+
+static void test_gray_analyze_gradient(void) {
+    /* 줄무늬(0/100 번갈아)는 기울기 100, 단색은 0 이어야 합니다. prev 유무 두 경로 모두. */
+    enum { W = 16, H = 4 };
+    GrayBuf g;
+    GrayStats st;
+    uint8_t prev[W * H];
+    int x, y;
+    ASSERT_INT_EQ(gray_buf_init(&g, W, H, 1), 0);
+    for (y = 0; y < H; ++y)
+        for (x = 0; x < W; ++x) g.data[y * W + x] = (uint8_t)((x & 1) ? 100 : 0);
+    gray_analyze(&g, NULL, NULL, 8, 8, 2, &st, NULL);
+    EXPECT_INT_EQ(st.grad_count, (W - 1) * H);
+    EXPECT_INT_EQ((int)st.grad_sum, 100 * (W - 1) * H);
+    memcpy(prev, g.data, sizeof(prev));
+    gray_analyze(&g, prev, NULL, 8, 8, 2, &st, NULL);
+    EXPECT_INT_EQ((int)st.grad_sum, 100 * (W - 1) * H);
+    memset(g.data, 77, (size_t)W * H);
+    gray_analyze(&g, prev, NULL, 8, 8, 2, &st, NULL);
+    EXPECT_INT_EQ((int)st.grad_sum, 0);
+    gray_buf_destroy(&g);
+}
+
+static DetectionList one_det(DetectionList *dl, float x1, float y1, float x2, float y2,
+                             float score) {
+    dl->count = 1;
+    memset(&dl->items[0], 0, sizeof(Detection));
+    dl->items[0].x1 = x1; dl->items[0].y1 = y1;
+    dl->items[0].x2 = x2; dl->items[0].y2 = y2;
+    dl->items[0].score = score;
+    return *dl;
+}
+
+static void test_tracks_two_stage_keeps_track_alive(void) {
+    /* 가려져 신뢰도가 떨어진 박스(low)로 기존 트랙이 이어지고, score 는 직전 값을 유지하며,
+     * low 만으로는 새 트랙이 생기지 않아야 합니다. */
+    TrackList tl;
+    DetectionList high, low, empty;
+    char error[128] = {0};
+    ASSERT_INT_EQ(tracks_init(&tl, 8, 0.3f, 5, 1800.0, 0.45f, error, sizeof(error)), 0);
+    ASSERT_INT_EQ(detection_list_init(&high, 4), 0);
+    ASSERT_INT_EQ(detection_list_init(&low, 4), 0);
+    ASSERT_INT_EQ(detection_list_init(&empty, 1), 0);
+    empty.count = 0;
+
+    one_det(&high, 100, 50, 200, 300, 0.8f);
+    tracks_update_ex(&tl, &high, NULL, NULL, 0, 0, 0, 0.0);
+    ASSERT_INT_EQ((int)tl.count, 1);
+
+    one_det(&low, 105, 55, 205, 305, 0.12f);
+    tracks_update_ex(&tl, &empty, &low, NULL, 0, 0, 0, 0.1);
+    EXPECT_INT_EQ(tl.items[0].misses, 0);
+    EXPECT_FLOAT_NEAR(tl.items[0].box.x1, 105.0f, 1e-3f);        /* 위치는 갱신 */
+    EXPECT_FLOAT_NEAR(tl.items[0].box.score, 0.8f, 1e-6f);       /* 점수는 유지 */
+
+    /* low 가 없으면 예전처럼 miss 로 셉니다. */
+    tracks_update_ex(&tl, &empty, NULL, NULL, 0, 0, 0, 0.2);
+    EXPECT_INT_EQ(tl.items[0].misses, 1);
+
+    /* 멀리 떨어진 low 박스는 새 트랙을 만들지 않습니다. */
+    one_det(&low, 600, 50, 700, 300, 0.15f);
+    tracks_update_ex(&tl, &empty, &low, NULL, 0, 0, 0, 0.3);
+    EXPECT_INT_EQ((int)tl.count, 1);
+    EXPECT_INT_EQ(tl.items[0].misses, 2);
+
+    detection_list_destroy(&high);
+    detection_list_destroy(&low);
+    detection_list_destroy(&empty);
+    tracks_destroy(&tl);
+}
+
+static void test_tracks_velocity_prediction(void) {
+    /* 오른쪽으로 400px/s 로 걷는 사람. 예측 없이는 IoU 0.11(기준 0.3 미달)로 끊기지만,
+     * 속도 예측으로 예상 위치에서 재면 0.67 이라 같은 ID 로 이어져야 합니다. */
+    TrackList tl;
+    DetectionList d;
+    char error[128] = {0};
+    ASSERT_INT_EQ(tracks_init(&tl, 8, 0.3f, 5, 1800.0, 0.45f, error, sizeof(error)), 0);
+    ASSERT_INT_EQ(detection_list_init(&d, 2), 0);
+
+    one_det(&d, 0, 0, 100, 200, 0.9f);   tracks_update(&tl, &d, NULL, 0, 0, 0, 0.0);
+    one_det(&d, 40, 0, 140, 200, 0.9f);  tracks_update(&tl, &d, NULL, 0, 0, 0, 0.1);
+    one_det(&d, 80, 0, 180, 200, 0.9f);  tracks_update(&tl, &d, NULL, 0, 0, 0, 0.2);
+    EXPECT_FLOAT_NEAR(tl.items[0].vx, 300.0f, 1.0f);            /* EMA: 0→200→300 */
+    one_det(&d, 160, 0, 260, 200, 0.9f); tracks_update(&tl, &d, NULL, 0, 0, 0, 0.4);
+    EXPECT_INT_EQ((int)tl.count, 1);
+    EXPECT_INT_EQ(tl.items[0].id, 1);
+    EXPECT_INT_EQ(tl.items[0].misses, 0);
+    EXPECT_FLOAT_NEAR(tl.items[0].box.x1, 160.0f, 1e-3f);
+
+    detection_list_destroy(&d);
+    tracks_destroy(&tl);
+}
+
+static void test_rules_kiosk_anchor_foot(void) {
+    /* 키오스크 앞 바닥(y 180~220)에 그린 ROI. 박스 중심(y 125)은 밖, 발밑(y 200)은 안. */
+    TrackList tl;
+    RulesEngine re;
+    EventLog elog;
+    RulesConfig rcfg;
+    char error[128] = {0};
+    int foot;
+    for (foot = 0; foot <= 1; ++foot) {
+        memset(&rcfg, 0, sizeof(rcfg));
+        rcfg.dwell_limit_seconds = 3600.0;
+        rcfg.unordered_grace_seconds = 300.0;
+        rcfg.fall_hold_seconds = 5.0;
+        rcfg.fall_aspect_ratio_kp = 1.8f;
+        rcfg.fall_aspect_ratio_nokp = 2.2f;
+        rcfg.roi_kiosk_x = 0; rcfg.roi_kiosk_y = 180;
+        rcfg.roi_kiosk_w = 300; rcfg.roi_kiosk_h = 40;
+        rcfg.roi_kiosk_set = 1;
+        rcfg.roi_anchor_foot = foot;
+        event_log_open(&elog, ":memory:", LOG_INFO, 0);
+        ASSERT_INT_EQ(tracks_init(&tl, 4, 0.3f, 5, 1800.0, 0.45f, error, sizeof(error)), 0);
+        ASSERT_INT_EQ(rules_init(&re, 4, &rcfg, error, sizeof(error)), 0);
+        tl.count = 1;
+        tl.items[0].id = 1;
+        tl.items[0].active = 1;
+        tl.items[0].order = TRACK_UNORDERED;
+        tl.items[0].box = (Detection){100, 50, 160, 200, 0.9f};   /* 세로로 선 사람 */
+        rules_evaluate(&re, &tl, 10.0, &elog);
+        EXPECT_INT_EQ(tl.items[0].order, foot ? TRACK_ORDERED : TRACK_UNORDERED);
+        rules_destroy(&re);
+        tracks_destroy(&tl);
+        event_log_close(&elog);
+    }
+}
+
 int main(void) {
     TEST_SUITE_BEGIN(core_unit_tests);
     RUN_TEST(test_letterbox);
@@ -2565,5 +3035,20 @@ int main(void) {
     RUN_TEST(test_slot_monitor_dirty_warn);
     RUN_TEST(test_slot_monitor_person_skip);
     RUN_TEST(test_slot_monitor_cleared);
+    RUN_TEST(test_reconnect_backoff);
+    RUN_TEST(test_reconnect_stall_boundary);
+    RUN_TEST(test_tracks_shift_time_after_camera_gap);
+    RUN_TEST(test_rules_fall_once_and_gap_shift);
+    RUN_TEST(test_capture_writes_jpeg_and_respects_privacy);
+    RUN_TEST(test_calib_learns_flicker_region);
+    RUN_TEST(test_calib_grows_into_swing_fringe);
+    RUN_TEST(test_calib_ignores_people_and_global_change);
+    RUN_TEST(test_calib_rejects_protected_and_large);
+    RUN_TEST(test_calib_tick_samples_on_interval);
+    RUN_TEST(test_camera_health_low_contrast);
+    RUN_TEST(test_gray_analyze_gradient);
+    RUN_TEST(test_tracks_two_stage_keeps_track_alive);
+    RUN_TEST(test_tracks_velocity_prediction);
+    RUN_TEST(test_rules_kiosk_anchor_foot);
     TEST_SUITE_END();
 }

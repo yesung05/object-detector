@@ -90,6 +90,23 @@ void rules_update_config(RulesEngine *re, const RulesConfig *config) {
     re->config = *config;
 }
 
+void rules_shift_time(RulesEngine *re, double gap) {
+    size_t i;
+    if (!re || !re->states || gap <= 0.0) return;
+    for (i = 0; i < re->capacity; ++i) {
+        if (re->states[i].track_id != -1 && re->states[i].fall_start > 0.0)
+            re->states[i].fall_start += gap;
+    }
+}
+
+/* 발화한 쓰러짐을 캡처 대기 목록에 올립니다. 넘치면 캡처만 생략합니다(로그는 이미 남음). */
+static void note_fall(RulesEngine *re, const Track *t) {
+    if (re->fall_fired_count >= RULES_MAX_FIRED) return;
+    re->fall_fired_track[re->fall_fired_count] = t->id;
+    re->fall_fired_box[re->fall_fired_count]   = t->box;
+    re->fall_fired_count++;
+}
+
 /* track_id 에 해당하는 슬롯을 반환합니다. 없으면 빈 슬롯에 할당합니다. */
 static TrackRuleState *get_state(RulesEngine *re, int track_id) {
     size_t idx = (size_t)(track_id < 0 ? 0 : track_id) % re->capacity;
@@ -453,6 +470,7 @@ void rules_evaluate(RulesEngine *re, TrackList *tl, double now, EventLog *elog) 
     char msg[256];
 
     if (!re || !tl) return;
+    re->fall_fired_count = 0;
 
     for (i = 0; i < tl->count; ++i) {
         Track *t = &tl->items[i];
@@ -465,10 +483,11 @@ void rules_evaluate(RulesEngine *re, TrackList *tl, double now, EventLog *elog) 
 
         s = get_state(re, t->id);
 
-        /* ROI 키오스크 체크: 박스 중심이 ROI 안에 있으면 ORDERED 로 전환 */
+        /* ROI 키오스크 체크: 기준점(중심 또는 발밑)이 ROI 안에 있으면 ORDERED 로 전환 */
         if (re->config.roi_kiosk_set && t->order == TRACK_UNORDERED) {
             float cx = (t->box.x1 + t->box.x2) * 0.5f;
-            float cy = (t->box.y1 + t->box.y2) * 0.5f;
+            float cy = re->config.roi_anchor_foot ? t->box.y2
+                                                  : (t->box.y1 + t->box.y2) * 0.5f;
             if (cx >= re->config.roi_kiosk_x &&
                 cx <= re->config.roi_kiosk_x + re->config.roi_kiosk_w &&
                 cy >= re->config.roi_kiosk_y &&
@@ -525,6 +544,7 @@ void rules_evaluate(RulesEngine *re, TrackList *tl, double now, EventLog *elog) 
                          "person_fallen track=%d sudden_head_drop",
                          t->id);
                 event_log_write(elog, LOG_ERROR, "rules", msg);
+                note_fall(re, t);
                 t->fall_sudden = 0;
             } else if (head_drop || is_horizontal_pose(&t->box,
                                                re->config.fall_aspect_ratio_kp,
@@ -538,6 +558,7 @@ void rules_evaluate(RulesEngine *re, TrackList *tl, double now, EventLog *elog) 
                              "person_fallen track=%d hold=%.1fs",
                              t->id, now - s->fall_start);
                     event_log_write(elog, LOG_ERROR, "rules", msg);
+                    note_fall(re, t);
                 }
             } else {
                 s->fall_start  = 0.0;

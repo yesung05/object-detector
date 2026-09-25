@@ -65,6 +65,13 @@ typedef struct {
     int           pixels;         /* 순회한 픽셀 수 */
     size_t        changed_motion; /* |diff| >  motion_gt */
     size_t        changed_health; /* |diff| >= health_ge */
+    /*
+     * 가로 이웃 픽셀 차이 |c[x] - c[x-1]| 의 합과 개수. 화면의 "선명함" 지표입니다.
+     * 김서림·초점 상실·반투명 가림은 평균 밝기는 멀쩡하지만 윤곽이 사라져 이 값이
+     * 떨어집니다. 같은 순회에서 픽셀당 뺄셈 하나로 얻을 수 있어 따로 훑지 않습니다.
+     */
+    unsigned long grad_sum;
+    int           grad_count;
 } GrayStats;
 
 /*

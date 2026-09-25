@@ -57,6 +57,17 @@ typedef struct {
     /* 1이면 화면 한가운데에서 사라져도 잔류 흔적이 있어야 경고합니다.
      * 칸막이·기둥이 많아 사람이 정상적으로 자주 가려지는 매장용 안전판입니다. */
     int    vanish_require_residue;    /* 기본 0 */
+    /*
+     * 구역(roi_kiosk) 판정에 쓰는 사람의 기준점. 0 = 박스 중심(기본), 1 = 발밑(아래 가운데).
+     *
+     * 발밑이 필요한 이유: 카메라가 비스듬히 내려다보면 박스 중심은 사람의 배 높이라,
+     * 바닥에 그린 구역과 어긋나고 옆 구역에 걸쳐 앉은 사람이 엉뚱한 구역으로 잡힙니다.
+     * 기본을 중심으로 둔 이유: 이미 키오스크 기기 주변(허리 높이)에 그려 둔 ROI 는 발밑
+     * 기준으로 바꾸면 손님 발이 ROI 밖으로 빠져 주문 판정이 조용히 꺼집니다.
+     * 발밑을 쓰려면 ROI 를 "손님이 서는 바닥"에 다시 그려야 합니다.
+     * 구조체 끝에 둔 이유: 위치 초기화({...})를 쓰는 기존 코드가 자동으로 0(중심)이 됩니다.
+     */
+    int    roi_anchor_foot;
 } RulesConfig;
 
 /*
@@ -72,6 +83,13 @@ typedef struct {
     int    no_cup_latched; /* track_id==-2 슬롯에서 no_cup_seated 래치로 재활용 */
 } TrackRuleState;
 
+/*
+ * 한 번의 rules_evaluate 에서 새로 발화한 쓰러짐의 상한입니다.
+ * 7~10평 매장에서 같은 추론 주기에 8명이 동시에 쓰러질 일은 없고,
+ * 넘치면 캡처만 생략될 뿐 이벤트 로그는 그대로 남습니다.
+ */
+#define RULES_MAX_FIRED 8
+
 typedef struct {
     TrackRuleState *states;  /* RulesEngine 소유, rules_destroy 에서 free */
     size_t          capacity;
@@ -79,6 +97,15 @@ typedef struct {
     /* 현재 프레임 크기. bbox 가 화면 경계에 닿아 잘렸는지 판단하는 데 씁니다.
      * config 가 아니라 여기에 두는 이유: 설정 hot-reload 로 덮이면 안 되는 런타임 값입니다. */
     int frame_width, frame_height;
+    /*
+     * 이번 rules_evaluate 호출에서 새로 발화한 person_fallen 목록입니다.
+     * 매 호출 시작 시 0 으로 비우므로 다음 호출 전까지만 유효합니다.
+     * 룰 엔진이 캡처를 직접 하지 않고 목록만 내놓는 이유: 룰은 프레임 픽셀을
+     * 모르는 순수 판정으로 두어야 단위 테스트가 FFmpeg·파일 I/O 없이 돌아갑니다.
+     */
+    int             fall_fired_count;
+    int             fall_fired_track[RULES_MAX_FIRED];
+    Detection       fall_fired_box[RULES_MAX_FIRED];
 } RulesEngine;
 
 int  rules_init(RulesEngine *re, size_t capacity, const RulesConfig *config,
@@ -87,6 +114,12 @@ void rules_destroy(RulesEngine *re);
 
 /* 실행 중 설정 교체 — 기존 latch 상태는 유지합니다. */
 void rules_update_config(RulesEngine *re, const RulesConfig *config);
+
+/*
+ * 카메라가 gap 초 동안 끊겼다 돌아온 뒤 호출합니다. 진행 중인 쓰러짐 타이머를
+ * gap 만큼 뒤로 미뤄, 화면을 못 본 시간이 "수평 자세 유지"로 세어지지 않게 합니다.
+ */
+void rules_shift_time(RulesEngine *re, double gap);
 
 /*
  * 프레임 크기를 알려 줍니다. 쓰러짐 판정이 "bbox 가 화면 밖으로 잘렸는가"를 확인하는 데 씁니다.

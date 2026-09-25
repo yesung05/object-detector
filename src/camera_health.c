@@ -4,7 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-static const CameraHealthConfig DEFAULT_CONFIG = {240, 12, 150, 5, 8};
+static const CameraHealthConfig DEFAULT_CONFIG = {240, 12, 150, 5, 8, 0.045f, 300};
 
 int camera_health_init(CameraHealth *h, const CameraHealthConfig *config,
                        char *error, size_t error_size) {
@@ -19,6 +19,10 @@ int camera_health_init(CameraHealth *h, const CameraHealthConfig *config,
     return 0;
 }
 
+void camera_health_default_config(CameraHealthConfig *out) {
+    if (out) *out = DEFAULT_CONFIG;
+}
+
 void camera_health_destroy(CameraHealth *h) {
     /* 소유한 버퍼가 없습니다. 호출부의 정리 흐름을 유지하기 위해 남겨 둡니다. */
     (void)h;
@@ -30,6 +34,7 @@ const char *cam_state_name(CamState s) {
         case CAM_WHITEOUT: return "whiteout";
         case CAM_BLACKOUT: return "blackout";
         case CAM_FROZEN:   return "frozen";
+        case CAM_LOW_CONTRAST: return "low_contrast";
         default:           return "unknown";
     }
 }
@@ -69,6 +74,18 @@ int camera_health_update(CameraHealth *h, const GrayStats *stats,
         h->frozen_streak  = 0;
     }
 
+    /* 선명도 — 밝기가 정상 범위일 때만 봅니다. 백화·암흑은 위에서 따로 잡습니다. */
+    if (h->config.low_contrast_ratio > 0.0f && stats->grad_count > 0 &&
+        h->anomaly_streak == 0 && luma_avg > 0) {
+        double grad = (double)stats->grad_sum / (double)stats->grad_count;
+        if (grad / (double)luma_avg < (double)h->config.low_contrast_ratio)
+            h->low_contrast_streak++;
+        else
+            h->low_contrast_streak = 0;
+    } else {
+        h->low_contrast_streak = 0;
+    }
+
     /* hold_frames 이상 지속 시 상태 전환 (히스테리시스) */
     if (h->frozen_streak >= h->config.frozen_frames_threshold) {
         new_state = CAM_FROZEN;
@@ -77,7 +94,11 @@ int camera_health_update(CameraHealth *h, const GrayStats *stats,
             new_state = CAM_WHITEOUT;
         else
             new_state = CAM_BLACKOUT;
-    } else if (h->anomaly_streak == 0 && h->frozen_streak == 0) {
+    } else if (h->config.low_contrast_hold_frames > 0 &&
+               h->low_contrast_streak >= h->config.low_contrast_hold_frames) {
+        new_state = CAM_LOW_CONTRAST;
+    } else if (h->anomaly_streak == 0 && h->frozen_streak == 0 &&
+               h->low_contrast_streak == 0) {
         /* 연속 이상 없음 → 복구 */
         new_state = CAM_OK;
     } else {

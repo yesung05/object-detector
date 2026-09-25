@@ -79,6 +79,8 @@ static SOCKET    g_srv = INVALID_SOCKET;
 static char      g_data_dir[MAX_PATH] = "."; /* door_reference.raw 저장 위치 */
 static volatile int  g_door_state   = -1; /* -1=알 수 없음, 0=닫힘, 1=열림 */
 static volatile int  g_door_enabled =  0; /* 감지 활성 여부 */
+/* 카메라 연결 여부. 0 이면 마지막 프레임은 과거 화면이므로 스냅샷·기준 저장을 거부합니다. */
+static volatile int  g_camera_connected = 1;
 /* POST /door/force-closed 요청 pending 플래그. InterlockedExchange 로만 건드립니다.
  * 클라이언트 스레드가 1로 세팅 → main 스레드가 stream_pop_force_closed()로 꺼냄. */
 static volatile LONG g_force_closed =  0;
@@ -112,6 +114,7 @@ void stream_set_max_fps(int fps) {
 void stream_set_door_state  (int state)   { g_door_state   = state;   }
 void stream_set_door_enabled(int enabled) { g_door_enabled = enabled; }
 int  stream_client_count    (void)        { return (int)g_clients;    }
+void stream_set_camera_connected(int connected) { g_camera_connected = connected; }
 
 /* 클라이언트 스레드가 세팅한 force-closed 요청을 꺼냅니다. main 스레드 전용. */
 int stream_pop_force_closed(void) {
@@ -341,6 +344,10 @@ static void send_json(SOCKET s, int code, const char *body) {
 static void handle_snapshot(SOCKET s) {
     uint8_t *jpg = NULL;
     int jpg_cap = 0, jpg_size = 0;
+    if (!g_camera_connected) {
+        send_json(s, 503, "{\"error\":\"camera disconnected\"}");
+        return;
+    }
     if (jpeg_copy_latest(&jpg, &jpg_cap, &jpg_size) != 0 || jpg_size == 0) {
         free(jpg);
         send_json(s, 503, "{\"error\":\"no frame\"}");
@@ -373,6 +380,11 @@ static void handle_snapshot(SOCKET s) {
 static void handle_save_raw(SOCKET s,
                              const char *filename,
                              const char *ok_json) {
+    /* 끊긴 동안의 프레임은 과거 화면이라 기준 이미지로 쓰면 이후 판정이 틀어집니다. */
+    if (!g_camera_connected) {
+        send_json(s, 503, "{\"ok\":false,\"error\":\"camera disconnected\"}");
+        return;
+    }
     EnterCriticalSection(&g_lock);
     if (!g_rgb || g_width <= 0 || g_height <= 0) {
         LeaveCriticalSection(&g_lock);
@@ -696,13 +708,14 @@ static DWORD WINAPI client_thread(LPVOID arg) {
 
     } else if (strcmp(url, "/door/state") == 0) {
         /* GET /door/state → 현재 문 상태 + 감지 활성 여부 반환 */
-        char body[128];
+        char body[160];
         int s_val = g_door_state;
         int e_val = g_door_enabled;
         snprintf(body, sizeof(body),
-                 "{\"state\":%d,\"enabled\":%d,\"label\":\"%s\"}",
+                 "{\"state\":%d,\"enabled\":%d,\"label\":\"%s\",\"camera_connected\":%d}",
                  s_val, e_val,
-                 s_val == 1 ? "open" : s_val == 0 ? "closed" : "unknown");
+                 s_val == 1 ? "open" : s_val == 0 ? "closed" : "unknown",
+                 g_camera_connected);
         send_json(s, 200, body);
 
     /* 저장 계열은 POST 만 받습니다 — GET 을 열어 두면 위의 PIN 검사(POST 전용)를 우회합니다. */
