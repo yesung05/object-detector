@@ -22,7 +22,7 @@
 /* 머리 패치 크기. SAD 템플릿 매칭으로 YOLO가 놓쳤을 때 머리를 찾습니다. */
 #define HEAD_PATCH_SIZE     24
 
-typedef enum { TRACK_UNORDERED = 0, TRACK_ORDERED = 1 } OrderState;
+typedef enum { TRACK_UNORDERED = 0, TRACK_ORDERED = 1, TRACK_PROBABLY_ORDERED = 2 } OrderState;
 
 typedef struct {
     int        id;
@@ -66,6 +66,7 @@ typedef struct {
     /* 박스 중심 속도(px/s, EMA). 매칭 시 예상 위치에서 IoU 를 재기 위해 씁니다.
      * 새 트랙·Re-ID 부활 시 0 에서 시작하므로 첫 매칭은 기존과 똑같이 동작합니다. */
     float      vx, vy;
+    float      match_score; /* Incoming box score before low-score carry-forward. */
 } Track;
 
 typedef struct {

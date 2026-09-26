@@ -388,7 +388,7 @@ void draw_tracks(uint8_t *rgb, int width, int height, int stride,
             /* 현재 감지된 트랙: 녹색, 신뢰도 포함 레이블 */
             int confidence = (int)(t->box.score * 100.0f + 0.5f);
             if (confidence > 100) confidence = 100;
-            snprintf(label, sizeof(label), "#%d PERSON %d%%", t->id, confidence);
+            snprintf(label, sizeof(label), "#%d %s %d%%", t->id, t->order==TRACK_PROBABLY_ORDERED ? "MAYBE ORDER" : t->order==TRACK_ORDERED ? "ORDERED" : "PERSON", confidence);
             br = 0; bg = 224; bb = 96;
         } else {
             /* 프레임 밖 트랙: 주황색, MISS 레이블 */

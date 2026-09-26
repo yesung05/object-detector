@@ -2,12 +2,15 @@
 #include "camera_health.h"
 #include "capture.h"
 #include "perf_log.h"
+#include "replay.h"
 #include "slot_monitor.h"
 #include "surface_monitor.h"
 #include "throttle.h"
 #include "restart.h"
 #include "stream.h"
 #include "door.h"
+#include "door_mapper.h"
+#include "table_mapper.h"
 #include "residue.h"
 #include "config.h"
 #include "gray.h"
@@ -41,6 +44,10 @@
  * detector와 detections를 재사용하므로 프레임마다 큰 메모리를 새로 만들지 않습니다.
  */
 typedef struct {
+    ReplayLog replay;
+    double replay_cpu_time,replay_cpu_wall,replay_cpu_pct,replay_tier2_at;
+    long replay_mem_kb;
+    int replay_geometry_revision;
     Detector *detector;
     DetectionList detections;
     /*
@@ -50,6 +57,7 @@ typedef struct {
      * 소유: AppContext, detection_list_destroy 로 해제.
      */
     DetectionList low_detections;
+    float person_confidence, object_confidence, new_person_confidence, table_confidence;
     float    keep_score;          /* 0 이면 2단계 매칭 비활성 (검출기 신뢰도를 낮추지 않음) */
     LightTracker *tracker;
     FILE *detection_log;
@@ -111,6 +119,9 @@ typedef struct {
     char surface_config_path[640];
     double surface_config_check, surface_people_at, surface_status_at;
     int surface_revision;
+    TableMapper table_mapper;
+    int table_mapping,table_mapping_revision;
+    double table_mapping_at;
     int              detect_every_obj;  /* Tier 2 실행 간격(프레임), 기본 90 */
     int              tier2_always;      /* 1=surface 활성 중에도 Tier 2 강제 실행 (개발용) */
     int64_t          obj_inference_runs;
@@ -187,6 +198,9 @@ typedef struct {
     double       hud_start_time;  /* 첫 프레임 시각 (HUD FPS 분모) */
     int          stream_port;     /* MJPEG 스트림 포트, 0이면 비활성 */
     DoorMonitor    door;           /* 문 여닫이 감지 (door_reference.raw 필요) */
+    DoorMapper door_mapper;
+    int door_roi_auto, door_map_loaded;
+    char door_map_path[600];
     ResidueMonitor residue;        /* 잔류물 감지 (residue_clean_reference.raw 필요) */
     SlotMonitor    slot_mon;       /* 슬롯 기반 테이블·의자 청결 감지 */
     uint32_t       obj_vis_mask;   /* Tier 2 표시 카테고리 마스크 (OBJ_VIS_*) */
@@ -291,6 +305,9 @@ typedef struct {
 
 /* SIGINT/SIGTERM 처리기는 비동기 신호에 안전한 sig_atomic_t 값만 변경합니다. */
 static volatile sig_atomic_t stop_requested = 0;
+#ifdef _WIN32
+static HANDLE launcher_stop_event = NULL;
+#endif
 
 static void request_stop(int signal_number) {
     (void)signal_number;
@@ -312,6 +329,9 @@ static int restart_requested = 0;
 
 static int should_stop(void *opaque) {
     (void)opaque;
+#ifdef _WIN32
+    if(launcher_stop_event && WaitForSingleObject(launcher_stop_event,0)==WAIT_OBJECT_0)stop_requested=1;
+#endif
     return stop_requested != 0;
 }
 
@@ -817,6 +837,17 @@ static void rebuild_ignore_roi(AppContext *app) {
 }
 
 static void apply_gate_config(AppContext *app, const Config *cfg) {
+    float low=config_float(cfg,"track_low_score",.10f,0,.9f);
+    float table=config_float(cfg,"table_confidence",.55f,.01f,.99f);
+    app->person_confidence=config_float(cfg,"person_confidence",app->person_confidence,.01f,.99f);
+    app->object_confidence=config_float(cfg,"object_confidence",app->object_confidence,.01f,.99f);
+    app->new_person_confidence=config_float(cfg,"new_person_confidence",.30f,.01f,.99f);
+    app->keep_score=low>0 && low<app->person_confidence ? app->person_confidence : 0;
+    detector_set_confidence(app->detector,app->keep_score>0?low:app->person_confidence);
+    detector_set_confidence(app->obj_detector,app->object_confidence);
+    app->tracks.new_track_min_score=fmaxf(app->person_confidence,app->new_person_confidence);
+    if(table!=app->table_confidence){memset(&app->table_mapper,0,sizeof(app->table_mapper));app->table_confidence=table;}
+
     app->block_gate_enabled = (int)config_long(cfg, "block_gate", 1, 0, 1);
     app->block_min_changed  = (int)config_long(cfg, "block_min_changed", 2, 1, 64);
     app->block_margin       = (int)config_long(cfg, "block_margin", 1, 0, 16);
@@ -909,13 +940,14 @@ static void apply_security_config(AppContext *app, const Config *cfg) {
 
 /* 자동 기준 캡처 설정 — 문·잔류물·표면 공통. */
 static void apply_auto_capture_config(AppContext *app, const Config *cfg) {
+    app->door.passage_enabled = (int)config_long(cfg,"door_passage_learning",1,0,1);
     app->door.auto_enabled           = (int)config_long(cfg, "door_auto_capture", 1, 0, 1);
     app->door.auto_quiet_seconds     = (double)config_float(cfg, "door_auto_quiet_seconds", 20.0f, 5.0f, 600.0f);
     app->door.auto_open_hold_seconds = (double)config_float(cfg, "door_auto_open_hold_seconds", 1.0f, 0.2f, 10.0f);
     app->door.auto_open_min_l1       = config_float(cfg, "door_auto_open_l1", 25.0f, 5.0f, 120.0f);
     {
         /* 비율이 바뀌면 밴드 영역 자체가 달라지므로 유효성을 다시 재야 합니다. */
-        float ratio = config_float(cfg, "door_band_ratio", 0.3f, 0.0f, 0.8f);
+        float ratio = config_float(cfg, "door_band_ratio", 0.2f, 0.0f, 0.8f);
         if (ratio != app->door.band_ratio) {
             app->door.band_ratio = ratio;
             app->door.band_valid = -1;
@@ -1253,7 +1285,7 @@ static void calib_step(AppContext *app, double now) {
 static void capture_fall_events(AppContext *app, const RgbFrame *frame) {
     int i;
     if (app->rules.fall_fired_count <= 0) return;
-    if (!app->capture_fall) return;
+    if (!app->capture_fall || app->replay.ring) return; /* Trial evidence is coordinates only. */
     if (!app->capture.dir[0]) {
         event_log_write(&app->event_log, LOG_WARN, "capture",
                         "person_fallen 발생했지만 캡처 비활성 (--config 미지정 또는 폴더 생성 실패)");
@@ -1407,6 +1439,8 @@ static void apply_roi_kiosk(RulesConfig *rc, const Config *cfg) {
 static void reload_config(AppContext *app) {
     Config cfg;
     char err[128] = {0};
+    int previous_x=app->door.roi_x,previous_y=app->door.roi_y;
+    int previous_w=app->door.roi_w,previous_h=app->door.roi_h;
 
     if (config_load(&cfg, app->config_reload_path, err, sizeof(err)) != 0) {
         fprintf(stderr, "config reload failed: %s\n", err);
@@ -1422,7 +1456,7 @@ static void reload_config(AppContext *app) {
     apply_gate_config(app, &cfg);
 
     /* 문 여닫이 설정 */
-    app->door.enabled                = (int)config_long(&cfg, "door_enabled", 0, 0, 1);
+    app->door.enabled                = (int)config_long(&cfg, "door_enabled", 1, 0, 1);
     app->door.diff_threshold         = config_float(&cfg, "door_diff_threshold", 0.05f, 0.001f, 1.0f);
     app->door.confirm_frames         = (int)config_long(&cfg, "door_confirm_frames", 5, 1, 300);
     app->door.open_threshold_seconds = (double)config_float(&cfg, "door_open_seconds", 30.0f, 1.0f, 3600.0f);
@@ -1430,6 +1464,21 @@ static void reload_config(AppContext *app) {
     app->door.roi_y = (int)config_long(&cfg, "door_roi_y", 0, 0, 9999);
     app->door.roi_w = (int)config_long(&cfg, "door_roi_w", 0, 0, 9999);
     app->door.roi_h = (int)config_long(&cfg, "door_roi_h", 0, 0, 9999);
+    if (app->door.roi_w > 0 && app->door.roi_h > 0) app->door_roi_auto = 0;
+    else if (app->door_mapper.ready) {
+        app->door.roi_x=(int)(app->door_mapper.x1*app->door_mapper.width);
+        app->door.roi_y=(int)(app->door_mapper.y1*app->door_mapper.height);
+        app->door.roi_w=(int)((app->door_mapper.x2-app->door_mapper.x1)*app->door_mapper.width);
+        app->door.roi_h=(int)((app->door_mapper.y2-app->door_mapper.y1)*app->door_mapper.height);
+        app->door_roi_auto=1;
+    }
+    if(previous_x!=app->door.roi_x||previous_y!=app->door.roi_y||
+       previous_w!=app->door.roi_w||previous_h!=app->door.roi_h){
+        door_destroy(&app->door);app->door.last_state=-1;
+        app->door.auto_quiet_since=app->door.auto_open_since=0;
+        app->door.band_valid=-1;app->door.candidate_frames=0;
+        stream_set_door_state(-1);
+    }
     /* 설정 변경 즉시 대시보드에 반영 — process_frame을 기다리지 않고 바로 갱신 */
     if (app->stream_port > 0)
         stream_set_door_enabled(app->door.enabled);
@@ -1546,6 +1595,8 @@ static void reload_door_references(AppContext *app) {
  * detect-every가 3이면 0, 3, 6...번 프레임에서만 YOLO를 실행하고, 그 사이
  * 프레임에는 detections 배열에 남아 있는 직전 박스를 다시 그립니다.
  */
+#include "replay_capture.h"
+
 static void surface_reload(AppContext *app, double now) {
     SurfaceConfig config;char err[256];
     if(!app->surface_monitor||now-app->surface_config_check<2)return;
@@ -1553,9 +1604,54 @@ static void surface_reload(AppContext *app, double now) {
     if(surface_config_read(app->surface_config_path,&config,err,sizeof(err))==0&&config.revision!=app->surface_revision) {
         if(surface_monitor_apply(app->surface_monitor,&config,err,sizeof(err))==0){
             app->surface_revision=config.revision;
+            app->table_mapping=config.automatic && config.count==0;
+            app->table_mapping_revision=config.revision;
+            memset(&app->table_mapper,0,sizeof(app->table_mapper));
             event_log_write(&app->event_log,LOG_INFO,"surface","configuration applied");
         }else event_log_write(&app->event_log,LOG_WARN,"surface",err);
     }
+}
+static void record_tier2_run(AppContext *app) {
+    DetectorRunStats rs;
+    detector_get_last_stats(app->obj_detector,&rs);
+    app->obj_inference_runs++;
+    app->obj_detector_stats.preprocess_seconds+=rs.preprocess_seconds;
+    app->obj_detector_stats.inference_seconds+=rs.inference_seconds;
+    app->obj_detector_stats.postprocess_seconds+=rs.postprocess_seconds;
+}
+static void table_mapping_step(AppContext *app,RgbFrame *frame,double now) {
+    char json[16384],err[256];SurfaceConfig old,next,latest;int pos,count=0,i,j,kept[16];
+    if(!app->table_mapping||!app->obj_detector||app->cam_health.state!=CAM_OK||now-app->table_mapping_at<2)return;
+    app->table_mapping_at=now;
+    if(surface_config_read(app->surface_config_path,&old,err,sizeof(err))||
+       old.revision!=app->table_mapping_revision||old.count||!old.automatic)return;
+    /* Runs independently of person motion gating; an empty room still maps. */
+    if(detector_run(app->obj_detector,frame->data,frame->width,frame->height,frame->stride,&app->surface_detections,err,sizeof(err)))return;
+    record_tier2_run(app);
+    table_mapper_update(&app->table_mapper,&app->surface_detections,frame->width,frame->height,now,app->table_confidence);
+    pos=snprintf(json,sizeof(json),"{\"schema_version\":1,\"revision\":%d,\"enabled\":true,\"source\":\"auto\",\"camera_id\":\"%s\",\"geometry_revision\":%d,\"width\":%d,\"height\":%d,\"surfaces\":[",old.revision+1,old.camera_id,old.geometry_revision,frame->width,frame->height);
+    for(i=0;i<16;i++) {
+        TableCandidate *c=&app->table_mapper.items[i];int overlaps=0;
+        if(!table_mapper_ready(c,now))continue;
+        for(j=0;j<count;j++)if(table_overlap(c,&app->table_mapper.items[kept[j]])>0)overlaps=1;
+        if(overlaps)continue;
+        pos+=snprintf(json+pos,sizeof(json)-(size_t)pos,
+            "%s{\"id\":\"table-%d\",\"type\":\"table\",\"locked\":false,\"polygon\":[[%.6f,%.6f],[%.6f,%.6f],[%.6f,%.6f],[%.6f,%.6f]],\"usage_zones\":[[[%.6f,%.6f],[%.6f,%.6f],[%.6f,%.6f],[%.6f,%.6f]]],\"exclusions\":[],\"fixtures\":[]}",
+            count?",":"",count+1,c->x1,c->y1,c->x2,c->y1,c->x2,c->y2,c->x1,c->y2,
+            fmaxf(0,c->x1-.08f),fmaxf(0,c->y1-.12f),fminf(1,c->x2+.08f),fmaxf(0,c->y1-.12f),
+            fminf(1,c->x2+.08f),fminf(1,c->y2+.08f),fmaxf(0,c->x1-.08f),fminf(1,c->y2+.08f));
+        kept[count++]=i;
+    }
+    if(!count)return;
+    pos+=snprintf(json+pos,sizeof(json)-(size_t)pos,"]}");
+    if(surface_config_parse(json,&next,err,sizeof(err)))return;
+    /* A user edit cancels this observation batch. Never overwrite locked ROIs. */
+    if(surface_config_read(app->surface_config_path,&latest,err,sizeof(err))||latest.revision!=old.revision)return;
+    if(surface_file_replace(app->surface_config_path,json,(size_t)pos)){
+        event_log_write(&app->event_log,LOG_WARN,"surface","automatic table mapping save failed");return;
+    }
+    surface_reload(app,now+2);
+    event_log_write(&app->event_log,LOG_INFO,"surface","stable Tier 2 table locations registered automatically");
 }
 static void surface_process(AppContext *app,RgbFrame *frame,double now) {
     SurfaceFrame sf;SurfaceObject people[64];size_t n=0,i;char status[32768],id[40],err[256];int empty;
@@ -1620,6 +1716,24 @@ static int process_frame(RgbFrame *frame, void *opaque,
     const char *kind = "reused";
     double started;
     double now = platform_monotonic_seconds();
+    app->replay.now=now;
+    int location_reset=stream_pop_location_reset();
+    if (location_reset) {
+        memset(&app->door_mapper,0,sizeof(app->door_mapper));
+        app->door_roi_auto=0;app->door_map_loaded=1;
+        door_destroy(&app->door);
+        app->door.roi_x=app->door.roi_y=app->door.roi_w=app->door.roi_h=0;
+        app->door.last_state=-1;app->door.candidate_frames=0;
+        app->door.open_since=-1;app->door.open_event_fired=0;
+        app->door.auto_quiet_since=app->door.auto_open_since=0;
+        app->door.auto_phase=DOOR_AUTO_NO_ROI;app->door.band_valid=-1;
+        stream_set_door_state(-1);
+        /* The reset endpoint removes persisted references before this mailbox. */
+        if(location_reset==1){
+            calib_destroy(&app->calib);app->auto_ignore_count=0;rebuild_ignore_roi(app);
+            if(app->gray.width>0)calib_boot(app,frame->width,frame->height,calib_clock(app,frame,now));
+        }
+    }
     surface_reload(app,now);
 
     /* config.json hot-reload: 2초마다 파일 수정 시각을 체크합니다.
@@ -2198,7 +2312,7 @@ static int process_frame(RgbFrame *frame, void *opaque,
                                       frame->stride,
                                       &app->obj_detections, error, error_size);
                 if (rc != 0) return -1;
-                app->obj_inference_runs++;
+                record_tier2_run(app);app->replay_tier2_at=now;
                 rules_evaluate_objects(&app->rules, &app->obj_detections,
                                        &app->tracks, now, &app->event_log);
             }
@@ -2222,6 +2336,32 @@ static int process_frame(RgbFrame *frame, void *opaque,
      * 이벤트 정책: 열리는 즉시 로그를 남기지 않고, open_threshold_seconds 이상
      * 열린 상태가 지속될 때만 door_open 이벤트를 발생시킵니다.
      * 잠깐 열렸다 닫히는 정상 입퇴장을 무시하기 위한 설계입니다. */
+    table_mapping_step(app,frame,now);
+    if (app->door.enabled && (app->door.roi_w<=0 || app->door.roi_h<=0)) {
+        DoorMapper *m=&app->door_mapper;int restored=0;
+        if (!app->door_map_loaded) {
+            Config saved; app->door_map_loaded=1;
+            if(config_load(&saved,app->door_map_path,NULL,0)==0){
+                int w=(int)config_long(&saved,"width",0,0,8192),h=(int)config_long(&saved,"height",0,0,8192);
+                m->x1=config_float(&saved,"x1",0,0,1);m->y1=config_float(&saved,"y1",0,0,1);
+                m->x2=config_float(&saved,"x2",0,0,1);m->y2=config_float(&saved,"y2",0,0,1);
+                if(w==frame->width&&h==frame->height&&m->x2>m->x1&&m->y2>m->y1){m->width=w;m->height=h;m->ready=1;restored=1;}
+                config_destroy(&saved);
+            }
+        }
+        if(app->cam_health.state==CAM_OK)door_mapper_update(m,&app->tracks,frame->width,frame->height,now);
+        if(m->ready){
+            char json[256];
+            if(!restored)door_destroy(&app->door); /* Preserve references when restoring the same saved ROI. */
+            app->door.roi_x=(int)(m->x1*frame->width);app->door.roi_y=(int)(m->y1*frame->height);
+            app->door.roi_w=(int)((m->x2-m->x1)*frame->width);app->door.roi_h=(int)((m->y2-m->y1)*frame->height);
+            app->door.last_state=-1;app->door.auto_quiet_since=0;app->door_roi_auto=1;
+            snprintf(json,sizeof(json),"{\"width\":%d,\"height\":%d,\"x1\":%.6f,\"y1\":%.6f,\"x2\":%.6f,\"y2\":%.6f}",frame->width,frame->height,m->x1,m->y1,m->x2,m->y2);
+            if(surface_file_replace(app->door_map_path,json,strlen(json)))
+                event_log_write(&app->event_log,LOG_WARN,"door","automatic door location could not be persisted");
+            event_log_write(&app->event_log,LOG_INFO,"door","passage-based door location applied; collecting new reference");
+        }
+    }
     if (app->door.enabled) {
         /* 감지 활성 여부를 먼저 알림 — 기준 이미지 없어도 "활성"임을 대시보드에 표시 */
         if (app->stream_port > 0)
@@ -2233,7 +2373,8 @@ static int process_frame(RgbFrame *frame, void *opaque,
     int pcount = collect_person_rects(app, person_rects, 64);
     int cam_ok = app->cam_health.state == CAM_OK;
 
-    if (app->door.enabled && (app->door.ref_closed_rgb || app->door.ref_open_rgb)) {
+    if (app->door.enabled && app->door.roi_w > 0 && app->door.roi_h > 0 &&
+        (app->door.ref_closed_rgb || app->door.ref_open_rgb)) {
         int changed = 0;
         int state;
         started = platform_monotonic_seconds();
@@ -2309,10 +2450,10 @@ static int process_frame(RgbFrame *frame, void *opaque,
             char msg[720];
             const char *path = saved == 1 ? app->door_closed_path : app->door_open_path;
             snprintf(msg, sizeof(msg), "door_auto_capture saved=%s %dx%d path=%s",
-                     saved == 1 ? "closed" : "open", frame->width, frame->height, path);
+                     saved == 3 ? "passage_pair" : saved == 1 ? "closed" : "open", frame->width, frame->height, path);
             event_log_write(&app->event_log, LOG_INFO, "door", msg);
-            if (saved == 1) app->door_closed_mtime = door_ref_mtime(app->door_closed_path);
-            else            app->door_open_mtime   = door_ref_mtime(app->door_open_path);
+            if (saved == 1 || saved == 3) app->door_closed_mtime = door_ref_mtime(app->door_closed_path);
+            if (saved == 2 || saved == 3) app->door_open_mtime = door_ref_mtime(app->door_open_path);
         } else if (saved < 0) {
             event_log_write(&app->event_log, LOG_WARN, "door",
                             "door_auto_capture save failed — 디스크·경로 확인, quiet 시간 뒤 재시도");
@@ -2346,6 +2487,10 @@ static int process_frame(RgbFrame *frame, void *opaque,
         event_log_write(&app->event_log, LOG_INFO, "door",
                         "state=closed forced_by=dashboard");
     }
+
+    /* 장소 변경 초기화: 스트림 서버가 디스크의 위치별 기준을 제거한 뒤 이
+     * mailbox를 보냅니다. 메모리에 있던 자동 안정화 구역도 지우고 즉시 새
+     * 카메라 장면으로 안정화를 다시 시작합니다. */
 
     /* ── 미확인 소실 ───────────────────────────────────────────────────────
      * 추론 프레임에만 돌리지 않는 이유: 소실은 "추론이 사람을 못 찾는 상태"라서
@@ -2495,6 +2640,8 @@ static int process_frame(RgbFrame *frame, void *opaque,
         app->perf_obj_runs_base = app->obj_inference_runs;
     }
 
+    replay_capture_step(app,frame,now,kind);
+
     /* 대시보드 /status 집계 — 문·잔류물·자동 캡처 진행 상태. 값 몇 개 복사라 매 프레임 갱신합니다. */
     if (app->stream_port > 0) {
         StreamStatus st;
@@ -2505,6 +2652,23 @@ static int process_frame(RgbFrame *frame, void *opaque,
         st.door_auto_phase    = app->door.auto_phase;
         st.door_auto_stalled  = app->door.auto_stalled;
         st.door_roi_set       = app->door.roi_w > 0 && app->door.roi_h > 0;
+        st.door_roi_x=app->door.roi_x;st.door_roi_y=app->door.roi_y;
+        st.door_roi_w=app->door.roi_w;st.door_roi_h=app->door.roi_h;
+        st.door_band_ratio=app->door.band_ratio;
+        st.door_roi_auto=app->door_roi_auto;st.door_map_samples=app->door_mapper.samples;
+        st.person_confidence=app->person_confidence;st.object_confidence=app->object_confidence;
+        st.new_person_confidence=app->tracks.new_track_min_score;st.table_confidence=fmaxf(app->table_confidence,app->object_confidence);
+        st.replay_active=app->replay.ring!=NULL;st.replay_full=app->replay.full;st.replay_frames=app->replay.written;st.replay_errors=app->replay.errors;st.replay_bytes=app->replay.bytes;st.replay_write_ms=app->replay.write_ms;
+        st.probable_orders=0;
+        for(size_t oi=0;oi<app->tracks.count;oi++)
+            if(app->tracks.items[oi].active && app->tracks.items[oi].order==TRACK_PROBABLY_ORDERED) st.probable_orders++;
+        st.tier2_runs=(long)app->obj_inference_runs;
+        st.tier2_ms=st.tier2_runs ? 1000.0*(app->obj_detector_stats.preprocess_seconds+app->obj_detector_stats.inference_seconds+app->obj_detector_stats.postprocess_seconds)/st.tier2_runs : 0;
+        st.table_mapping=app->table_mapping?(app->obj_detector?1:2):0;
+        st.calibration_active=calib_active(&app->calib);
+        st.calibration_seconds=st.calibration_active?calib_clock(app,frame,now)-app->calib.started:0;
+        st.calibration_total=app->calib_opt.duration_seconds;
+        st.calibration_regions=app->auto_ignore_count;
         st.door_band_valid    = app->door.band_valid;
         st.door_band_active   = app->door.band_active;
         st.door_band_signal   = app->door.band_signal;
@@ -2831,6 +2995,8 @@ int main(int argc, char **argv) {
     {
         Config pre;
         float low;
+        app.person_confidence=app.object_confidence=args.detector.confidence;
+        app.new_person_confidence=.30f;app.table_confidence=.55f;
         config_load(&pre, args.config_path, NULL, 0);
         low = config_float(&pre, "track_low_score", 0.10f, 0.0f, 0.9f);
         config_destroy(&pre);
@@ -2941,7 +3107,7 @@ int main(int argc, char **argv) {
         apply_vanish_config(&rules_cfg, &cfg);
         apply_roi_kiosk(&rules_cfg, &cfg);
         /* 문 여닫이 설정 — door_load는 cfg 블록 밖에서 (data_dir 필요) */
-        app.door.enabled                 = (int)config_long (&cfg, "door_enabled",        0,    0,    1);
+        app.door.enabled                 = (int)config_long (&cfg, "door_enabled",        1,    0,    1);
         app.door.diff_threshold          = config_float      (&cfg, "door_diff_threshold",  0.05f, 0.001f, 1.0f);
         app.door.confirm_frames          = (int)config_long  (&cfg, "door_confirm_frames",  5,    1,  300);
         app.door.open_threshold_seconds  = (double)config_float(&cfg, "door_open_seconds", 30.0f, 1.0f, 3600.0f);
@@ -2988,7 +3154,7 @@ int main(int argc, char **argv) {
         }
         /* 히스테리시스: 이미 추적 중인 트랙은 detector 임계값(0.20)으로 유지,
          * 신규 트랙 생성은 0.30 이상 요구. 오탐 감소 + 추적 안정성 동시 달성. */
-        app.tracks.new_track_min_score = 0.30f;
+        app.tracks.new_track_min_score = fmaxf(app.person_confidence,app.new_person_confidence);
         if (rules_init(&app.rules, 64, &rules_cfg, error, sizeof(error)) != 0) {
             fprintf(stderr, "failed to init rules engine: %s\n", error);
             goto done;
@@ -3002,6 +3168,14 @@ int main(int argc, char **argv) {
             fprintf(stderr, "failed to open event log: %s\n", db_path);
             goto done;
         }
+    }
+    {
+        char metadata[512];
+        snprintf(metadata,sizeof(metadata),"{\"schema\":1,\"build\":\"%s %s\",\"person_model_hash\":\"%016llx\",\"object_model_hash\":\"%016llx\",\"input\":[%d,%d],\"threads\":%d,\"provider\":%d,\"regular_seconds\":10,\"event_hz\":5,\"window_seconds\":10}",
+            __DATE__,__TIME__,replay_model_hash(args.model),replay_model_hash(args.obj_model),
+            detector_input_width(app.detector),detector_input_height(app.detector),args.detector.threads,(int)args.detector.provider);
+        app.replay_geometry_revision=-1;
+        if(replay_open(&app.replay,&app.event_log,metadata))fprintf(stderr,"coordinate recorder initialization failed\n");
     }
     /* 성능 로그 — 이벤트 로그와 별도 파일 (*_perf.db).
      * 이벤트 로그 경로에서 확장자 앞에 _perf를 삽입합니다.
@@ -3113,6 +3287,12 @@ int main(int argc, char **argv) {
                 args.media.framerate);
     }
 
+#ifdef _WIN32
+    { wchar_t name[128];
+      if(GetEnvironmentVariableW(L"HUNIK_STOP_EVENT",name,128)>0)
+          launcher_stop_event=OpenEventW(SYNCHRONIZE,FALSE,name);
+    }
+#endif
     signal(SIGINT, request_stop);
     signal(SIGTERM, request_stop);
 #if defined(SIGPIPE)
@@ -3180,6 +3360,18 @@ int main(int argc, char **argv) {
         char surface_dir[600];
         snprintf(surface_dir,sizeof(surface_dir),"%s/config",data_dir);
         snprintf(app.surface_config_path,sizeof(app.surface_config_path),"%s/surfaces.json",surface_dir);
+        {
+            FILE *existing=fopen(app.surface_config_path,"rb");
+            if(existing)fclose(existing);
+            else {
+                const char *initial="{\"schema_version\":1,\"revision\":1,\"enabled\":false,\"camera_id\":\"camera-1\",\"geometry_revision\":1,\"width\":1280,\"height\":720,\"source\":\"auto\",\"surfaces\":[]}";
+#if defined(_WIN32)
+                CreateDirectoryA(surface_dir,NULL);
+#endif
+                if(surface_file_replace(app.surface_config_path,initial,strlen(initial)))
+                    event_log_write(&app.event_log,LOG_WARN,"surface","initial automatic mapping configuration could not be saved");
+            }
+        }
         app.surface_monitor=surface_monitor_create(surface_dir);
         if(!app.surface_monitor||detection_list_init(&app.surface_detections,args.detector.max_candidates)!=0){
             fprintf(stderr,"surface monitor allocation failed\n");goto done;}
@@ -3271,6 +3463,7 @@ int main(int argc, char **argv) {
     {
         snprintf(app.door_closed_path, sizeof(app.door_closed_path),
                  "%s\\door_closed_reference.raw", data_dir);
+        snprintf(app.door_map_path,sizeof(app.door_map_path),"%s/door_location.json",data_dir);
         snprintf(app.door_open_path, sizeof(app.door_open_path),
                  "%s\\door_open_reference.raw", data_dir);
         if (door_load(&app.door, app.door_closed_path, app.door_open_path) != 0)
@@ -3400,6 +3593,7 @@ done:
     if (app.detection_log) fclose(app.detection_log);
     if (app.keypoint_log)  fclose(app.keypoint_log);
     if (app.preview_pipe) pclose(app.preview_pipe);
+    replay_close(&app.replay,&app.event_log);
     event_log_close(&app.event_log);
     perf_log_close(&app.perf_log);
     door_destroy(&app.door);

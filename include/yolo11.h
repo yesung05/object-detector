@@ -178,6 +178,8 @@ int detector_run(Detector *detector, const uint8_t *rgb, int width, int height,
 void detector_destroy(Detector *detector);
 int detector_input_width(const Detector *detector);
 int detector_input_height(const Detector *detector);
+/* Call on the inference thread between runs. */
+void detector_set_confidence(Detector *detector, float confidence);
 void detector_get_last_stats(const Detector *detector, DetectorRunStats *stats);
 
 #endif

@@ -35,6 +35,17 @@ typedef struct {
     int    door_auto_phase;                   /* DoorAutoPhase (door.h) */
     int    door_auto_stalled;                 /* 1=기준이 안 잡힘, ROI 재조정 필요 */
     int    door_roi_set;                      /* 0=ROI 미지정 — 자동 캡처 자체가 불가 */
+    int door_roi_x,door_roi_y,door_roi_w,door_roi_h,door_roi_auto,door_map_samples;
+    float person_confidence,object_confidence,new_person_confidence,table_confidence;
+    int replay_active,replay_full;
+    long long replay_frames,replay_errors,replay_bytes;
+    double replay_write_ms;
+    int probable_orders;
+    double door_band_ratio;
+    double tier2_ms;
+    long tier2_runs;
+    int table_mapping,calibration_active,calibration_regions;
+    double calibration_seconds,calibration_total;
     int    door_band_valid;                   /* -1 미평가, 0 무효(상인방 의심), 1 유효 */
     int    door_band_active;                  /* 1=이번 프레임을 상단 밴드로 판정 중 */
     double door_band_signal;
@@ -84,6 +95,10 @@ void stream_set_door_enabled(int enabled);
 /* 대시보드 POST /door/force-closed 요청을 꺼냅니다. main 스레드 전용.
  * 1=요청 있었음(꺼내면서 플래그 리셋), 0=없음. */
 int  stream_pop_force_closed(void);
+
+/* POST /location/reset 요청을 main 스레드가 처리합니다. 저장된 장소별 기준
+ * 파일은 스트림 서버가 지우고, main.c는 메모리에 남은 안정화 구역도 비웁니다. */
+int  stream_pop_location_reset(void);
 
 /* 카메라 연결 상태. 0 이면 /snapshot·기준 저장이 503 을 반환하고
  * /door/state 응답의 camera_connected 가 0 이 됩니다. */
@@ -137,6 +152,7 @@ static inline int  stream_client_count(void) { return 0; }
 static inline void stream_set_door_state(int state) { (void)state; }
 static inline void stream_set_door_enabled(int enabled) { (void)enabled; }
 static inline int  stream_pop_force_closed(void) { return 0; }
+static inline int  stream_pop_location_reset(void) { return 0; }
 static inline void stream_set_camera_connected(int connected) { (void)connected; }
 static inline void stream_set_access_pin(const char *pin) { (void)pin; }
 static inline void stream_set_privacy_mode(int enabled) { (void)enabled; }

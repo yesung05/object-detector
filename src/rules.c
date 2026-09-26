@@ -64,6 +64,7 @@ int rules_init(RulesEngine *re, size_t capacity, const RulesConfig *config,
         return -1;
     }
     for (i = 0; i < capacity; ++i) states[i].track_id = -1;
+    memset(re,0,sizeof(*re));
     re->states   = states;
     re->capacity = capacity;
     re->config   = config ? *config : DEFAULT_RULES;
@@ -94,8 +95,12 @@ void rules_shift_time(RulesEngine *re, double gap) {
     size_t i;
     if (!re || !re->states || gap <= 0.0) return;
     for (i = 0; i < re->capacity; ++i) {
-        if (re->states[i].track_id != -1 && re->states[i].fall_start > 0.0)
-            re->states[i].fall_start += gap;
+        re->states[i].order_near_start=re->states[i].order_near_last=0;
+        /* A camera gap is missing evidence, not observed posture duration. */
+        re->states[i].fall_start=0;re->states[i].fall_samples=0;
+        re->states[i].upright_start=0;re->states[i].upright_samples=0;
+        if(re->states[i].upright_last>0)re->states[i].upright_last+=gap;
+        if(re->states[i].fall_last_observation>0)re->states[i].fall_last_observation+=gap;
     }
 }
 
@@ -465,6 +470,28 @@ int rules_check_vanish(RulesEngine *re, Track *t, const VanishEvidence *ev,
     return 0;
 }
 
+/* A wide box or drifting head patch is not independent evidence of a person.
+ * Require both shoulders/hips inside the current box and a non-degenerate torso.
+ * 1 = upright torso; 2 = horizontal torso; 0 = insufficient evidence. */
+static int fall_torso_pose(const Detection *b) {
+    const int ids[4]={5,6,11,12};
+    float w=b->x2-b->x1,h=b->y2-b->y1,sx,sy,hx,hy,dx,dy;
+    int i;
+    if(b->keypoint_count<13 || w<=0 || h<FALL_MIN_H)return 0;
+    for(i=0;i<4;i++) {
+        const Keypoint *k=&b->kp[ids[i]];
+        if(!isfinite(k->x)||!isfinite(k->y)||!isfinite(k->score)||k->score<.5f ||
+           k->x<b->x1-w*.1f || k->x>b->x2+w*.1f ||
+           k->y<b->y1-h*.1f || k->y>b->y2+h*.1f)return 0;
+    }
+    sx=(b->kp[5].x+b->kp[6].x)*.5f;sy=(b->kp[5].y+b->kp[6].y)*.5f;
+    hx=(b->kp[11].x+b->kp[12].x)*.5f;hy=(b->kp[11].y+b->kp[12].y)*.5f;
+    dx=fabsf(hx-sx);dy=hy-sy;
+    if(dy>h*.15f && dy>dx*1.2f)return 1;
+    if(dx>w*.15f && fabsf(dy)<dx*.6f)return 2;
+    return 0;
+}
+
 void rules_evaluate(RulesEngine *re, TrackList *tl, double now, EventLog *elog) {
     size_t i;
     char msg[256];
@@ -484,17 +511,26 @@ void rules_evaluate(RulesEngine *re, TrackList *tl, double now, EventLog *elog) 
         s = get_state(re, t->id);
 
         /* ROI 키오스크 체크: 기준점(중심 또는 발밑)이 ROI 안에 있으면 ORDERED 로 전환 */
-        if (re->config.roi_kiosk_set && t->order == TRACK_UNORDERED) {
-            float cx = (t->box.x1 + t->box.x2) * 0.5f;
-            float cy = re->config.roi_anchor_foot ? t->box.y2
-                                                  : (t->box.y1 + t->box.y2) * 0.5f;
-            if (cx >= re->config.roi_kiosk_x &&
-                cx <= re->config.roi_kiosk_x + re->config.roi_kiosk_w &&
-                cy >= re->config.roi_kiosk_y &&
-                cy <= re->config.roi_kiosk_y + re->config.roi_kiosk_h) {
-                t->order = TRACK_ORDERED;
-                snprintf(msg, sizeof(msg), "track=%d roi=kiosk", t->id);
-                event_log_write(elog, LOG_INFO, "rules", msg);
+        /* Proximity is weak evidence, never payment confirmation. */
+        if (t->order == TRACK_UNORDERED) {
+            const Detection *b=&t->box;
+            float bw=b->x2-b->x1, bh=b->y2-b->y1;
+            int near=re->frame_width>0 && re->frame_height>0 &&
+                bh>=re->frame_height*0.65f &&
+                bw*bh>=re->frame_width*(float)re->frame_height*0.20f &&
+                b->score>=0.60f && b->keypoint_count>=13 && upper_body_upright(b)==1;
+            if(near && b->kp[11].score>=KP_SCORE_THRESH && b->kp[12].score>=KP_SCORE_THRESH)
+                near=(b->kp[11].y+b->kp[12].y-b->kp[5].y-b->kp[6].y)*0.5f>bh*0.12f;
+            if(t->misses==0 && near) {
+                if(s->order_near_start<=0 || now-s->order_near_last>2.0) s->order_near_start=now;
+                s->order_near_last=now;
+                if(now-s->order_near_start>=30.0) {
+                    t->order=TRACK_PROBABLY_ORDERED;
+                    snprintf(msg,sizeof(msg),"probably_ordered track=%d hold=%.1fs payment=unconfirmed",t->id,now-s->order_near_start);
+                    event_log_write(elog,LOG_INFO,"rules",msg);
+                }
+            } else if(t->misses==0 || now-s->order_near_last>2.0) {
+                s->order_near_start=s->order_near_last=0;
             }
         }
 
@@ -513,7 +549,7 @@ void rules_evaluate(RulesEngine *re, TrackList *tl, double now, EventLog *elog) 
         }
 
         /* ── 미주문 착석 ── */
-        if (t->order == TRACK_UNORDERED &&
+        if (t->order != TRACK_ORDERED &&
             t->dwell_seconds > re->config.unordered_grace_seconds) {
             if (!s->unordered_latched) {
                 s->unordered_latched = 1;
@@ -527,42 +563,51 @@ void rules_evaluate(RulesEngine *re, TrackList *tl, double now, EventLog *elog) 
             s->unordered_latched = 0;
         }
 
-        /* ── 쓰러짐 ── */
-        /* 머리 위치 하강: 서있을 때 대비 프레임 높이의 20% 이상 아래로 내려가면
-         * YOLO bbox가 사라진 상태에서도 쓰러짐 신호로 사용합니다. */
+        /* All fall paths share the same fresh-evidence and hold gates. */
         {
-            /* head_y_fall_threshold_norm: 서있는 bbox 높이의 65%를 baseline에 더한 값.
-             * 카메라 해상도·비율·높이와 무관하게 사람 자신의 키를 기준으로 합니다. */
-            int head_drop = t->head_valid
-                         && t->head_y_fall_threshold_norm > 0.0f
-                         && t->head_cy_norm > t->head_y_fall_threshold_norm;
-            /* fall_sudden: 머리가 급격히 하강 → hold 없이 즉시 발화 */
-            if (t->fall_sudden && !s->fall_latched) {
-                s->fall_latched = 1;
-                s->fall_start   = now;
-                snprintf(msg, sizeof(msg),
-                         "person_fallen track=%d sudden_head_drop",
-                         t->id);
-                event_log_write(elog, LOG_ERROR, "rules", msg);
-                note_fall(re, t);
-                t->fall_sudden = 0;
-            } else if (head_drop || is_horizontal_pose(&t->box,
-                                               re->config.fall_aspect_ratio_kp,
-                                               re->config.fall_aspect_ratio_nokp,
-                                               re->frame_width, re->frame_height)) {
-                if (s->fall_start <= 0.0) s->fall_start = now;
-                if (!s->fall_latched &&
-                    (now - s->fall_start) >= re->config.fall_hold_seconds) {
-                    s->fall_latched = 1;
-                    snprintf(msg, sizeof(msg),
-                             "person_fallen track=%d hold=%.1fs",
-                             t->id, now - s->fall_start);
-                    event_log_write(elog, LOG_ERROR, "rules", msg);
-                    note_fall(re, t);
-                }
-            } else {
-                s->fall_start  = 0.0;
-                s->fall_latched = 0;
+            const Detection *b=&t->box;
+            double gap=t->last_seen-s->fall_last_observation;
+            int pose, horizontal, quality;
+            t->fall_sudden=0; /* Head template movement cannot bypass person validation. */
+            if(t->misses || t->last_seen<=0 || now-t->last_seen>2.0 || t->last_seen>now+.01) {
+                s->fall_gate=2;s->fall_start=0;s->fall_samples=0;
+                continue;
+            }
+            if(t->last_seen<=s->fall_last_observation)continue; /* not another observation */
+            if(s->fall_last_observation>0 && gap>2.0) {
+                s->fall_start=0;s->fall_samples=0;s->upright_start=0;s->upright_samples=0;
+            }
+            s->fall_last_observation=t->last_seen;
+            quality=isfinite(b->score)&&isfinite(t->match_score)&&b->score>=.5f&&t->match_score>=.5f;
+            pose=quality?fall_torso_pose(b):0;
+            if(!quality || !pose) {
+                s->fall_gate=quality?3:1;s->fall_start=0;s->fall_samples=0;
+                s->upright_start=0;s->upright_samples=0;
+                continue;
+            }
+            if(pose==1) {
+                if(s->upright_start<=0)s->upright_start=now;
+                s->upright_samples++;
+                if(s->upright_samples>=3 && now-s->upright_start>=1.0)s->upright_last=now;
+                s->fall_start=0;s->fall_samples=0;s->fall_latched=0;s->fall_gate=0;
+                continue;
+            }
+            s->upright_start=0;s->upright_samples=0;
+            horizontal=is_horizontal_pose(b,re->config.fall_aspect_ratio_kp,
+                re->config.fall_aspect_ratio_nokp,re->frame_width,re->frame_height);
+            if(!horizontal) {s->fall_start=0;s->fall_samples=0;s->fall_gate=3;continue;}
+            if(s->fall_latched) {s->fall_gate=6;continue;}
+            if(s->upright_last<=0 || now-s->upright_last>30.0) {
+                s->fall_gate=4;s->fall_start=0;s->fall_samples=0;continue;
+            }
+            if(s->fall_start<=0)s->fall_start=now;
+            s->fall_samples++;s->fall_gate=5;
+            if(s->fall_samples>=3 && now-s->fall_start>=re->config.fall_hold_seconds) {
+                s->fall_latched=1;s->fall_gate=6;
+                snprintf(msg,sizeof(msg),
+                    "person_fallen track=%d hold=%.1fs score=%.2f match=%.2f samples=%u evidence=upright_to_horizontal",
+                    t->id,now-s->fall_start,b->score,t->match_score,s->fall_samples);
+                event_log_write(elog,LOG_ERROR,"rules",msg);note_fall(re,t);
             }
         }
     }

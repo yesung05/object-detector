@@ -114,6 +114,7 @@ if(ORT_INCLUDE_DIR AND ORT_LIBRARY AND FFMPEG_INCLUDE_DIR AND FFMPEG_FOUND)
         src/platform.c
         src/gray.c
         src/log.c
+        src/replay.c
         src/config.c
         src/camera_health.c
         src/tracks.c
@@ -166,6 +167,22 @@ endif()
 
 # ── 단위 테스트 (ORT/FFmpeg 의존 없음) ───────────────────────────────────
 enable_testing()
+add_executable(test_door_mapper tests/test_door_mapper.c)
+target_include_directories(test_door_mapper PRIVATE include)
+if(MSVC)
+    target_compile_options(test_door_mapper PRIVATE /utf-8)
+else()
+    target_link_libraries(test_door_mapper PRIVATE m)
+endif()
+add_test(NAME door_mapper_unit COMMAND test_door_mapper)
+add_executable(test_table_mapper tests/test_table_mapper.c)
+target_include_directories(test_table_mapper PRIVATE include)
+if(MSVC)
+    target_compile_options(test_table_mapper PRIVATE /utf-8)
+else()
+    target_link_libraries(test_table_mapper PRIVATE m)
+endif()
+add_test(NAME table_mapper_unit COMMAND test_table_mapper)
 
 add_executable(test_core
     tests/test_core.c
@@ -175,6 +192,7 @@ add_executable(test_core
     src/platform.c
     src/gray.c
     src/log.c
+        src/replay.c
     src/config.c
     src/camera_health.c
     src/tracks.c
@@ -291,4 +309,30 @@ if(WIN32)
     if(MSVC)
         target_compile_options(test_surface_stream PRIVATE /utf-8)
     endif()
+endif()
+
+add_executable(test_replay tests/test_replay.c src/replay.c src/log.c third_party/sqlite/sqlite3.c)
+target_include_directories(test_replay PRIVATE include)
+if(MSVC)
+ target_compile_options(test_replay PRIVATE /utf-8 /W3)
+ target_compile_definitions(test_replay PRIVATE _CRT_SECURE_NO_WARNINGS)
+else()
+ target_link_libraries(test_replay PRIVATE m)
+endif()
+add_test(NAME replay_unit COMMAND test_replay)
+
+if(WIN32)
+    set(HUNIK_VERSION "0.1.0-alpha.1" CACHE STRING "Displayed release version")
+    add_executable(hunik-launcher WIN32 src/launcher.c)
+    target_compile_definitions(hunik-launcher PRIVATE UNICODE _UNICODE _CRT_SECURE_NO_WARNINGS HUNIK_VERSION="${HUNIK_VERSION}")
+    target_compile_options(hunik-launcher PRIVATE /utf-8 /W4)
+    target_link_libraries(hunik-launcher PRIVATE shell32 user32 ws2_32)
+endif()
+
+if(WIN32)
+    if(TARGET yolo11-person)
+        set_target_properties(yolo11-person PROPERTIES OUTPUT_NAME "unmanned_detector")
+    endif()
+    set_target_properties(hunik-dashboard PROPERTIES OUTPUT_NAME "unmanned_detector-dashboard")
+    set_target_properties(hunik-launcher PROPERTIES OUTPUT_NAME "unmanned_detector-launcher")
 endif()

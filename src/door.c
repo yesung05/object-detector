@@ -1,6 +1,7 @@
 #include "door.h"
 #include "log.h"
 
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -105,6 +106,11 @@ void door_destroy(DoorMonitor *d) {
     d->ref_closed_rgb = NULL;
     free(d->ref_open_rgb);
     d->ref_open_rgb = NULL;
+    free(d->passage_base); d->passage_base=NULL;
+    free(d->passage_candidate); d->passage_candidate=NULL;
+    free(d->passage_previous); d->passage_previous=NULL;
+    d->passage_cycles=d->passage_inside=d->passage_moved=0;
+    d->passage_quiet=d->passage_hold=d->passage_return=d->passage_last=0;
     free(d->auto_roi_prev);
     d->auto_roi_prev = NULL;
     free(d->auto_roi_cur);
@@ -205,7 +211,13 @@ int door_check(DoorMonitor *d,
      * 동전 던지기라, 문 앞에 서서 통화하는 손님 하나로 door_open 오탐이 납니다.
      */
     int cmp_y1 = y1;
-    if (roi_occluded(persons, person_count, x0, y0, x1, y1)) {
+    if (d->passage_enabled) {
+        /* Passage references only differ in this clear upper panel. */
+        if (!have_closed || !have_open || d->band_valid!=1) return -1;
+        cmp_y1=band_bottom(d,y0,y1);
+        if (roi_occluded(persons,person_count,x0,y0,x1,cmp_y1)) return -1;
+        d->band_active=1;
+    } else if (roi_occluded(persons, person_count, x0, y0, x1, y1)) {
         if (d->band_ratio > 0.0f && d->band_valid == 1) {
             cmp_y1 = band_bottom(d, y0, y1);
             d->band_active = 1;
@@ -379,6 +391,8 @@ static void auto_reset_wait(DoorMonitor *d) {
     d->auto_roi_valid    = 0;
 }
 
+#include "door_passage.h"
+
 int door_auto_update(DoorMonitor *d,
                      const uint8_t *rgb, int w, int h, int stride,
                      const GrayRect *persons, int person_count,
@@ -398,6 +412,8 @@ int door_auto_update(DoorMonitor *d,
         d->auto_stalled = 0;
         return 0;
     }
+    if (d->passage_enabled)
+        return door_passage_update(d,rgb,w,h,stride,persons,person_count,camera_ok,now,closed_path,open_path);
     {
         /* 단계가 바뀔 때만 기준 시각을 다시 잡습니다. 첫 호출은 auto_phase 가 OFF(0) 이므로
            이 비교만으로 걸립니다 — now==0.0 을 "미설정"으로 오인하는 별도 조건을 두지 않습니다. */

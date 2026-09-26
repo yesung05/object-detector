@@ -44,7 +44,8 @@
 
 static char g_root[MAX_PATH];        /* 프로젝트 루트 (logs\ 부모) */
 static char g_logs[MAX_PATH];        /* g_root\logs\ */
-static char g_config_path[MAX_PATH]; /* g_root\config.json */
+static char g_data_root[MAX_PATH];   /* 운영 데이터 루트 (기본값: g_root) */
+static char g_config_path[MAX_PATH]; /* g_data_root\config.json 또는 --config */
 static int  g_port = 8080;
 static SRWLOCK g_surface_config_lock = SRWLOCK_INIT;
 
@@ -546,7 +547,7 @@ static const char *DEFAULT_CONFIG =
     "\"luma_black_threshold\":40,"
     "\"luma_white_threshold\":240,"
     "\"frozen_frames_threshold\":45,"
-    "\"door_enabled\":0,"
+    "\"door_enabled\":1,"
     "\"door_diff_threshold\":0.05,"
     "\"door_confirm_frames\":5,"
     "\"door_open_seconds\":30,"
@@ -804,7 +805,7 @@ static void serve_config_post(SOCKET s, const char *body, int body_len, const Ne
 static void serve_surfaces(SOCKET socket, const char *body, int length, const NetAccess *acc) {
     char path[MAX_PATH],directory[MAX_PATH],message[256];SurfaceConfig config,old;
     char *data=NULL;FILE *f;size_t count;int code=200;
-    snprintf(directory,sizeof(directory),"%s\\config",g_root);
+    snprintf(directory,sizeof(directory),"%s\\config",g_data_root);
     snprintf(path,sizeof(path),"%s\\surfaces.json",directory);
     AcquireSRWLockExclusive(&g_surface_config_lock);
     if(body) {
@@ -834,6 +835,8 @@ reply:
 done:
     free(data);ReleaseSRWLockExclusive(&g_surface_config_lock);
 }
+#include "replay_api.h"
+
 static DWORD WINAPI client_thread(LPVOID arg) {
     SOCKET s = (SOCKET)(uintptr_t)arg;
     /* POST body를 담으려면 버퍼가 충분해야 합니다. config JSON ≒ 500B */
@@ -925,6 +928,10 @@ static DWORD WINAPI client_thread(LPVOID arg) {
     if (strcmp(method, "GET") == 0) {
         if (strcmp(path, "/") == 0 || strcmp(path, "/index.html") == 0) {
             serve_page(s,"index.html");
+        } else if (strcmp(path,"/replay")==0) {
+            serve_page(s,"replay.html");
+        } else if (strcmp(path,"/api/replay/events")==0 || strcmp(path,"/api/replay/frames")==0) {
+            serve_replay(s,path,query,NULL,0,0);
         } else if (strcmp(path,"/surfaces")==0) {
             serve_page(s,"surfaces.html");
         } else if (strcmp(path,"/research")==0) {
@@ -950,7 +957,9 @@ static DWORD WINAPI client_thread(LPVOID arg) {
     } else if (strcmp(method, "POST") == 0) {
         int body_len = 0;
         const char *body = extract_body(buf, n, &body_len);
-        if (strcmp(path, "/api/surfaces") == 0) {
+        if (strcmp(path,"/api/replay/review")==0) {
+            serve_replay(s,path,query,body,body_len,1);
+        } else if (strcmp(path, "/api/surfaces") == 0) {
             serve_surfaces(s,body,content_length(buf),&acc);
         } else if (strcmp(path, "/api/config") == 0) {
             serve_config_post(s, body, body_len, &acc);
@@ -979,12 +988,21 @@ int main(int argc, char **argv) {
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--root") == 0 && i + 1 < argc) {
             strncpy(g_root, argv[++i], MAX_PATH - 1);
+        } else if (strcmp(argv[i], "--config") == 0 && i + 1 < argc) {
+            strncpy(g_config_path, argv[++i], MAX_PATH - 1);
         } else if (strcmp(argv[i], "--port") == 0 && i + 1 < argc) {
             g_port = atoi(argv[++i]);
         }
     }
-    snprintf(g_logs,        sizeof(g_logs),        "%s\\logs",        g_root);
-    snprintf(g_config_path, sizeof(g_config_path), "%s\\config.json", g_root);
+    if (!g_config_path[0])
+        snprintf(g_config_path, sizeof(g_config_path), "%s\\config.json", g_root);
+    snprintf(g_data_root, sizeof(g_data_root), "%s", g_config_path);
+    {
+        char *slash = strrchr(g_data_root, '\\');
+        if (slash) *slash = '\0';
+        else snprintf(g_data_root, sizeof(g_data_root), "%s", g_root);
+    }
+    snprintf(g_logs, sizeof(g_logs), "%s\\logs", g_data_root);
 
     WSADATA wsa;
     if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
@@ -1029,10 +1047,11 @@ int main(int argc, char **argv) {
                 freeaddrinfo(res);
             }
         }
-        printf("HUNIK Dashboard: http://localhost:%d  (같은 WiFi: http://%s:%d)\n",
+        printf("unmanned_detector Dashboard: http://localhost:%d  (같은 WiFi: http://%s:%d)\n",
                g_port, local_ip, g_port);
     }
     printf("Root : %s\n", g_root);
+    printf("Data : %s\n", g_data_root);
     printf("Logs : %s\n", g_logs);
     printf("Press Ctrl+C to stop.\n\n");
 
