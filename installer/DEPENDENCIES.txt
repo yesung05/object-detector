@@ -1,0 +1,13 @@
+Runtime component provenance
+
+FFmpeg shared Windows x64 build: https://github.com/BtbN/FFmpeg-Builds
+FFmpeg source: https://ffmpeg.org/download.html
+Exact linked build/configuration: FFmpeg-build.txt. License: FFmpeg-LICENSE.txt.
+ONNX Runtime: https://github.com/microsoft/onnxruntime
+License and third-party notices are supplied alongside this file.
+Microsoft Visual C++ runtime: app-local x64 CRT files from the Visual Studio
+VC/Redist directory. https://learn.microsoft.com/cpp/windows/redistributing-visual-cpp-files
+YOLO11 pose and object models: https://github.com/ultralytics/ultralytics
+Upstream license: https://github.com/ultralytics/ultralytics/blob/main/LICENSE
+The model inventory and SHA256 hashes are in build-manifest.json.
+unmanned_detector installer compiler: Inno Setup, https://jrsoftware.org/

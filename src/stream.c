@@ -84,6 +84,7 @@ static volatile int  g_camera_connected = 1;
 /* POST /door/force-closed 요청 pending 플래그. InterlockedExchange 로만 건드립니다.
  * 클라이언트 스레드가 1로 세팅 → main 스레드가 stream_pop_force_closed()로 꺼냄. */
 static volatile LONG g_force_closed =  0;
+static volatile LONG g_location_reset_requested = 0;
 static volatile LONG g_clients     =  0; /* /stream 연결 수 (Interlocked 로만 변경) */
 static ULONGLONG     g_last_push_ms = 0; /* 마지막으로 받아들인 프레임 시각 */
 /* 적응형 감속이 낮출 수 있는 전송 FPS. 키오스크가 바쁠 때 JPEG 인코딩 부하를 줄입니다. */
@@ -119,6 +120,10 @@ void stream_set_camera_connected(int connected) { g_camera_connected = connected
 /* 클라이언트 스레드가 세팅한 force-closed 요청을 꺼냅니다. main 스레드 전용. */
 int stream_pop_force_closed(void) {
     return (int)InterlockedExchange(&g_force_closed, 0);
+}
+
+int stream_pop_location_reset(void) {
+    return (int)InterlockedExchange(&g_location_reset_requested, 0);
 }
 
 /* ── 개인정보 보호 · 접근 제어 상태 ─────────────────────────────────────────
@@ -420,6 +425,47 @@ static void handle_door_save(SOCKET s, int is_open) {
                 : "{\"ok\":true,\"state\":\"closed\"}");
 }
 
+/* 현재 장소에만 의미가 있는 기준 파일을 모두 비웁니다. 설치 파일과 설정값은
+ * 건드리지 않으므로 장소 전환과 프로그램 업데이트를 안전하게 분리할 수 있습니다. */
+static void handle_location_reset(SOCKET s, int door_only) {
+    static const char *names[] = {
+        "door_closed_reference.raw", "door_open_reference.raw",
+        "residue_clean_reference.raw", "calibration.json", "door_location.json"
+    };
+    char path[MAX_PATH], pattern[MAX_PATH];
+    WIN32_FIND_DATAA fd = {0};
+    HANDLE find;
+    int removed = 0, failed = 0;
+    size_t i;
+
+    for (i = 0; i < sizeof(names) / sizeof(names[0]); ++i) {
+        if(door_only && (i==2 || i==3))continue;
+        snprintf(path, sizeof(path), "%s\\%s", g_data_dir, names[i]);
+        if (DeleteFileA(path)) removed++;
+        else if (GetLastError() != ERROR_FILE_NOT_FOUND) failed++;
+    }
+    /* 표면 기준과 이력은 모두 위치 종속 데이터입니다. surfaces.json은 대시보드가
+     * 빈 구성으로 교체하여 감시기를 즉시 끄므로 여기서는 이미지 파일만 지웁니다. */
+    snprintf(pattern, sizeof(pattern), "%s\\config\\surface-*.bin*", g_data_dir);
+    find = door_only ? INVALID_HANDLE_VALUE : FindFirstFileA(pattern, &fd);
+    if (find != INVALID_HANDLE_VALUE) {
+        do {
+            if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+            snprintf(path, sizeof(path), "%s\\config\\%s", g_data_dir, fd.cFileName);
+            if (DeleteFileA(path)) removed++;
+            else failed++;
+        } while (FindNextFileA(find, &fd));
+        FindClose(find);
+    }
+    InterlockedExchange(&g_location_reset_requested, door_only?2:1);
+    if (failed) send_json(s, 500, "{\"ok\":false,\"error\":\"some location data could not be removed\"}");
+    else {
+        char body[80];
+        snprintf(body, sizeof(body), "{\"ok\":true,\"removed\":%d}", removed);
+        send_json(s, 200, body);
+    }
+}
+
 /* GET /door/preview?state=closed|open → 해당 raw 파일을 JPEG로 반환 */
 static void handle_door_preview(SOCKET s, int is_open) {
     char path[MAX_PATH];
@@ -564,7 +610,7 @@ static DWORD WINAPI client_thread(LPVOID arg) {
 
     if (strcmp(url, "/status") == 0) {
         StreamStatus st;
-        char body[640];
+        char body[2048];
         ULONGLONG until;
         int remaining = 0;
         EnterCriticalSection(&g_lock);
@@ -575,19 +621,29 @@ static DWORD WINAPI client_thread(LPVOID arg) {
         snprintf(body, sizeof(body),
             "{\"door\":{\"enabled\":%d,\"state\":%d,\"label\":\"%s\",\"auto_phase\":%d,"
             "\"auto_stalled\":%d,\"roi_set\":%d,"
-            "\"band_valid\":%d,\"band_active\":%d,\"band_signal\":%.1f,"
+            "\"roi_x\":%d,\"roi_y\":%d,\"roi_w\":%d,\"roi_h\":%d,\"roi_auto\":%d,\"map_samples\":%d,"
+            "\"band_ratio\":%.3f,\"band_valid\":%d,\"band_active\":%d,\"band_signal\":%.1f,"
             "\"closed_ready\":%d,\"open_ready\":%d,\"auto_wait\":%.1f},"
             "\"residue\":{\"enabled\":%d,\"ready\":%d,\"auto_phase\":%d,\"auto_wait\":%.1f},"
             "\"privacy\":{\"mode\":%d,\"active\":%d,\"unlock_remaining\":%d,\"unlock_max\":%d},"
-            "\"access\":{\"tier\":\"%s\",\"pin_required\":%d}}",
+            "\"access\":{\"tier\":\"%s\",\"pin_required\":%d},"
+            "\"recording\":{\"active\":%d,\"full\":%d,\"frames\":%lld,\"errors\":%lld,\"bytes\":%lld,\"last_write_ms\":%.3f},"
+            "\"thresholds\":{\"person\":%.2f,\"object\":%.2f,\"new_person\":%.2f,\"table\":%.2f},"
+            "\"probable_orders\":%d,\"tier2\":{\"runs\":%ld,\"mean_ms\":%.2f},"
+            "\"table_mapping\":%d,\"calibration\":{\"active\":%d,\"seconds\":%.1f,\"total\":%.1f,\"regions\":%d}}",
             st.door_enabled, st.door_state,
             st.door_state == 1 ? "open" : st.door_state == 0 ? "closed" : "unknown",
             st.door_auto_phase, st.door_auto_stalled, st.door_roi_set,
-            st.door_band_valid, st.door_band_active, st.door_band_signal,
+            st.door_roi_x,st.door_roi_y,st.door_roi_w,st.door_roi_h,st.door_roi_auto,st.door_map_samples,
+            st.door_band_ratio, st.door_band_valid, st.door_band_active, st.door_band_signal,
             st.door_closed_ready, st.door_open_ready, st.door_auto_wait,
             st.residue_enabled, st.residue_ready, st.residue_auto_phase, st.residue_auto_wait,
             g_privacy_mode, privacy_active_now(), remaining, g_privacy_unlock_max,
-            netaccess_tier_name(acc.tier), (acc.tier == NET_TIER_LAN && pin[0]) ? 1 : 0);
+            netaccess_tier_name(acc.tier), (acc.tier == NET_TIER_LAN && pin[0]) ? 1 : 0,
+            st.replay_active,st.replay_full,st.replay_frames,st.replay_errors,st.replay_bytes,st.replay_write_ms,
+            st.person_confidence,st.object_confidence,st.new_person_confidence,st.table_confidence,
+            st.probable_orders,st.tier2_runs,st.tier2_ms,
+            st.table_mapping,st.calibration_active,st.calibration_seconds,st.calibration_total,st.calibration_regions);
         send_json(s, 200, body);
 
     } else if (strcmp(url, "/privacy/state") == 0) {
@@ -726,6 +782,13 @@ static DWORD WINAPI client_thread(LPVOID arg) {
            /privacy/unlock 을 먼저 부릅니다. */
         access_log(1, "DENIED %s POST %s — privacy_locked (unlock first)", acc.ip, url);
         send_json(s, 409, "{\"ok\":false,\"error\":\"privacy_locked\"}");
+
+    } else if (strcmp(url, "/location/reset") == 0 && is_post) {
+        access_log(0, "location setup reset by %s (%s)", acc.ip, netaccess_tier_name(acc.tier));
+        handle_location_reset(s,0);
+
+    } else if (strcmp(url, "/door/reset") == 0 && is_post) {
+        handle_location_reset(s,1);
 
     } else if (strcmp(url, "/door/save") == 0 && is_post) {
         int is_open = (strstr(qs, "state=open") != NULL);

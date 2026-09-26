@@ -261,6 +261,7 @@ void tracks_update_ex(TrackList *tl, const DetectionList *detections,
             t->dwell_seconds   += now - t->last_seen;
             t->last_seen        = now;
             t->box              = detections->items[best_j];
+            t->match_score      = detections->items[best_j].score;
             t->misses           = 0;
             /* 외관 히스토그램을 EMA로 갱신합니다 (α=0.15).
              * 빠른 갱신은 잘못된 수렴을 일으키므로 느린 α를 씁니다. */
@@ -300,6 +301,7 @@ void tracks_update_ex(TrackList *tl, const DetectionList *detections,
             t->dwell_seconds += now - t->last_seen;
             t->last_seen      = now;
             t->box            = low->items[best_j];
+            t->match_score    = low->items[best_j].score;
             t->box.score      = keep_score;
             t->misses         = 0;
         }
@@ -355,6 +357,7 @@ void tracks_update_ex(TrackList *tl, const DetectionList *detections,
             best_limbo->misses           = 0;
             best_limbo->limbo_expired_at = 0.0;
             best_limbo->box              = detections->items[j];
+            best_limbo->match_score      = detections->items[j].score;
             best_limbo->last_seen        = now;
             /* 다른 곳에서 다시 나타났으므로 떠나기 전 속도는 의미가 없습니다. */
             best_limbo->vx = best_limbo->vy = 0.0f;
@@ -413,6 +416,7 @@ void tracks_update_ex(TrackList *tl, const DetectionList *detections,
             slot->last_seen   = now;
             slot->order       = TRACK_UNORDERED;
             slot->box         = detections->items[j];
+            slot->match_score = detections->items[j].score;
             slot->head_y_baseline_norm = -1.0f;  /* 미설정 초기값 */
             if (hist_computed) {
                 memcpy(slot->appear_hist, cur_hist, sizeof(slot->appear_hist));

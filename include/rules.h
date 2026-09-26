@@ -79,7 +79,11 @@ typedef struct {
     int    overstay_latched;
     int    unordered_latched;
     int    fall_latched;
+    double order_near_start, order_near_last;
     double fall_start;    /* 수평 자세가 시작된 시각 (0이면 미시작) */
+    double fall_last_observation, upright_start, upright_last;
+    unsigned int upright_samples, fall_samples;
+    int fall_gate; /* 0 idle, 1 confidence, 2 stale, 3 pose, 4 no upright history, 5 holding, 6 confirmed */
     int    no_cup_latched; /* track_id==-2 슬롯에서 no_cup_seated 래치로 재활용 */
 } TrackRuleState;
 
@@ -116,8 +120,8 @@ void rules_destroy(RulesEngine *re);
 void rules_update_config(RulesEngine *re, const RulesConfig *config);
 
 /*
- * 카메라가 gap 초 동안 끊겼다 돌아온 뒤 호출합니다. 진행 중인 쓰러짐 타이머를
- * gap 만큼 뒤로 미뤄, 화면을 못 본 시간이 "수평 자세 유지"로 세어지지 않게 합니다.
+ * 카메라가 gap 초 동안 끊겼다 돌아온 뒤 호출합니다. 진행 중인 쓰러짐 후보를
+ * 초기화하여 화면을 못 본 시간이 "수평 자세 유지"로 세어지지 않게 합니다.
  */
 void rules_shift_time(RulesEngine *re, double gap);
 

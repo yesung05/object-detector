@@ -21,6 +21,8 @@ typedef struct {
     sqlite3      *db;         /* 소유 — event_log_close 에서 해제 */
     sqlite3_stmt *stmt_ins;   /* 미리 컴파일한 INSERT 구문, db 수명과 동일 */
     LogLevel      min_level;
+    void (*observer)(void *, long long, LogLevel, const char *, const char *);
+    void *observer_context;
     int           echo_stderr; /* 1이면 SQLite 저장과 동시에 stderr 출력 */
 } EventLog;
 

@@ -724,6 +724,10 @@ int detector_input_height(const Detector *d) {
     return d ? d->input_height : 0;
 }
 
+void detector_set_confidence(Detector *d, float value) {
+    if(d && value>=0.01f && value<=0.99f)d->options.confidence=value;
+}
+
 void detector_get_last_stats(const Detector *d, DetectorRunStats *stats) {
     if (!stats) return;
     if (!d) {

@@ -1,35 +1,51 @@
-# ffmpeg stderr captured as ErrorRecord -- keep Continue so it doesn't abort
+﻿# ffmpeg stderr captured as ErrorRecord -- keep Continue so it doesn't abort
+param(
+    # 설치본은 프로그램 폴더와 별도의 사용자 데이터 폴더를 지정합니다.
+    # 비어 있으면 개발 환경과 호환되도록 프로젝트 루트를 그대로 사용합니다.
+    [string]$DataDir = "",
+    [switch]$OpenDashboard,
+    [switch]$Background,
+    [ValidateRange(1,65535)][int]$DashboardPort = 8080,
+    [ValidateRange(1,65535)][int]$StreamPort = 8081
+)
 $ErrorActionPreference = 'Continue'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $OutputEncoding          = [System.Text.Encoding]::UTF8
 $ROOT = Split-Path $MyInvocation.MyCommand.Path
+$dataRoot = if ($DataDir) { [IO.Path]::GetFullPath($DataDir) } else { $ROOT }
+if (-not (Test-Path $dataRoot)) { New-Item -ItemType Directory -Force -Path $dataRoot | Out-Null }
+$configPath = Join-Path $dataRoot "config.json"
+# Never seed an installed user's data from the development config: it may contain
+# a previous room's door ROI or surface configuration. Runtime defaults fill in
+# all regular detection settings on first run.
+if (-not (Test-Path $configPath)) { [IO.File]::WriteAllText($configPath, "{`"stream_port`":$StreamPort}") }
 
 # ── find exe ──────────────────────────────────────────────────────────────────
 $exe = $null
-foreach ($d in @("$ROOT\build-windows\Release", "$ROOT\build\Release")) {
-    if (Test-Path "$d\yolo11-person.exe") { $exe = "$d\yolo11-person.exe"; break }
+foreach ($d in @("$ROOT", "$ROOT\build-windows\Release", "$ROOT\build\Release")) {
+    if (Test-Path "$d\unmanned_detector.exe") { $exe = "$d\unmanned_detector.exe"; break }
 }
 if (-not $exe) {
     Write-Host "[ERROR] Executable not found. Build first:" -ForegroundColor Red
     Write-Host "        cmake --build build-windows --config Release"
-    Read-Host "Press Enter to close"
+    if (-not $Background) { Read-Host "Press Enter to close" }
     exit 1
 }
 
 $dashboard = $null
-foreach ($d in @("$ROOT\build-windows\Release", "$ROOT\build\Release")) {
-    if (Test-Path "$d\hunik-dashboard.exe") { $dashboard = "$d\hunik-dashboard.exe"; break }
+foreach ($d in @("$ROOT", "$ROOT\build-windows\Release", "$ROOT\build\Release")) {
+    if (Test-Path "$d\unmanned_detector-dashboard.exe") { $dashboard = "$d\unmanned_detector-dashboard.exe"; break }
 }
 
 # ── DLL paths ─────────────────────────────────────────────────────────────────
 $ffmpegBin = $null
-foreach ($d in @("$ROOT\build-windows\Release", "$ROOT\build\Release",
+foreach ($d in @("$ROOT", "$ROOT\build-windows\Release", "$ROOT\build\Release",
                  "C:\dev\ffmpeg-master-latest-win64-gpl-shared\bin",
                  "C:\deps\ffmpeg\bin")) {
     if (Test-Path "$d\avcodec-63.dll") { $ffmpegBin = $d; break }
 }
 $ortLib = $null
-foreach ($d in @("$ROOT\build-windows\Release", "$ROOT\build\Release",
+foreach ($d in @("$ROOT", "$ROOT\build-windows\Release", "$ROOT\build\Release",
                  "C:\dev\onnxruntime-win-x64-1.26.0\lib",
                  "C:\deps\onnxruntime\lib")) {
     if (Test-Path "$d\onnxruntime.dll") { $ortLib = $d; break }
@@ -46,7 +62,7 @@ foreach ($d in @($ffmpegBin, "C:\dev\ffmpeg-master-latest-win64-gpl-shared\bin",
 
 # ── camera selection ──────────────────────────────────────────────────────────
 Write-Host ""
-Write-Host "===== HUNIK unmanned store detection system =====" -ForegroundColor Cyan
+Write-Host "===== unmanned_detector unmanned store detection system =====" -ForegroundColor Cyan
 Write-Host ""
 
 $cameraDevice = $null
@@ -69,19 +85,27 @@ if ($ffmpeg) {
         Write-Host "Camera: $($cams[0]) (auto-selected)" -ForegroundColor Green
         $cameraDevice = "video=$($cams[0])"
     } else {
-        Write-Host "Select camera:"
-        for ($i = 0; $i -lt $cams.Count; $i++) {
-            Write-Host "  [$($i+1)] $($cams[$i])"
-        }
-        Write-Host ""
-        $sel = Read-Host "Enter number"
-        $idx = [int]$sel - 1
-        if ($idx -lt 0 -or $idx -ge $cams.Count) {
-            Write-Host "[warn] Invalid -- using default" -ForegroundColor Yellow
+        if ($Background) {
+            Add-Type -AssemblyName System.Windows.Forms
+            $form = New-Object Windows.Forms.Form
+            $form.Text = 'unmanned_detector - 카메라 선택'; $form.Width = 450; $form.Height = 170
+            $form.StartPosition = 'CenterScreen'; $form.TopMost = $true
+            $list = New-Object Windows.Forms.ComboBox
+            $list.Left = 20; $list.Top = 20; $list.Width = 390
+            $list.DropDownStyle = 'DropDownList'; $list.Items.AddRange([object[]]$cams); $list.SelectedIndex = 0
+            $button = New-Object Windows.Forms.Button
+            $button.Text = '선택한 카메라로 시작'; $button.Left = 180; $button.Top = 65; $button.Width = 220
+            $button.DialogResult = [Windows.Forms.DialogResult]::OK
+            $form.Controls.AddRange(@($list,$button)); $form.AcceptButton = $button
+            if ($form.ShowDialog() -ne [Windows.Forms.DialogResult]::OK) { $form.Dispose(); exit 0 }
+            $idx = $list.SelectedIndex; $form.Dispose()
         } else {
-            Write-Host "Selected: $($cams[$idx])" -ForegroundColor Green
-            $cameraDevice = "video=$($cams[$idx])"
+            for ($i=0; $i -lt $cams.Count; $i++) { Write-Host "[$($i+1)] $($cams[$i])" }
+            $sel = Read-Host "Enter camera number"; $number = 0
+            if (-not [int]::TryParse($sel,[ref]$number)) { $number=1 }
+            $idx = [Math]::Max(0,[Math]::Min($cams.Count-1,$number-1))
         }
+        $cameraDevice = "video=$($cams[$idx])"
     }
 } else {
     Write-Host "[warn] ffmpeg.exe not found -- using default camera" -ForegroundColor Yellow
@@ -123,12 +147,12 @@ if (-not $model) {
 }
 if (-not $model) {
     Write-Host "[ERROR] No model found. Put *.onnx in models\ folder." -ForegroundColor Red
-    Read-Host "Press Enter to close"
+    if (-not $Background) { Read-Host "Press Enter to close" }
     exit 1
 }
 
 # ── event log ─────────────────────────────────────────────────────────────────
-$logsDir = "$ROOT\logs"
+$logsDir = Join-Path $dataRoot "logs"
 if (-not (Test-Path $logsDir)) { New-Item -ItemType Directory $logsDir | Out-Null }
 $stamp   = Get-Date -Format "yyyyMMdd_HHmmss"
 $logFile = "$logsDir\$stamp.db"
@@ -136,8 +160,9 @@ Write-Host "[log]   $logFile"
 
 # ── dashboard (background) ────────────────────────────────────────────────────
 if ($dashboard) {
-    Write-Host "[dash]  http://localhost:8080 (background)"
-    Start-Process -FilePath $dashboard -ArgumentList "--root `"$ROOT`" --config `"$ROOT\config.json`"" -WindowStyle Hidden
+    Write-Host "[dash]  http://localhost:$DashboardPort (background)"
+    $dashboardProcess = Start-Process -FilePath $dashboard -ArgumentList "--root `"$ROOT`" --config `"$configPath`" --port $DashboardPort" -WindowStyle Hidden -PassThru
+    if ($OpenDashboard) { Start-Process "http://localhost:$DashboardPort" }
 } else {
     Write-Host "[dash]  dashboard binary not found"
 }
@@ -155,9 +180,9 @@ $cmdArgs = @(
     "--warmup", "2",
     "--confidence", "0.20",
     "--threads", "3",
-    "--stream-port", "8081",
+    "--stream-port", "$StreamPort",
     "--event-log", $logFile,
-    "--config", "$ROOT\config.json"
+    "--config", $configPath
 )
 if ($cameraDevice) {
     $cmdArgs += "--camera-format", "dshow", "--camera-device", $cameraDevice
@@ -199,10 +224,12 @@ if ($objModel) {
 $ErrorActionPreference = 'Continue'
 $backoff  = 5
 $quickFails = 0
-$restartLog = Join-Path $ROOT 'logs\restarts.log'
-$stopFile   = Join-Path $ROOT 'logs\STOP'
-if (Test-Path $stopFile) { Remove-Item $stopFile -Force }
+$restartLog = Join-Path $logsDir 'restarts.log'
+$stopFile   = Join-Path $logsDir 'STOP'
+if (-not $Background -and (Test-Path $stopFile)) { Remove-Item $stopFile -Force }
+try {
 while ($true) {
+    if (Test-Path $stopFile) { break }
     $startedAt = Get-Date
     & $exe @cmdArgs
     $code = $LASTEXITCODE
@@ -249,6 +276,12 @@ while ($true) {
         break
     }
     $backoff = [Math]::Min($backoff * 2, 300)
+}
+
+} finally {
+    if ($dashboardProcess -and -not $dashboardProcess.HasExited) {
+        Stop-Process -Id $dashboardProcess.Id -ErrorAction SilentlyContinue
+    }
 }
 
 Write-Host ""

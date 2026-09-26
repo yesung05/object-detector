@@ -127,6 +127,8 @@ void event_log_write(EventLog *log, LogLevel level,
         /* 로그 기록 실패는 로그로 남길 수 없으므로 stderr 가 마지막 수단입니다. */
         fprintf(stderr, "event_log: insert failed (%s): %s %s\n",
                 sqlite3_errmsg(log->db), module ? module : "", message ? message : "");
+    } else if(log->observer) {
+        log->observer(log->observer_context,sqlite3_last_insert_rowid(log->db),level,module?module:"",message?message:"");
     }
 }
 

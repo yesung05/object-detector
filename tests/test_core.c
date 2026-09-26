@@ -712,6 +712,58 @@ static void test_rules_overstay_latches_once(void) {
     event_log_close(&elog);
 }
 
+static Detection fall_test_pose(int upright) {
+    Detection b={0};b.score=.9f;b.keypoint_count=17;
+    b.x1=100;b.x2=upright?180.0f:350.0f;b.y1=upright?100.0f:200.0f;b.y2=300;
+    b.kp[0]=(Keypoint){upright?140.0f:120.0f,upright?120.0f:245.0f,.9f};
+    b.kp[5]=(Keypoint){upright?120.0f:140.0f,upright?150.0f:240.0f,.9f};
+    b.kp[6]=(Keypoint){upright?160.0f:150.0f,upright?150.0f:250.0f,.9f};
+    b.kp[11]=(Keypoint){upright?120.0f:290.0f,upright?250.0f:240.0f,.9f};
+    b.kp[12]=(Keypoint){upright?160.0f:300.0f,250,.9f};
+    return b;
+}
+static void fall_observe(RulesEngine *re,TrackList *tl,EventLog *log,double now) {
+    tl->items[0].last_seen=now;tl->items[0].match_score=tl->items[0].box.score;
+    rules_evaluate(re,tl,now,log);
+}
+static void fall_seed_upright(RulesEngine *re,TrackList *tl,EventLog *log) {
+    tl->items[0].box=fall_test_pose(1);
+    fall_observe(re,tl,log,98);fall_observe(re,tl,log,98.5);fall_observe(re,tl,log,99.1);
+    tl->items[0].box=fall_test_pose(0);
+}
+
+static void test_fall_false_positive_regressions(void) {
+    /* Reproduce bypass, bed shape, stale boxes, carried score, bad pose and gaps. */
+    for(int scenario=0;scenario<9;scenario++) {
+        TrackList tl;RulesEngine re={0};EventLog log;char error[128]={0};
+        RulesConfig cfg={3600,300,5,1.8f,2.2f};
+        ASSERT_INT_EQ(event_log_open(&log,":memory:",LOG_INFO,0),0);
+        ASSERT_INT_EQ(tracks_init(&tl,16,.3f,5,1800,.45f,error,sizeof(error)),0);
+        ASSERT_INT_EQ(rules_init(&re,16,&cfg,error,sizeof(error)),0);
+        tl.count=1;tl.items[0].id=1;tl.items[0].active=1;
+        if(scenario!=1)fall_seed_upright(&re,&tl,&log);
+        tl.items[0].box=fall_test_pose(0);
+        for(int j=0;j<9;j++) {
+            Track *t=&tl.items[0];double now=100+j;
+            t->fall_sudden=1;t->head_valid=1;t->head_cy_norm=.9f;t->head_y_fall_threshold_norm=.5f;
+            t->last_seen=now;t->match_score=.9f;
+            if(scenario==0)t->box.score=t->match_score=.29f;
+            if(scenario==2)t->box.keypoint_count=0;
+            if(scenario==3)t->box.kp[11].score=t->box.kp[12].score=0;
+            if(scenario==4)t->match_score=.12f; /* held .9 box must not mask low incoming score */
+            if(scenario==5)t->last_seen=100; /* repeated old evidence cannot complete hold */
+            if(scenario==6)t->misses=1;
+            if(scenario==7)t->box.kp[11].x=10000;
+            if(scenario==8 && j==3)t->misses=1;
+            else if(scenario==8)t->misses=0;
+            rules_evaluate(&re,&tl,now,&log);
+            EXPECT_INT_EQ(re.fall_fired_count,0);
+            EXPECT_INT_EQ(t->fall_sudden,0);
+        }
+        rules_destroy(&re);tracks_destroy(&tl);event_log_close(&log);
+    }
+}
+
 static void test_rules_fall_geometry(void) {
     /* 수평 bbox(keypoint 없음) + fall_hold 충족 → person_fallen 이벤트 */
     TrackList tl;
@@ -1106,18 +1158,10 @@ static void test_rules_fall_with_hip_fires(void) {
     tl.items[0].id = 1;
     tl.items[0].active = 1;
     tl.items[0].order = TRACK_ORDERED;
-    /* w=250, h=100 → 250 > 100×1.8=180 ✓ */
-    tl.items[0].box = (Detection){0, 0, 250, 100, 0.9f};
-    tl.items[0].box.keypoint_count = YOLO11_NUM_KEYPOINTS;
-    /* 코·양어깨·양엉덩이 모두 y=50 (완전 수평), valid=5, hip_valid=2, std=0 */
-    tl.items[0].box.kp[0].x  = 125.0f; tl.items[0].box.kp[0].y  = 50.0f; tl.items[0].box.kp[0].score  = 0.9f;
-    tl.items[0].box.kp[5].x  = 60.0f;  tl.items[0].box.kp[5].y  = 50.0f; tl.items[0].box.kp[5].score  = 0.9f;
-    tl.items[0].box.kp[6].x  = 190.0f; tl.items[0].box.kp[6].y  = 50.0f; tl.items[0].box.kp[6].score  = 0.9f;
-    tl.items[0].box.kp[11].x = 80.0f;  tl.items[0].box.kp[11].y = 50.0f; tl.items[0].box.kp[11].score = 0.9f;
-    tl.items[0].box.kp[12].x = 170.0f; tl.items[0].box.kp[12].y = 50.0f; tl.items[0].box.kp[12].score = 0.9f;
-
-    rules_evaluate(&re, &tl, 100.0, &elog);
-    rules_evaluate(&re, &tl, 100.2, &elog); /* fall_hold(0.1s) 경과 */
+    fall_seed_upright(&re,&tl,&elog);
+    fall_observe(&re,&tl,&elog,100.0);
+    fall_observe(&re,&tl,&elog,100.1);
+    fall_observe(&re,&tl,&elog,100.2);
 
     i = 0;
     while (i < (int)re.capacity && re.states[i].track_id != 1) i++;
@@ -2534,20 +2578,18 @@ static void test_rules_fall_once_and_gap_shift(void) {
     tl.count = 1;
     tl.items[0].id = 7;
     tl.items[0].active = 1;
-    tl.items[0].box = (Detection){0, 70, 200, 130, 0.9f};  /* 수평 */
-    tl.items[0].box.keypoint_count = 0;
-
-    rules_evaluate(&re, &tl, 100.0, &elog);                /* fall_start = 100 */
-    EXPECT_INT_EQ(re.fall_fired_count, 0);
-    rules_shift_time(&re, 30.0);                           /* 100~130 카메라 공백 */
-    rules_evaluate(&re, &tl, 133.0, &elog);                /* 실제로 본 시간 3초 → 미발화 */
-    EXPECT_INT_EQ(re.fall_fired_count, 0);
-    rules_evaluate(&re, &tl, 135.5, &elog);                /* 5.5초 → 발화 */
-    ASSERT_INT_EQ(re.fall_fired_count, 1);
-    EXPECT_INT_EQ(re.fall_fired_track[0], 7);
-    EXPECT_FLOAT_NEAR(re.fall_fired_box[0].x2, 200.0f, 0.01f);
-    rules_evaluate(&re, &tl, 137.0, &elog);                /* latch — 재발화 없음 */
-    EXPECT_INT_EQ(re.fall_fired_count, 0);
+    fall_seed_upright(&re,&tl,&elog);
+    fall_observe(&re,&tl,&elog,100);
+    EXPECT_INT_EQ(re.fall_fired_count,0);
+    rules_shift_time(&re,30);
+    /* Missing camera time resets the candidate. Five observed seconds required again. */
+    for(int j=0;j<5;j++){fall_observe(&re,&tl,&elog,133+j);EXPECT_INT_EQ(re.fall_fired_count,0);}
+    fall_observe(&re,&tl,&elog,138);
+    ASSERT_INT_EQ(re.fall_fired_count,1);
+    EXPECT_INT_EQ(re.fall_fired_track[0],7);
+    EXPECT_FLOAT_NEAR(re.fall_fired_box[0].x2,350.0f,.01f);
+    fall_observe(&re,&tl,&elog,139);
+    EXPECT_INT_EQ(re.fall_fired_count,0);
 
     rules_destroy(&re);
     tracks_destroy(&tl);
@@ -2931,10 +2973,89 @@ static void test_rules_kiosk_anchor_foot(void) {
         tl.items[0].order = TRACK_UNORDERED;
         tl.items[0].box = (Detection){100, 50, 160, 200, 0.9f};   /* 세로로 선 사람 */
         rules_evaluate(&re, &tl, 10.0, &elog);
-        EXPECT_INT_EQ(tl.items[0].order, foot ? TRACK_ORDERED : TRACK_UNORDERED);
+        EXPECT_INT_EQ(tl.items[0].order, TRACK_UNORDERED);
         rules_destroy(&re);
         tracks_destroy(&tl);
         event_log_close(&elog);
+    }
+}
+
+
+static void test_probable_order_requires_continuous_near_pose(void) {
+    RulesEngine re={0}; Track t={0}; TrackList tl={0}; EventLog log;
+    event_log_open(&log, ":memory:", LOG_INFO, 0);
+    ASSERT_INT_EQ(rules_init(&re,8,NULL,NULL,0),0);
+    rules_set_frame_size(&re,1280,720);
+    tl.items=&t;tl.count=1;t.id=1;t.active=1;
+    t.box=(Detection){300,0,950,700,0.9f};t.box.keypoint_count=17;
+    t.box.kp[0]=(Keypoint){625,100,0.9f};
+    t.box.kp[5]=(Keypoint){450,250,0.9f};t.box.kp[6]=(Keypoint){800,250,0.9f};
+    t.box.kp[11]=(Keypoint){480,550,0.9f};t.box.kp[12]=(Keypoint){770,550,0.9f};
+    for(int i=100;i<130;i++) rules_evaluate(&re,&tl,i,&log);
+    EXPECT_INT_EQ(t.order,TRACK_UNORDERED);
+    rules_evaluate(&re,&tl,130,&log);
+    EXPECT_INT_EQ(t.order,TRACK_PROBABLY_ORDERED);
+    tracks_mark_ordered(&tl,1);
+    rules_evaluate(&re,&tl,131,&log);
+    EXPECT_INT_EQ(t.order,TRACK_ORDERED);
+    t.order=TRACK_UNORDERED;rules_shift_time(&re,10);
+    for(int i=200;i<220;i++) rules_evaluate(&re,&tl,i,&log);
+    t.misses=1;rules_evaluate(&re,&tl,223,&log);t.misses=0;
+    for(int i=224;i<254;i++) rules_evaluate(&re,&tl,i,&log);
+    EXPECT_INT_EQ(t.order,TRACK_UNORDERED);
+    rules_evaluate(&re,&tl,254,&log);
+    EXPECT_INT_EQ(t.order,TRACK_PROBABLY_ORDERED);
+    t.order=TRACK_UNORDERED;rules_shift_time(&re,10);t.box.kp[0].score=0;
+    for(int i=300;i<=340;i++) rules_evaluate(&re,&tl,i,&log);
+    EXPECT_INT_EQ(t.order,TRACK_UNORDERED);
+    t.box.kp[0].score=.9f;t.box.x2=500;t.box.y2=350;
+    for(int i=400;i<=440;i++) rules_evaluate(&re,&tl,i,&log);
+    EXPECT_INT_EQ(t.order,TRACK_UNORDERED);
+    rules_destroy(&re);event_log_close(&log);
+}
+
+
+static int passage_tick(DoorMonitor *d,uint8_t *frame,const GrayRect *person,double *now) {
+    *now+=.5;
+    return door_auto_update(d,frame,64,64,192,person,person?1:0,1,*now,NULL,NULL);
+}
+static void passage_paint(uint8_t *frame,int changed,int global) {
+    memset(frame,global?150:50,64*64*3);
+    if(changed)for(int y=8;y<20;y++)for(int x=16;x<48;x++)
+        memset(frame+(y*64+x)*3,150,3);
+}
+static void test_door_passage_pair(void) {
+    /* Scenarios: valid cycle, head occlusion, lighting, stationary person,
+     * no panel change, and second crossing lacking its own changed observation. */
+    for(int scenario=0;scenario<6;scenario++) {
+        DoorMonitor d={0};uint8_t frame[64*64*3];double now=1;int rc=0;
+        GrayRect person={18,24,28,54};
+        d.enabled=d.auto_enabled=d.passage_enabled=1;
+        d.roi_x=16;d.roi_y=8;d.roi_w=32;d.roi_h=48;d.band_ratio=.25f;
+        d.auto_quiet_seconds=1;d.auto_open_min_l1=25;d.band_valid=-1;
+        passage_paint(frame,0,0);
+        for(int i=0;i<5;i++)passage_tick(&d,frame,NULL,&now);
+        EXPECT_TRUE(d.passage_base!=NULL);EXPECT_TRUE(d.ref_closed_rgb==NULL);
+        for(int cycle=0;cycle<2;cycle++) {
+            person=(GrayRect){18,scenario==1?10.0f:24.0f,28,54};
+            passage_paint(frame,scenario!=4 && !(scenario==5&&cycle==1),scenario==2);
+            passage_tick(&d,frame,&person,&now);
+            passage_tick(&d,frame,&person,&now);
+            if(scenario!=3){person.x1+=10;person.x2+=10;}
+            passage_tick(&d,frame,&person,&now);
+            passage_paint(frame,0,0);
+            for(int i=0;i<4;i++)rc=passage_tick(&d,frame,NULL,&now);
+            if(cycle==0)EXPECT_TRUE(d.ref_open_rgb==NULL);
+        }
+        if(scenario==0) {
+            EXPECT_INT_EQ(rc,3);EXPECT_TRUE(d.ref_closed_rgb!=NULL);EXPECT_TRUE(d.ref_open_rgb!=NULL);
+            EXPECT_INT_EQ(d.ref_open_rgb[(30*64+24)*3],50);
+            int changed=0;passage_paint(frame,1,0);
+            EXPECT_INT_EQ(door_check(&d,frame,64,64,192,&person,1,&changed),1);
+            person.y1=10;
+            EXPECT_INT_EQ(door_check(&d,frame,64,64,192,&person,1,&changed),-1);
+        } else {EXPECT_TRUE(d.ref_open_rgb==NULL);EXPECT_TRUE(d.ref_closed_rgb==NULL);}
+        door_destroy(&d);
     }
 }
 
@@ -2942,6 +3063,7 @@ int main(void) {
     TEST_SUITE_BEGIN(core_unit_tests);
     RUN_TEST(test_letterbox);
     RUN_TEST(test_fall_ignores_clipped_bbox_when_upright);
+    RUN_TEST(test_probable_order_requires_continuous_near_pose);
     RUN_TEST(test_fall_still_fires_on_clipped_horizontal_body);
     RUN_TEST(test_fall_unclipped_path_unchanged);
     RUN_TEST(test_restart_time_parse_and_window);
@@ -2958,6 +3080,7 @@ int main(void) {
     RUN_TEST(test_vanish_ignores_weak_and_brief_tracks);
     RUN_TEST(test_vanish_clears_on_reappear);
     RUN_TEST(test_netaccess_subnet_and_pin_header);
+    RUN_TEST(test_door_passage_pair);
     RUN_TEST(test_door_auto_stall_detection);
     RUN_TEST(test_door_band_judges_while_occluded);
     RUN_TEST(test_door_band_rejects_transom_roi);
@@ -2998,6 +3121,7 @@ int main(void) {
     RUN_TEST(test_tracks_eviction);
     RUN_TEST(test_rules_overstay_latches_once);
     RUN_TEST(test_rules_fall_geometry);
+    RUN_TEST(test_fall_false_positive_regressions);
     RUN_TEST(test_rules_fall_requires_hold);
     RUN_TEST(test_rules_unordered_seated);
     RUN_TEST(test_rules_fall_no_hip_no_fire);

@@ -80,6 +80,13 @@ typedef struct {
      * 열림: 닫힘 기준이 있고, 사람은 ROI 를 벗어났는데 ROI 만 크게 달라진 상태가
      *       auto_open_hold_seconds 유지되면 저장. 화면 전체가 같이 달라졌으면
      *       조명 변화로 보고 건너뜁니다. */
+    /* Passage learning: provisional frames never become references until two
+     * local upper-panel changes return to the same resting scene. */
+    int passage_enabled, passage_cycles, passage_inside, passage_moved, passage_observed;
+    uint8_t *passage_base, *passage_candidate, *passage_previous;
+    int passage_w, passage_h, passage_x, passage_y, passage_rw, passage_rh;
+    double passage_last, passage_started, passage_quiet, passage_hold, passage_return;
+    float passage_start_x, passage_start_y;
     int      auto_enabled;            /* config: door_auto_capture */
     double   auto_quiet_seconds;      /* config: door_auto_quiet_seconds (기본 20) */
     double   auto_open_hold_seconds;  /* config: door_auto_open_hold_seconds (기본 1.0) */
@@ -129,7 +136,12 @@ typedef enum {
     DOOR_AUTO_NO_ROI      = 1, /* ROI 미지정 — 전체 프레임을 기준으로 삼는 것은 위험해 자동 캡처하지 않음 */
     DOOR_AUTO_WAIT_CLOSED = 2, /* 닫힘 기준 대기: 정지 + 무인 */
     DOOR_AUTO_WAIT_OPEN   = 3, /* 열림 기준 대기: 문만 달라진 순간 */
-    DOOR_AUTO_DONE        = 4  /* 두 기준 모두 있음 */
+    DOOR_AUTO_DONE        = 4, /* 두 기준 모두 있음 */
+    DOOR_AUTO_PASSAGE_BASE = 5,
+    DOOR_AUTO_PASSAGE_WAIT = 6,
+    DOOR_AUTO_PASSAGE_BLOCKED = 7,
+    DOOR_AUTO_PASSAGE_RETURN = 8,
+    DOOR_AUTO_PASSAGE_REPEAT = 9
 } DoorAutoPhase;
 
 /*
@@ -147,7 +159,7 @@ int raw_rgb_save(const char *path, const uint8_t *rgb, int w, int h, int stride)
  * 저장에 성공하면 해당 기준을 d->ref_*_rgb 에 곧바로 설치하므로 호출자는 파일을
  * 다시 읽을 필요가 없습니다(mtime 캐시만 맞추면 됩니다).
  *
- * 반환: 0=변화 없음, 1=닫힘 기준 저장, 2=열림 기준 저장, -1=파일 저장 실패.
+ * 반환: 0=변화 없음, 1=닫힘 기준 저장, 2=열림 기준 저장, 3=통과 학습 기준 쌍 저장, -1=저장 실패.
  */
 int door_auto_update(DoorMonitor *d,
                      const uint8_t *rgb, int w, int h, int stride,

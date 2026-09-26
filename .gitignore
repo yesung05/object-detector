@@ -70,3 +70,6 @@ docs/**/*.pdf
 docs/**/figures/s18-mask-replay-*/predictions.jsonl
 docs/**/figures/s18-mask-replay-*/process.log
 docs/**/figures/s18-mask-replay-*/replay/
+
+# Release installer artifacts
+/dist/
