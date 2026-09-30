@@ -53,6 +53,8 @@ int perf_log_open(PerfLog *pl, const char *path) {
         return -1;
     }
     enable_wal(pl->db);
+    sqlite3_busy_timeout(pl->db, 250);
+    sqlite3_exec(pl->db, "PRAGMA synchronous=FULL;", NULL, NULL, NULL);
 
     if (sqlite3_exec(pl->db, CREATE_SQL, NULL, NULL, NULL) != SQLITE_OK) {
         fprintf(stderr, "perf_log: CREATE TABLE failed: %s\n",
