@@ -1,4 +1,11 @@
-﻿unmanned_detector 0.1.0-alpha.1 설치 및 실행 안내 (Windows 10/11 x64)
+﻿unmanned_detector 0.1.0-alpha.4 설치 및 실행 안내 (Windows 10/11 x64)
+
+지원 환경: Windows 10 1607(build 14393) 이상 또는 Windows 11, x64.
+  1809/LTSC 2019에서도 추가 설치 없이 실행됩니다. 필요한 런타임은 모두 들어 있습니다.
+  1507/1511은 설치 단계에서 차단됩니다.
+대시보드 브라우저: Chrome 또는 최신 Microsoft Edge.
+  구형 Edge나 Internet Explorer에서는 대시보드가 동작하지 않습니다. 이 경우 안내 문구가 표시됩니다.
+  Edge/Chrome이 설치되어 있으면 기본 브라우저와 관계없이 그쪽으로 엽니다.
 
 1. unmanned_detector-Setup 설치 파일을 실행합니다. 관리자 권한이나 Python 설치는 필요 없습니다.
 2. 카메라를 연결하고 바탕 화면의 unmanned_detector을 실행합니다.

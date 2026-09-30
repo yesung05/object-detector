@@ -22,7 +22,8 @@ Compression=lzma2/normal
 SolidCompression=yes
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
-MinVersion=10.0
+; 1607(14393): bundled FFmpeg statically imports SetThreadDescription, absent on 1507/1511.
+MinVersion=10.0.14393
 WizardStyle=modern
 UninstallDisplayName=unmanned_detector {#AppVersion}
 CloseApplications=yes
@@ -43,3 +44,22 @@ Name: "{autoprograms}\unmanned_detector\기록 폴더"; Filename: "{localappdata
 [Run]
 Filename: "{app}\unmanned_detector-launcher.exe"; Description: "unmanned_detector 실행"; Flags: nowait postinstall skipifsilent unchecked
 ; User data is intentionally never removed by uninstall.
+[Code]
+{ Load probe on the real target: the OS loader resolves every DLL and function import,
+  which the packaging-time check (scripts/check-imports.ps1) can only approximate. }
+procedure CurStepChanged(CurStep: TSetupStep);
+var
+  Code: Integer;
+  Ver: TWindowsVersion;
+begin
+  if CurStep <> ssPostInstall then Exit;
+  if not Exec(ExpandConstant('{app}\unmanned_detector.exe'), '--help', ExpandConstant('{app}'), SW_HIDE, ewWaitUntilTerminated, Code) then Exit;
+  { 0xC0000135 DLL not found, 0xC0000139 entry point not found, 0xC000007B bad image }
+  if (Code = -1073741515) or (Code = -1073741511) or (Code = -1073741701) then
+  begin
+    GetWindowsVersionEx(Ver);
+    SuppressibleMsgBox(Format('이 Windows에서 감지 프로그램의 필수 구성요소를 불러오지 못했습니다.' + #13#10 +
+      'Windows 업데이트 후 다시 설치하거나, 아래 정보를 지원팀에 알려 주세요.' + #13#10#13#10 +
+      '코드 0x%.8x / Windows build %d', [Code, Ver.Build]), mbCriticalError, MB_OK, IDOK);
+  end;
+end;

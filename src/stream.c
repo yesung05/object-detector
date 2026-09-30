@@ -46,6 +46,7 @@
 
 static CRITICAL_SECTION g_lock;
 static int g_running;
+static int g_locks_ready;
 static char g_surface_status[32768] = "{\"enabled\":false,\"surfaces\":[]}";
 static char g_surface_capture[40];
 static int g_surface_empty;
@@ -848,7 +849,11 @@ int stream_start(int port, const char *data_dir) {
 
     WSADATA wsa;
     WSAStartup(MAKEWORD(2, 2), &wsa);
+    /* Both locks are initialized up front so stream_stop() is valid after any early
+       failure below (bind: port in use). */
     InitializeCriticalSection(&g_lock);
+    InitializeCriticalSection(&g_jpeg_lock);
+    g_locks_ready = 1;
 
     g_srv = socket(AF_INET, SOCK_STREAM, 0);
     if (g_srv == INVALID_SOCKET) return -1;
@@ -868,7 +873,6 @@ int stream_start(int port, const char *data_dir) {
         return -1;
     }
 
-    InitializeCriticalSection(&g_jpeg_lock);
     g_running = 1;
     g_accept_thread = CreateThread(NULL, 0, accept_thread, NULL, 0, NULL);
     if (!g_accept_thread) {
@@ -925,6 +929,10 @@ void stream_push(const uint8_t *rgb, int width, int height, int stride) {
 }
 
 void stream_stop(void) {
+    /* main() reaches its cleanup label before stream_start() when model/detector init
+       fails; entering an uninitialized CRITICAL_SECTION there was an access violation
+       that hid the real startup error behind exit 0xC0000005. */
+    if (!g_locks_ready) return;
     g_running = 0;
     if (g_srv != INVALID_SOCKET) {
         closesocket(g_srv);
@@ -951,4 +959,5 @@ void stream_stop(void) {
     g_jpeg_scratch_cap = 0;
     LeaveCriticalSection(&g_jpeg_lock);
     DeleteCriticalSection(&g_jpeg_lock);
+    g_locks_ready = 0;
 }

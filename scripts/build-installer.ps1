@@ -1,5 +1,5 @@
 ﻿param(
-    [string]$Version = '0.1.0-alpha.1',
+    [string]$Version = '0.1.0-alpha.4',
     [string]$BuildDir = 'build-g',
     [string]$FfmpegRoot = '',
     [string]$OrtRoot = '',
@@ -21,11 +21,9 @@ if (Test-Path $cacheFile) {
         $entry = $cache | Where-Object { $_ -match '^FFMPEG_INCLUDE_DIR:PATH=' } | Select-Object -First 1
         if ($entry) { $FfmpegRoot = Split-Path ($entry -replace '^[^=]*=', '') }
     }
-    if (-not $OrtRoot) {
-        $entry = $cache | Where-Object { $_ -match '^ORT_INCLUDE_DIR:PATH=' } | Select-Object -First 1
-        if ($entry) { $OrtRoot = Split-Path ($entry -replace '^[^=]*=', '') }
-    }
 }
+# ORT is never taken from the cache: a stale C:\deps 1.22 cache shipped a dxcore.dll
+# dependency that Windows 10 1809 lacks (issue #5). The import gate below enforces it.
 if (-not $FfmpegRoot) { $FfmpegRoot = $env:FFMPEG_ROOT }
 if (-not $OrtRoot) { $OrtRoot = $env:ORT_ROOT }
 if (-not $FfmpegRoot) { $FfmpegRoot = (Get-ChildItem C:\dev -Directory -Filter 'ffmpeg*win64*shared*' | Select-Object -First 1).FullName }
@@ -33,9 +31,10 @@ if (-not $OrtRoot) { $OrtRoot = (Get-ChildItem C:\dev -Directory -Filter 'onnxru
 foreach ($dependency in @("$FfmpegRoot\bin\ffmpeg.exe", "$OrtRoot\lib\onnxruntime.dll")) {
     if (-not (Test-Path -LiteralPath $dependency)) { throw "Missing dependency: $dependency (set FfmpegRoot / OrtRoot)" }
 }
+$vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products '*' -property installationPath
+$dumpbin = (Get-ChildItem "$vs\VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe" | Sort-Object FullName -Descending | Select-Object -First 1).FullName
+if (-not $dumpbin) { throw 'dumpbin.exe not found (install the MSVC build tools).' }
 if (-not $VcRuntimeDir) {
-    $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-    $vs = & $vswhere -latest -products '*' -property installationPath
     $VcRuntimeDir = (Get-ChildItem "$vs\VC\Redist\MSVC\*\x64\Microsoft.VC143.CRT" -Directory | Sort-Object FullName -Descending | Select-Object -First 1).FullName
 }
 if (-not (Test-Path "$VcRuntimeDir\vcruntime140.dll")) { throw 'Set VcRuntimeDir to the x64 Visual C++ redistributable CRT directory.' }
@@ -85,6 +84,7 @@ Copy-Item "$FfmpegRoot\LICENSE.txt" "$stage\licenses\FFmpeg-LICENSE.txt"
 Copy-Item "$OrtRoot\LICENSE" "$stage\licenses\ONNX-Runtime-LICENSE.txt"
 Copy-Item "$OrtRoot\ThirdPartyNotices.txt" "$stage\licenses\ONNX-Runtime-ThirdPartyNotices.txt"
 Copy-Item "$root\installer\DEPENDENCIES.txt" "$stage\licenses"
+& "$PSScriptRoot\check-imports.ps1" -Dir $stage -Dumpbin $dumpbin
 $ffVersion = & "$stage\ffmpeg.exe" -version
 if ($LASTEXITCODE) { throw 'Packaged FFmpeg runtime could not start' }
 $ffVersion | Set-Content "$stage\licenses\FFmpeg-build.txt" -Encoding utf8
