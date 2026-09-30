@@ -3,6 +3,7 @@
 #include "capture.h"
 #include "perf_log.h"
 #include "replay.h"
+#include "log_rotation.h"
 #include "slot_monitor.h"
 #include "surface_monitor.h"
 #include "throttle.h"
@@ -45,6 +46,9 @@
  */
 typedef struct {
     ReplayLog replay;
+    LogRotation log_rotation;
+    long log_max_total_mb;
+    double log_cleanup_last;
     double replay_cpu_time,replay_cpu_wall,replay_cpu_pct,replay_tier2_at;
     long replay_mem_kb;
     int replay_geometry_revision;
@@ -917,6 +921,7 @@ static void apply_residue_config(AppContext *app, const Config *cfg) {
 
 static void apply_slot_config(AppContext *app, const Config *cfg) {
     slot_monitor_apply_config(&app->slot_mon, cfg);
+    app->log_max_total_mb = config_long(cfg,"log_max_total_mb",10240,0,1048576);
     app->perf_log_interval =
         (double)config_long(cfg, "perf_log_interval_seconds",
                             (long)app->perf_log_interval, 10, 3600);
@@ -1716,6 +1721,8 @@ static int process_frame(RgbFrame *frame, void *opaque,
     const char *kind = "reused";
     double started;
     double now = platform_monotonic_seconds();
+    if (log_rotation_tick(&app->log_rotation, &app->event_log, &app->replay, &app->perf_log, now) > 0)
+        app->replay_geometry_revision=-1;
     app->replay.now=now;
     int location_reset=stream_pop_location_reset();
     if (location_reset) {
@@ -1756,6 +1763,10 @@ static int process_frame(RgbFrame *frame, void *opaque,
             reload_config(app);
         }
 #endif
+    }
+    if (!app->log_cleanup_last || now-app->log_cleanup_last>=60) {
+        app->log_cleanup_last=now;
+        log_rotation_prune(&app->event_log,&app->perf_log,(unsigned long long)app->log_max_total_mb*1024*1024);
     }
     if (app->door_closed_path[0] &&
         (now - app->door_refs_check_time) >= 2.0) {
@@ -2945,6 +2956,7 @@ int main(int argc, char **argv) {
     memset(&app, 0, sizeof(app));
     slot_monitor_init(&app.slot_mon);
     app.obj_vis_mask = OBJ_VIS_ALL;
+    app.log_max_total_mb = 10240;
     app.perf_log_interval = 60.0; /* 60초마다 성능 지표를 별도 perf DB에 기록 */
     app.detect_every = args.detect_every;
     app.detect_every_obj = args.detect_every_obj;
@@ -3174,6 +3186,7 @@ int main(int argc, char **argv) {
         snprintf(metadata,sizeof(metadata),"{\"schema\":1,\"build\":\"%s %s\",\"person_model_hash\":\"%016llx\",\"object_model_hash\":\"%016llx\",\"input\":[%d,%d],\"threads\":%d,\"provider\":%d,\"regular_seconds\":10,\"event_hz\":5,\"window_seconds\":10}",
             __DATE__,__TIME__,replay_model_hash(args.model),replay_model_hash(args.obj_model),
             detector_input_width(app.detector),detector_input_height(app.detector),args.detector.threads,(int)args.detector.provider);
+        log_rotation_init(&app.log_rotation,args.event_log_path,metadata,platform_monotonic_seconds());
         app.replay_geometry_revision=-1;
         if(replay_open(&app.replay,&app.event_log,metadata))fprintf(stderr,"coordinate recorder initialization failed\n");
     }
