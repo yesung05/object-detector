@@ -21,13 +21,53 @@
 static HWND window,status;
 static HANDLE mutex,job,process,stop_event;
 static NOTIFYICONDATAW icon;
-static WCHAR root[1024],data[1024],stop_path[1100];
+static WCHAR root[1024],data[1024],stop_path[1100],alert_path[1100];
+static FILETIME alert_seen;
 static UINT taskbar_created;
 static int stopping=0,dash_port=8080,stream_port=8081,start_hidden=0;
 static ULONGLONG stop_at;
-static void open_dashboard(void){WCHAR url[80];_snwprintf_s(url,80,_TRUNCATE,L"http://localhost:%d",dash_port);ShellExecuteW(NULL,L"open",url,NULL,NULL,SW_SHOWNORMAL);}
+#define RUNNING_TEXT L"실행 관리자가 동작 중입니다.\n카메라·감지 상태는 대시보드에서 확인하세요."
+/* The dashboard uses ES2020 syntax that legacy Edge (1809) and IE11 (LTSC) cannot parse,
+   so a Chromium browser is preferred over the default one. App Paths resolves the bare
+   exe names; SEE_MASK_FLAG_NO_UI keeps a missing browser from raising an error dialog. */
+static void open_dashboard(void){
+    static const WCHAR *browsers[]={L"msedge.exe",L"chrome.exe",NULL};
+    WCHAR url[80];SHELLEXECUTEINFOW sei={sizeof(sei)};
+    _snwprintf_s(url,80,_TRUNCATE,L"http://localhost:%d",dash_port);
+    sei.fMask=SEE_MASK_FLAG_NO_UI;sei.lpVerb=L"open";sei.nShow=SW_SHOWNORMAL;
+    for(int i=0;;i++){
+        if(browsers[i]){sei.lpFile=browsers[i];sei.lpParameters=url;}else{sei.lpFile=url;sei.lpParameters=NULL;}
+        if(ShellExecuteExW(&sei)||!browsers[i])return;
+    }
+}
 static void add_icon(void){Shell_NotifyIconW(NIM_ADD,&icon);}
 static void show_window(void){ShowWindow(window,SW_SHOW);SetForegroundWindow(window);}
+/* run-all.ps1 writes logs\ALERT.txt (UTF-16LE with BOM) when the detector cannot stay up
+   and deletes it after a healthy run. A new write time = new alert, shown once. */
+static int check_alert(int notify){
+    WIN32_FILE_ATTRIBUTE_DATA a;WCHAR text[512]={0};const WCHAR *msg=text;HANDLE f;DWORD n=0;
+    if(!GetFileAttributesExW(alert_path,GetFileExInfoStandard,&a)){
+        if(alert_seen.dwLowDateTime||alert_seen.dwHighDateTime){
+            ZeroMemory(&alert_seen,sizeof(alert_seen));
+            if(process&&!stopping){SetWindowTextW(status,RUNNING_TEXT);wcscpy_s(icon.szTip,128,APP_TITLE);Shell_NotifyIconW(NIM_MODIFY,&icon);}
+        }
+        return 0;
+    }
+    if(notify&&!CompareFileTime(&a.ftLastWriteTime,&alert_seen))return 1;
+    f=CreateFileW(alert_path,GENERIC_READ,FILE_SHARE_READ|FILE_SHARE_WRITE|FILE_SHARE_DELETE,NULL,OPEN_EXISTING,0,NULL);
+    if(f==INVALID_HANDLE_VALUE)return 0;
+    ReadFile(f,text,sizeof(text)-sizeof(WCHAR),&n,NULL);CloseHandle(f);
+    alert_seen=a.ftLastWriteTime;
+    if(*msg==0xFEFF)msg++;
+    SetWindowTextW(status,msg);
+    wcscpy_s(icon.szTip,128,L"unmanned_detector - 확인 필요");
+    if(notify){
+        icon.uFlags|=NIF_INFO;icon.dwInfoFlags=NIIF_WARNING;
+        wcscpy_s(icon.szInfoTitle,64,L"unmanned_detector 확인 필요");wcsncpy_s(icon.szInfo,256,msg,_TRUNCATE);
+    }
+    Shell_NotifyIconW(NIM_MODIFY,&icon);icon.uFlags&=~NIF_INFO;
+    show_window();return 1;
+}
 static void hide_window(void){ShowWindow(window,SW_HIDE);}
 static void exit_app(void){
     HANDLE f;
@@ -54,6 +94,7 @@ static int start_worker(void){
     }
     _snwprintf_s(logs,1100,_TRUNCATE,L"%s\\logs",data);SHCreateDirectoryExW(NULL,logs,NULL);
     _snwprintf_s(stop_path,1100,_TRUNCATE,L"%s\\STOP",logs);DeleteFileW(stop_path);
+    _snwprintf_s(alert_path,1100,_TRUNCATE,L"%s\\ALERT.txt",logs);DeleteFileW(alert_path);
     GetLocalTime(&st);
     _snwprintf_s(logfile,1200,_TRUNCATE,L"%s\\launcher-%04u%02u%02u-%02u%02u%02u.log",logs,st.wYear,st.wMonth,st.wDay,st.wHour,st.wMinute,st.wSecond);
     output=CreateFileW(logfile,GENERIC_WRITE,FILE_SHARE_READ|FILE_SHARE_WRITE,&sa,CREATE_ALWAYS,FILE_ATTRIBUTE_NORMAL,NULL);
@@ -109,7 +150,10 @@ static LRESULT CALLBACK handler(HWND hwnd,UINT msg,WPARAM wp,LPARAM lp){
             CloseHandle(process);process=NULL;if(job){CloseHandle(job);job=NULL;}
             SetWindowTextW(status,L"실행 관리자가 종료되었습니다. 기록 폴더의 launcher 로그를 확인하세요.\n완전 종료 후 다시 실행할 수 있습니다.");
             wcscpy_s(icon.szTip,128,L"unmanned_detector - 실행 중지");Shell_NotifyIconW(NIM_MODIFY,&icon);show_window();
-        }return 0;
+            check_alert(0);
+        }
+        else if(process)check_alert(1);
+        return 0;
     case WM_QUERYENDSESSION:exit_app();return TRUE;
     case WM_ENDSESSION:if(wp)DestroyWindow(hwnd);return 0;
     case WM_DESTROY:
@@ -140,7 +184,7 @@ int WINAPI wWinMain(HINSTANCE instance,HINSTANCE previous,PWSTR command,int show
     wcscpy_s(icon.szTip,128,APP_TITLE);add_icon();taskbar_created=RegisterWindowMessageW(L"TaskbarCreated");
     ShowWindow(window,start_hidden?SW_HIDE:SW_SHOW);SetTimer(window,1,250,NULL);
     if(!start_worker()){MessageBoxW(window,L"시작하지 못했습니다. 기록 경로와 실행 파일을 확인하세요.",APP_TITLE,MB_ICONERROR);DestroyWindow(window);}
-    else SetWindowTextW(status,L"실행 관리자가 동작 중입니다.\n카메라·감지 상태는 대시보드에서 확인하세요.");
+    else SetWindowTextW(status,RUNNING_TEXT);
     while(GetMessageW(&msg,NULL,0,0)>0){TranslateMessage(&msg);DispatchMessageW(&msg);}
     if(process)CloseHandle(process);if(stop_event)CloseHandle(stop_event);if(job)CloseHandle(job);CloseHandle(mutex);WSACleanup();return 0;
 }

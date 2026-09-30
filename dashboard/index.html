@@ -3,7 +3,21 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>unmanned_detector · 0.1.0-alpha.1</title>
+<script>
+/* ES5 on purpose: the main script uses ?. / ?? and fails to parse as a whole on IE11
+   (Windows 10 LTSC) and legacy Edge (1809), leaving a silent blank page. This block is
+   parsed separately, so it can still tell the user which browser to use. */
+(function(){
+  try { new Function('var a; return a?.b ?? 1'); return; } catch (e) {}
+  document.addEventListener('DOMContentLoaded', function(){
+    var d = document.createElement('div');
+    d.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99999;padding:24px;background:#b00020;color:#fff;font:bold 18px sans-serif;text-align:center';
+    d.innerHTML = '이 브라우저에서는 대시보드가 동작하지 않습니다.<br>Chrome 또는 최신 Microsoft Edge로 ' + location.href + ' 을 열어 주세요.';
+    document.body.appendChild(d);
+  });
+})();
+</script>
+<title>unmanned_detector · 0.1.0-alpha.4</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700&display=swap" rel="stylesheet">
@@ -884,7 +898,7 @@ details.dev-accordion[open] > summary { color: var(--red) !important; }
          onload="this.style.display=''" onerror="this.style.display='none'">
     <div class="brand-text">
       <div class="brand-ko">unmanned_detector</div>
-      <div class="brand-en">0.1.0-alpha.1 · 무인 매장 모니터링</div>
+      <div class="brand-en">0.1.0-alpha.4 · 무인 매장 모니터링</div>
     </div>
   </div>
   <div class="header-spacer"></div>

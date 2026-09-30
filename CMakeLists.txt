@@ -324,7 +324,7 @@ endif()
 add_test(NAME replay_unit COMMAND test_replay)
 
 if(WIN32)
-    set(HUNIK_VERSION "0.1.0-alpha.1" CACHE STRING "Displayed release version")
+    set(HUNIK_VERSION "0.1.0-alpha.4" CACHE STRING "Displayed release version")
     add_executable(hunik-launcher WIN32 src/launcher.c)
     target_compile_definitions(hunik-launcher PRIVATE UNICODE _UNICODE _CRT_SECURE_NO_WARNINGS HUNIK_VERSION="${HUNIK_VERSION}")
     target_compile_options(hunik-launcher PRIVATE /utf-8 /W4)

@@ -162,7 +162,16 @@ Write-Host "[log]   $logFile"
 if ($dashboard) {
     Write-Host "[dash]  http://localhost:$DashboardPort (background)"
     $dashboardProcess = Start-Process -FilePath $dashboard -ArgumentList "--root `"$ROOT`" --config `"$configPath`" --port $DashboardPort" -WindowStyle Hidden -PassThru
-    if ($OpenDashboard) { Start-Process "http://localhost:$DashboardPort" }
+    if ($OpenDashboard) {
+        # The dashboard uses ES2020 syntax; legacy Edge (1809) and IE11 (LTSC) cannot parse it.
+        # App Paths lookup finds Chromium Edge/Chrome if installed; else fall back to default.
+        $url = "http://localhost:$DashboardPort"
+        $opened = $false
+        foreach ($browser in @('msedge.exe', 'chrome.exe')) {
+            try { Start-Process $browser $url -ErrorAction Stop; $opened = $true; break } catch {}
+        }
+        if (-not $opened) { Start-Process $url }
+    }
 } else {
     Write-Host "[dash]  dashboard binary not found"
 }
@@ -226,6 +235,11 @@ $backoff  = 5
 $quickFails = 0
 $restartLog = Join-Path $logsDir 'restarts.log'
 $stopFile   = Join-Path $logsDir 'STOP'
+# ALERT.txt is the only channel to the tray launcher (it polls the file); UTF-16LE so
+# the C side reads it as WCHAR without conversion. Absent = no current problem.
+$alertFile  = Join-Path $logsDir 'ALERT.txt'
+function Set-Alert([string]$text) { [IO.File]::WriteAllText($alertFile, $text, [Text.Encoding]::Unicode) }
+if (Test-Path $alertFile) { Remove-Item $alertFile -Force }
 if (-not $Background -and (Test-Path $stopFile)) { Remove-Item $stopFile -Force }
 try {
 while ($true) {
@@ -235,6 +249,7 @@ while ($true) {
     $code = $LASTEXITCODE
     $ranSeconds = ((Get-Date) - $startedAt).TotalSeconds
     $when = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
+    if ($ranSeconds -ge 30 -and (Test-Path $alertFile)) { Remove-Item $alertFile -Force }
 
     if ($code -eq 0) {
         Add-Content -Path $restartLog -Value "$when exit=0 runtime=$([int]$ranSeconds)s action=stop"
@@ -255,9 +270,21 @@ while ($true) {
         continue
     }
 
+    # Windows loader failures: the process never reached main(), so no detector log
+    # exists and retrying cannot help (a DLL/API is missing on this Windows build).
+    if ($code -in -1073741515, -1073741511, -1073741701) {
+        $hex = '0x{0:X8}' -f $code
+        $build = [Environment]::OSVersion.Version.Build
+        Add-Content -Path $restartLog -Value "$when exit=$hex runtime=$([int]$ranSeconds)s action=stop reason=loader_failure os_build=$build"
+        Set-Alert "감지 프로그램을 시작하지 못했습니다: 이 Windows(build $build)에서 필수 구성요소를 불러오지 못했습니다 (코드 $hex).`r`nWindows 업데이트 후 다시 실행하거나 지원팀에 이 문구를 알려 주세요."
+        Write-Host "[ERROR] detector failed to load ($hex) on Windows build $build -- stopping" -ForegroundColor Red
+        break
+    }
+
     # Crash / camera-lost path.
     if ($ranSeconds -lt 30) { $quickFails++ } else { $quickFails = 0; $backoff = 5 }
     if ($quickFails -ge 5) {
+        Set-Alert "감지 프로그램이 시작 직후 반복해서 종료됩니다 (코드 $code, 연속 $($quickFails)회).`r`n카메라 연결을 확인하세요. 자동 재시도는 계속됩니다 (기록: logs\restarts.log)."
         # Keep trying, but slowly, and say so loudly.
         $backoff = 300
         Write-Host ""
