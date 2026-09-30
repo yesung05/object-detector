@@ -115,6 +115,8 @@ if(ORT_INCLUDE_DIR AND ORT_LIBRARY AND FFMPEG_INCLUDE_DIR AND FFMPEG_FOUND)
         src/gray.c
         src/log.c
         src/replay.c
+        src/log_rotation.c
+        src/log_retention.c
         src/config.c
         src/camera_health.c
         src/tracks.c
@@ -335,4 +337,19 @@ if(WIN32)
     endif()
     set_target_properties(hunik-dashboard PROPERTIES OUTPUT_NAME "unmanned_detector-dashboard")
     set_target_properties(hunik-launcher PROPERTIES OUTPUT_NAME "unmanned_detector-launcher")
+endif()
+
+add_executable(test_log_rotation tests/test_log_rotation.c src/log_rotation.c src/log_retention.c src/replay.c src/log.c src/perf_log.c third_party/sqlite/sqlite3.c)
+target_include_directories(test_log_rotation PRIVATE include)
+if(MSVC)
+ target_compile_options(test_log_rotation PRIVATE /utf-8 /W3)
+ target_compile_definitions(test_log_rotation PRIVATE _CRT_SECURE_NO_WARNINGS)
+endif()
+add_test(NAME log_rotation_unit COMMAND test_log_rotation)
+
+if(WIN32)
+ add_executable(test_log_retention tests/test_log_retention.c src/log_retention.c)
+ target_include_directories(test_log_retention PRIVATE include)
+ target_compile_definitions(test_log_retention PRIVATE _CRT_SECURE_NO_WARNINGS _WIN32_WINNT=0x0601)
+ add_test(NAME log_retention_unit COMMAND test_log_retention)
 endif()

@@ -332,8 +332,8 @@ static void serve_log_list(SOCKET s) {
     /* 파일명을 먼저 수집한 후 역순 정렬합니다.
      * FindFirstFile 반환 순서는 NTFS에서도 보장되지 않으므로
      * 직접 qsort를 돌려야 files[0]이 항상 최신 파일이 됩니다. */
-#define MAX_LOG_FILES 400
-    LogEntry *names = (LogEntry *)calloc(MAX_LOG_FILES, sizeof(LogEntry));
+    size_t capacity = 400;
+    LogEntry *names = (LogEntry *)calloc(capacity, sizeof(LogEntry));
     if (!names) {
         send_header(s, 500, "application/json", 2);
         send(s, "[]", 2, 0);
@@ -348,7 +348,11 @@ static void serve_log_list(SOCKET s) {
             if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
             /* 성능 로그(_perf.db)는 이벤트 로그 목록에서 제외합니다. */
             if (strstr(fd.cFileName, "_perf.db")) continue;
-            if (count >= MAX_LOG_FILES) break;
+            if ((size_t)count >= capacity) {
+                LogEntry *grown = (LogEntry *)realloc(names, capacity * 2 * sizeof(LogEntry));
+                if (!grown) break;
+                names = grown; capacity *= 2;
+            }
             names[count].name = _strdup(fd.cFileName);
             if (!names[count].name) continue;
             names[count].mtime = ((ULONGLONG)fd.ftLastWriteTime.dwHighDateTime << 32)
@@ -360,22 +364,27 @@ static void serve_log_list(SOCKET s) {
 
     qsort(names, (size_t)count, sizeof(LogEntry), cmp_log_desc);
 
-    char body[8192];
+    size_t body_size = (size_t)count * (MAX_PATH * 6 + 4) + 3;
+    char *body = (char *)malloc(body_size);
+    if (!body) {
+        for (int i=0;i<count;i++) free(names[i].name);
+        free(names);send_header(s,500,"application/json",2);send(s,"[]",2,0);return;
+    }
     int pos = 0;
     body[pos++] = '[';
     for (int i = 0; i < count; i++) {
-        char esc[128];
+        char esc[MAX_PATH * 6 + 3];
         json_str(names[i].name, esc, sizeof(esc));
-        int n = snprintf(body + pos, (size_t)(sizeof(body) - pos - 4),
-                         "%s%s", i == 0 ? "" : ",", esc);
+        int n = snprintf(body + pos, body_size - pos, "%s%s", i == 0 ? "" : ",", esc);
         if (n > 0) pos += n;
         free(names[i].name);
     }
     free(names);
     body[pos++] = ']';
-    body[pos]   = '\0';
+    body[pos] = '\0';
     send_header(s, 200, "application/json", (int64_t)pos);
     send(s, body, pos, 0);
+    free(body);
 }
 
 /* GET /api/events/history?file=xxx → JSON 배열 (SQLite DB에서 전체 읽기) */

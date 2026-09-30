@@ -42,3 +42,23 @@ python scripts/export-coordinate-trial.py --logs logs --out trial-export
 자세를 기본 5초/3회 이상 확인해야 한다. 2초를 넘는 관측 공백/카메라 단절은
 유지를 초기화한다. 이미 누운 채로 등장하거나 관절이 가려진 경우 확정이
 어려울 수 있다. 모델 자체 재학습이나 검증된 오탐률 개선 수치를 의미하지 않는다.
+
+
+## 2026-09-27: hourly log segments
+
+- Event/coordinate and performance databases commit while the application is running; shutdown is not required to save them. WAL sidecars (`-wal`, `-shm`) may exist until connections close. Do not copy only the active `.db` file; use the coordinate exporter or a SQLite backup.
+- With `--event-log`, the initial filename is retained. After 3,600 seconds of monotonic runtime, the next processed frame switches to `<original>_part000001.db` and `<original>_part000001_perf.db`, then increasing part numbers. Detection/tracking and camera capture are not restarted. With no camera frames there are no frame-driven rotations; switching happens on the next frame.
+- All three new stores (events, replay, performance) must open successfully before the previous stores close. On failure, the previous files remain active and rotation retries after 60 seconds. Failed attempts can leave incomplete empty segment files; stderr reports the failure.
+- The replay ring and geometry carry across the boundary. Event IDs belong to their own segment. A pre-boundary event's post-window can span both files; the event-specific viewer does not automatically merge segments. The exporter includes all segments.
+- Event and performance connections use WAL plus `synchronous=FULL`. Each successful commit requests disk synchronization, improving power-loss durability at additional storage latency. Hardware/OS failures can still prevent successful writes. Ordinary replay samples remain every 10 seconds; temporary uncommitted ring samples are not guaranteed after a crash.
+- The 1 GiB coordinate quota is per segment, not a total retention limit. Old logs are not automatically deleted. Launcher console and supervisor restart text files remain per launch/append logs; hourly segmentation applies to event, coordinate and performance databases.
+- Verified with automated hour-boundary, separate-reader live visibility, abrupt child-process exit/recovery, replay carry-over and failed-rotation fallback tests. These tests do not simulate physical power failure.
+
+
+## 2026-09-27 Alpha 3: retention policy (supersedes no-pruning behavior above)
+
+Windows installations now check retention on the first camera frame and every 60 seconds of frame processing. Generated timestamp-named event databases and matching performance/WAL/SHM files are grouped; launcher diagnostic logs and restarts.log are also managed. Only direct files in the active log directory are scanned. Custom filenames, subdirectories, images/videos and reparse-point entries are excluded.
+
+Completed groups whose latest file modification is at least 30 days old are deleted. Then the oldest eligible groups are deleted until managed logs fit `log_max_total_mb` (MiB; default 10240 = 10 GiB; 0 disables only the size cap; maximum 1048576). This can delete records younger than 30 days. The setting is under Settings → Automatic management and reloads without restarting.
+
+The current event/performance group is explicitly protected. All files in each candidate group must permit exclusive access before deletion; open launcher logs and databases in use by other processes are skipped. Active/locked files can keep usage above the limit; this is a cleanup target, not a hard filesystem quota. Cleanup failures/remaining over-limit status are written to the event log. The existing per-segment coordinate JSON limit of 1 GiB still applies. No cleanup runs while the app is stopped or waiting indefinitely for camera frames.

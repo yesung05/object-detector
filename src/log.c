@@ -62,7 +62,7 @@ int event_log_open(EventLog *log, const char *path,
 
     /* WAL 모드: 읽기와 쓰기가 서로 막지 않아 대시보드 조회와 충돌 없음 */
     sqlite3_exec(log->db, "PRAGMA journal_mode=WAL;", NULL, NULL, NULL);
-    sqlite3_exec(log->db, "PRAGMA synchronous=NORMAL;", NULL, NULL, NULL);
+    sqlite3_exec(log->db, "PRAGMA synchronous=FULL;", NULL, NULL, NULL);
     /* 대시보드 프로세스가 접근 로그를 같은 DB 에 씁니다. WAL 은 쓰기를 직렬화하므로
        두 쓰기가 겹치는 순간 한쪽이 SQLITE_BUSY 를 받습니다. 대기 없이 그냥 실패하면
        detector 이벤트가 조용히 사라지므로 짧게 기다립니다. 250ms 는 프레임 처리를

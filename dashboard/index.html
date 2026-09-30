@@ -1266,7 +1266,7 @@ details.dev-accordion[open] > summary { color: var(--red) !important; }
             🪑 가구 (의자·테이블)
           </label>
         </div>
-      </div></div></details><details class="setup-group" id="settings-automation"><summary><strong>자동 관리</strong><span>기준 수집·예약 재시작</span></summary><div class="setup-group-body"><div class="preset-card neu-raised"><div class="preset-title">현장 시험 기록</div><p class="preset-subtitle">원본 영상 대신 박스·스켈레톤·판정 근거와 성능을 기록합니다. 평소 10초 간격, 알림 전후 각 10초는 최대 5회/초로 저장합니다.</p><p class="preset-desc" id="replay-health">기록 상태 확인 중…</p><a class="neu-btn" href="/replay">좌표 재생·검토 기록</a></div><div class="preset-card neu-raised">
+      </div></div></details><details class="setup-group" id="settings-automation"><summary><strong>자동 관리</strong><span>기준 수집·예약 재시작</span></summary><div class="setup-group-body"><div class="preset-card neu-raised"><div class="preset-title">현장 시험 기록</div><div class="setting-row"><div><div class="setting-label">로그 보관 기간</div><div class="setting-desc">30일이 지난 기록은 자동으로 삭제합니다.</div></div><strong>30일</strong></div><div class="setting-row"><div><label class="setting-label" for="cfg-log_max_total_mb">로그 총 용량 제한 (MiB)</label><div class="setting-desc">기본 10,240MiB = 10GiB. 0은 용량 제한 없음입니다. 초과하면 30일 이내 기록도 오래된 순서로 삭제합니다. 기록 중인 파일은 보호하므로 일시적으로 상한을 넘을 수 있습니다.</div></div><input type="number" class="setting-input" id="cfg-log_max_total_mb" min="0" max="1048576" step="1" value="10240"></div><p class="preset-subtitle">이벤트·좌표·성능 DB와 실행 진단 로그를 1분마다 정리합니다. 별도 이미지·영상 폴더는 포함하지 않습니다.</p><p class="preset-subtitle">원본 영상 대신 박스·스켈레톤·판정 근거와 성능을 기록합니다. 평소 10초 간격, 알림 전후 각 10초는 최대 5회/초로 저장합니다.</p><p class="preset-desc" id="replay-health">기록 상태 확인 중…</p><a class="neu-btn" href="/replay">좌표 재생·검토 기록</a></div><div class="preset-card neu-raised">
         <div>
           <div class="preset-title">기준 이미지 자동 캡처</div>
           <div class="preset-subtitle">문은 통과 전후 변화를, 표면은 안정된 장면을 이용해 기준을 수집합니다</div>
@@ -2353,7 +2353,7 @@ async function loadSettings() {
       "residue_confirm_seconds","residue_clear_seconds","residue_baseline_refresh_seconds",
       "residue_global_change_ratio","fall_aspect_ratio_kp","fall_aspect_ratio_nokp",
       "slot_warn_seconds","slot_urgent_seconds","slot_ttl_seconds",
-      "slot_dirty_threshold","slot_min_dirty_blocks","perf_log_interval_seconds",
+      "slot_dirty_threshold","slot_min_dirty_blocks","perf_log_interval_seconds","log_max_total_mb",
       "show_animal","show_food","show_drink","show_furniture","tier2_always",
       "stream_privacy_mode","privacy_unlock_max_seconds","access_pin",
       "door_auto_capture","door_auto_quiet_seconds","door_auto_open_hold_seconds","door_auto_open_l1",
@@ -2366,6 +2366,7 @@ async function loadSettings() {
     /* PIN 은 서버 응답에 키가 없으면(미설정) 빈 칸이어야 하므로 먼저 비웁니다 */
     { const pinEl = document.getElementById("cfg-access_pin"); if (pinEl) pinEl.value = ""; }
     /* Defaults must also reset unsaved sliders when these keys are not yet stored. */
+    if(cfg.log_max_total_mb===undefined)setCfgVal("log_max_total_mb",10240);
     const confidenceDefaults={person_confidence:.20,object_confidence:.20,new_person_confidence:.30,table_confidence:.55};
     try {
       const live=await fetch(`http://${location.hostname}:${getStreamPort()}/status`);
@@ -2387,6 +2388,11 @@ async function loadSettings() {
 
 async function saveSettings() {
   const st = document.getElementById("save-status");
+  const logLimit = document.getElementById("cfg-log_max_total_mb");
+  if (!logLimit.value.trim() || !logLimit.checkValidity()) {
+    st.textContent = "로그 용량은 0~1,048,576MiB의 정수로 입력해 주세요.";
+    logLimit.reportValidity(); return false;
+  }
   st.textContent = "저장 중..."; st.style.color = "var(--muted)";
   const cfg = {
     stream_port:                    cfgVal("stream_port"),
@@ -2425,6 +2431,7 @@ async function saveSettings() {
     slot_dirty_threshold:           cfgVal("slot_dirty_threshold"),
     slot_min_dirty_blocks:          cfgVal("slot_min_dirty_blocks"),
     perf_log_interval_seconds:      cfgVal("perf_log_interval_seconds"),
+    log_max_total_mb:                cfgVal("log_max_total_mb"),
     show_animal:                    cfgVal("show_animal"),
     show_food:                      cfgVal("show_food"),
     show_drink:                     cfgVal("show_drink"),
