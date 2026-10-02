@@ -48,6 +48,13 @@ static const RulesConfig DEFAULT_RULES = {
     0.35f,   /* vanish_min_score */
     0.08f,   /* vanish_edge_margin */
     0,       /* vanish_require_residue */
+    0,       /* roi_anchor_foot */
+    3,       /* object_confirm_count */
+    5,       /* object_confirm_window */
+    0,       /* max_occupancy (비활성) */
+    10.0,    /* max_occupancy_hold_seconds */
+    300.0,   /* still_seconds */
+    0.10f,   /* still_motion_threshold */
 };
 
 int rules_init(RulesEngine *re, size_t capacity, const RulesConfig *config,
@@ -94,8 +101,10 @@ void rules_update_config(RulesEngine *re, const RulesConfig *config) {
 void rules_shift_time(RulesEngine *re, double gap) {
     size_t i;
     if (!re || !re->states || gap <= 0.0) return;
+    re->occ_start = 0; /* 공백 동안의 인원은 알 수 없으므로 초과 지속 시간을 이어 세지 않습니다 */
     for (i = 0; i < re->capacity; ++i) {
         re->states[i].order_near_start=re->states[i].order_near_last=0;
+        re->states[i].still_start=0; /* 화면을 못 본 시간은 "움직임 없음"의 증거가 아닙니다 */
         /* A camera gap is missing evidence, not observed posture duration. */
         re->states[i].fall_start=0;re->states[i].fall_samples=0;
         re->states[i].upright_start=0;re->states[i].upright_samples=0;
@@ -276,24 +285,74 @@ int is_horizontal_pose_for_test(const Detection *box, float ratio_kp, float rati
  * 래치는 조건이 해소된 다음 호출 때 해제됩니다(0으로 초기화된 슬롯 재사용).
  * 물체 룰 전용 슬롯으로 track_id=-2 예약 슬롯을 사용합니다.
  */
+/*
+ * 관측 한 번을 기록하고 상태 전이를 알려 줍니다.
+ * 반환: 1=이번에 확정(발화), -1=이번에 해제, 0=변화 없음.
+ *
+ * K-of-N 비트열을 쓴 이유: Tier 2 관측 간격이 길어(기본 90프레임) 연속 조건은 손에 가려진
+ * 한 번의 누락만으로 리셋됩니다. 카운터 대신 비트열이면 "최근 N번 중 K번"을 popcount 하나로
+ * 판정하고, 해제도 "N번 모두 안 보임"으로 같은 마스크에서 나와 확정·해제가 대칭입니다.
+ */
+static int obj_rule_observe(RulesEngine *re, ObjRuleState *r, int seen, double now) {
+    int k = re->config.object_confirm_count;
+    int n = re->config.object_confirm_window;
+    unsigned mask, h;
+    int hits = 0;
+
+    if (k <= 1) { k = 1; n = 1; }                    /* 필터 없음 = 기존 동작 */
+    else {
+        if (n < k) n = k;
+        if (n > 16) n = 16;
+        if (k > n) k = n;
+    }
+    mask = (1u << n) - 1u;
+    r->history = ((r->history << 1) | (seen ? 1u : 0u)) & 0xFFFFu;
+    h = r->history & mask;
+    while (h) { hits += (int)(h & 1u); h >>= 1; }
+
+    if (!r->latched && hits >= k) {
+        r->latched = 1;
+        r->since = now;
+        return 1;
+    }
+    if (r->latched && hits == 0) {
+        r->latched = 0;
+        return -1;
+    }
+    return 0;
+}
+
+/* 확정 시점에만 한 줄 남깁니다. hits 를 같이 적는 이유: 오탐 조사 때 "몇 번 중 몇 번 보였나"가
+ * 임계값을 조정하는 유일한 근거입니다. */
+static void obj_rule_log(RulesEngine *re, EventLog *elog, const char *name,
+                         const char *detail, const ObjRuleState *r) {
+    char msg[192];
+    unsigned h = r->history;
+    int hits = 0, n = re->config.object_confirm_window;
+    if (re->config.object_confirm_count <= 1) n = 1;
+    if (n < 1) n = 1;
+    if (n > 16) n = 16;
+    h &= (1u << n) - 1u;
+    while (h) { hits += (int)(h & 1u); h >>= 1; }
+    snprintf(msg, sizeof(msg), "%s %s hits=%d/%d", name, detail, hits, n);
+    event_log_write(elog, LOG_WARN, "rules", msg);
+}
+
 void rules_evaluate_objects(RulesEngine *re, const DetectionList *objs,
                              const TrackList *tl, double now, EventLog *elog) {
     size_t i, j;
     int found_bottle = 0, found_food = 0;
     int animal_on_chair = 0, animal_on_table = 0;
     int cup_count = 0, active_persons = 0;
-    /* 래치 상태는 track_id==-2 슬롯에서 비트로 관리 */
-    TrackRuleState *s;
-    char msg[128];
+    char detail[96];
     float iou_thresh;
+    int margin;
 
     if (!re || !objs || !tl) return;
 
     iou_thresh = re->config.animal_iou_threshold > 0.0f
                  ? re->config.animal_iou_threshold : 0.15f;
-
-    /* 래치 슬롯 확보 (track_id==-2: 물체 룰 전용) */
-    s = get_state(re, -2);
+    margin = re->config.no_cup_margin > 0 ? re->config.no_cup_margin : 1;
 
     /* 1패스: 물체 목록 분류 */
     for (i = 0; i < objs->count; ++i) {
@@ -325,66 +384,26 @@ void rules_evaluate_objects(RulesEngine *re, const DetectionList *objs,
         if (tl->items[i].active) active_persons++;
     }
 
-    /* ── external_drink ── */
-    if (found_bottle) {
-        if (!s->overstay_latched) {
-            s->overstay_latched = 1;
-            snprintf(msg, sizeof(msg), "external_drink cups=%d", cup_count);
-            event_log_write(elog, LOG_WARN, "rules", msg);
-        }
-    } else {
-        s->overstay_latched = 0;
+    /* 룰마다 "이번 관측에서 조건이 성립했는가"만 넘기고 확정·해제는 한 함수가 맡습니다. */
+    if (obj_rule_observe(re, &re->obj_rule[OBJ_RULE_DRINK], found_bottle, now) == 1) {
+        snprintf(detail, sizeof(detail), "cups=%d", cup_count);
+        obj_rule_log(re, elog, "external_drink", detail, &re->obj_rule[OBJ_RULE_DRINK]);
     }
-
-    /* ── external_food ── */
-    if (found_food) {
-        if (!s->unordered_latched) {
-            s->unordered_latched = 1;
-            snprintf(msg, sizeof(msg), "external_food");
-            event_log_write(elog, LOG_WARN, "rules", msg);
-        }
-    } else {
-        s->unordered_latched = 0;
+    if (obj_rule_observe(re, &re->obj_rule[OBJ_RULE_FOOD], found_food, now) == 1)
+        obj_rule_log(re, elog, "external_food", "", &re->obj_rule[OBJ_RULE_FOOD]);
+    if (obj_rule_observe(re, &re->obj_rule[OBJ_RULE_ANIMAL_CHAIR], animal_on_chair, now) == 1) {
+        snprintf(detail, sizeof(detail), "iou_thresh=%.2f", iou_thresh);
+        obj_rule_log(re, elog, "animal_on_chair", detail, &re->obj_rule[OBJ_RULE_ANIMAL_CHAIR]);
     }
-
-    /* ── animal_on_chair ── (fall_latched 비트 재활용) */
-    if (animal_on_chair) {
-        if (!s->fall_latched) {
-            s->fall_latched = 1;
-            snprintf(msg, sizeof(msg), "animal_on_chair iou_thresh=%.2f",
-                     iou_thresh);
-            event_log_write(elog, LOG_WARN, "rules", msg);
-        }
-    } else {
-        s->fall_latched = 0;
+    if (obj_rule_observe(re, &re->obj_rule[OBJ_RULE_ANIMAL_TABLE], animal_on_table, now) == 1) {
+        snprintf(detail, sizeof(detail), "iou_thresh=%.2f", iou_thresh);
+        obj_rule_log(re, elog, "animal_on_table", detail, &re->obj_rule[OBJ_RULE_ANIMAL_TABLE]);
     }
-
-    /* ── animal_on_table ── (fall_start 비트 필드 재활용) */
-    if (animal_on_table) {
-        if (s->fall_start <= 0.0) {
-            s->fall_start = now;
-            snprintf(msg, sizeof(msg), "animal_on_table iou_thresh=%.2f",
-                     iou_thresh);
-            event_log_write(elog, LOG_WARN, "rules", msg);
-        }
-    } else {
-        s->fall_start = 0.0;
-    }
-
-    /* ── no_cup_seated ── 조건 시작 시 1회만 발화, 조건 해소 시 latch 해제 */
-    {
-        int margin = re->config.no_cup_margin > 0 ? re->config.no_cup_margin : 1;
-        if (active_persons > cup_count + margin) {
-            if (!s->no_cup_latched) {
-                snprintf(msg, sizeof(msg),
-                         "no_cup_seated persons=%d cups=%d margin=%d",
-                         active_persons, cup_count, margin);
-                event_log_write(elog, LOG_WARN, "rules", msg);
-                s->no_cup_latched = 1;
-            }
-        } else {
-            s->no_cup_latched = 0;
-        }
+    if (obj_rule_observe(re, &re->obj_rule[OBJ_RULE_NO_CUP],
+                         active_persons > cup_count + margin, now) == 1) {
+        snprintf(detail, sizeof(detail), "persons=%d cups=%d margin=%d",
+                 active_persons, cup_count, margin);
+        obj_rule_log(re, elog, "no_cup_seated", detail, &re->obj_rule[OBJ_RULE_NO_CUP]);
     }
 }
 
@@ -492,12 +511,135 @@ static int fall_torso_pose(const Detection *b) {
     return 0;
 }
 
+/*
+ * 장시간 무동작 판정용 헬퍼.
+ *
+ * "선 자세" 기준을 무릎-엉덩이 y 차이로 둔 이유: pose==1(상체 직립)은 앉은 사람도 포함해서
+ * 그것만으로는 독서하며 오래 앉아 있는 정상 손님과 구분되지 않습니다. 서 있으면 허벅지가
+ * 수직이라 무릎이 엉덩이보다 확연히 아래에 찍히고, 앉으면 허벅지가 카메라 쪽으로 눕습니다.
+ * 애매한 경우(관절 부족 등)는 대상에서 빼서 놓치는 쪽으로 틀립니다 — 이 룰의 오탐은
+ * 점주 신뢰를 갉아먹지만 미탐은 쓰러짐·소실 룰이 이미 일부 메웁니다.
+ */
+#define STILL_STAND_DROP 0.22f  /* 무릎이 엉덩이보다 박스 높이의 이 비율 이상 아래 */
+
+static int standing_legs(const Detection *b) {
+    float h = b->y2 - b->y1, hip = 0.0f, knee = 0.0f;
+    int hn = 0, kn = 0, k;
+    if (b->keypoint_count < 15 || h < FALL_MIN_H) return 0;
+    for (k = 11; k <= 12; ++k)
+        if (b->kp[k].score >= KP_SCORE_THRESH) { hip  += b->kp[k].y; hn++; }
+    for (k = 13; k <= 14; ++k)
+        if (b->kp[k].score >= KP_SCORE_THRESH) { knee += b->kp[k].y; kn++; }
+    if (!hn || !kn) return 0;
+    return (knee / (float)kn - hip / (float)hn) > h * STILL_STAND_DROP;
+}
+
+/* [0]=박스 중심, [1..5]=FALL_KP_IDX 관절. 반환: 유효한 점의 비트마스크. */
+static int still_points(const Detection *b, float *x, float *y) {
+    int i, mask = 1;
+    x[0] = (b->x1 + b->x2) * 0.5f;
+    y[0] = (b->y1 + b->y2) * 0.5f;
+    for (i = 0; i < FALL_KP_COUNT; ++i) {
+        int idx = FALL_KP_IDX[i];
+        if (idx < b->keypoint_count && b->kp[idx].score >= KP_SCORE_THRESH) {
+            x[i + 1] = b->kp[idx].x;
+            y[i + 1] = b->kp[idx].y;
+            mask |= 1 << (i + 1);
+        }
+    }
+    return mask;
+}
+
+static void still_reset(TrackRuleState *s) {
+    s->still_start = 0.0;
+    s->still_latched = 0;
+    s->still_valid_mask = 0;
+}
+
+/* 새 관측이 들어올 때만 호출합니다 (rules_evaluate 의 fall 게이트 통과 후).
+ * pose: fall_torso_pose 결과 1=상체 직립, 2=수평. */
+static void still_update(RulesEngine *re, const Track *t, TrackRuleState *s,
+                         int pose, double now, EventLog *elog) {
+    const Detection *b = &t->box;
+    float x[6] = {0}, y[6] = {0}, scale, thr;
+    int mask, common, i, moved = 0;
+    char msg[160];
+
+    if (re->config.still_seconds <= 0.0) { still_reset(s); return; }
+    if (!(pose == 2 || (pose == 1 && standing_legs(b)))) { still_reset(s); return; }
+
+    /* 정규화 기준을 가로·세로 중 큰 쪽으로 둔 이유: 누운 사람은 박스 높이가 작아
+     * 같은 떨림이 훨씬 큰 비율로 보입니다. */
+    scale = (b->x2 - b->x1) > (b->y2 - b->y1) ? (b->x2 - b->x1) : (b->y2 - b->y1);
+    if (scale < FALL_MIN_H) { still_reset(s); return; }
+    thr = re->config.still_motion_threshold > 0.0f ? re->config.still_motion_threshold : 0.10f;
+
+    mask = still_points(b, x, y);
+    if (s->still_start <= 0.0) {
+        memcpy(s->still_ax, x, sizeof(x));
+        memcpy(s->still_ay, y, sizeof(y));
+        s->still_valid_mask = mask;
+        s->still_start = now;
+        return;
+    }
+
+    common = mask & s->still_valid_mask;
+    for (i = 0; i < 6; ++i) {
+        float dx, dy;
+        if (!(common & (1 << i))) continue;
+        dx = x[i] - s->still_ax[i];
+        dy = y[i] - s->still_ay[i];
+        if ((float)sqrt((double)(dx * dx + dy * dy)) > scale * thr) { moved = 1; break; }
+    }
+    if (moved) {
+        /* 움직였으면 지금 자세를 새 기준으로 삼고 처음부터 다시 셉니다. 이미 발화했다면 해제. */
+        memcpy(s->still_ax, x, sizeof(x));
+        memcpy(s->still_ay, y, sizeof(y));
+        s->still_valid_mask = mask;
+        s->still_start = now;
+        s->still_latched = 0;
+        return;
+    }
+
+    if (!s->still_latched && now - s->still_start >= re->config.still_seconds) {
+        s->still_latched = 1;
+        snprintf(msg, sizeof(msg),
+                 "person_motionless track=%d still=%.0fs limit=%.0fs posture=%s motion_thr=%.2f",
+                 t->id, now - s->still_start, re->config.still_seconds,
+                 pose == 2 ? "lying" : "standing", thr);
+        event_log_write(elog, LOG_WARN, "rules", msg);
+    }
+}
+
 void rules_evaluate(RulesEngine *re, TrackList *tl, double now, EventLog *elog) {
     size_t i;
     char msg[256];
 
     if (!re || !tl) return;
     re->fall_fired_count = 0;
+
+    /* ── 인원 초과 ── 활성 트랙 수만 셉니다(limbo 는 매장 안에 있다는 보장이 없음). */
+    if (re->config.max_occupancy > 0) {
+        int count = 0;
+        double hold = re->config.max_occupancy_hold_seconds > 0.0
+                      ? re->config.max_occupancy_hold_seconds : 10.0;
+        for (i = 0; i < tl->count; ++i) if (tl->items[i].active) count++;
+        if (count > re->config.max_occupancy) {
+            if (re->occ_start <= 0.0) re->occ_start = now;
+            if (!re->occ_latched && now - re->occ_start >= hold) {
+                re->occ_latched = 1;
+                snprintf(msg, sizeof(msg), "occupancy_exceeded count=%d limit=%d hold=%.0fs",
+                         count, re->config.max_occupancy, now - re->occ_start);
+                event_log_write(elog, LOG_WARN, "rules", msg);
+            }
+        } else {
+            re->occ_start = 0.0;
+            re->occ_latched = 0;
+        }
+    } else {
+        re->occ_start = 0.0;
+        re->occ_latched = 0;
+    }
 
     for (i = 0; i < tl->count; ++i) {
         Track *t = &tl->items[i];
@@ -548,8 +690,13 @@ void rules_evaluate(RulesEngine *re, TrackList *tl, double now, EventLog *elog) 
             s->overstay_latched = 0;
         }
 
-        /* ── 미주문 착석 ── */
-        if (t->order != TRACK_ORDERED &&
+        /* ── 미주문 착석 ──
+         * PROBABLY_ORDERED(키오스크 앞 30초 유지)도 억제 대상으로 봅니다. 결제 연동이 없어
+         * ORDERED 에 도달할 방법이 없으므로, 억제하지 않으면 정상적으로 주문한 손님을 포함한
+         * 오래 머문 모든 사람에게 발화합니다. 대신 키오스크 앞에 서 있다가 결제하지 않고
+         * 앉은 사람은 놓칠 수 있습니다 — 근접은 결제 증거가 아니라는 위 판단은 그대로이며,
+         * 이 조합이 오탐(점주 신뢰 하락)보다 미탐을 택한 결과입니다. */
+        if (t->order == TRACK_UNORDERED &&
             t->dwell_seconds > re->config.unordered_grace_seconds) {
             if (!s->unordered_latched) {
                 s->unordered_latched = 1;
@@ -559,8 +706,8 @@ void rules_evaluate(RulesEngine *re, TrackList *tl, double now, EventLog *elog) 
                          re->config.unordered_grace_seconds);
                 event_log_write(elog, LOG_WARN, "rules", msg);
             }
-        } else if (t->order == TRACK_ORDERED) {
-            s->unordered_latched = 0;
+        } else if (t->order != TRACK_UNORDERED) {
+            s->unordered_latched = 0; /* 이미 발화한 뒤 주문 추정/확인으로 바뀌면 해제 */
         }
 
         /* All fall paths share the same fresh-evidence and hold gates. */
@@ -571,6 +718,7 @@ void rules_evaluate(RulesEngine *re, TrackList *tl, double now, EventLog *elog) 
             t->fall_sudden=0; /* Head template movement cannot bypass person validation. */
             if(t->misses || t->last_seen<=0 || now-t->last_seen>2.0 || t->last_seen>now+.01) {
                 s->fall_gate=2;s->fall_start=0;s->fall_samples=0;
+                still_reset(s); /* 관측이 끊긴 구간은 움직임 없음의 증거가 아닙니다 */
                 continue;
             }
             if(t->last_seen<=s->fall_last_observation)continue; /* not another observation */
@@ -583,8 +731,10 @@ void rules_evaluate(RulesEngine *re, TrackList *tl, double now, EventLog *elog) 
             if(!quality || !pose) {
                 s->fall_gate=quality?3:1;s->fall_start=0;s->fall_samples=0;
                 s->upright_start=0;s->upright_samples=0;
+                still_reset(s);
                 continue;
             }
+            still_update(re,t,s,pose,now,elog);
             if(pose==1) {
                 if(s->upright_start<=0)s->upright_start=now;
                 s->upright_samples++;

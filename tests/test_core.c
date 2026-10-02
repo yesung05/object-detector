@@ -855,6 +855,51 @@ static void test_rules_unordered_seated(void) {
     event_log_close(&elog);
 }
 
+/* PROBABLY_ORDERED 는 미주문 착석을 억제해야 합니다. UNORDERED 는 발화, 이미 발화한 뒤
+ * PROBABLY_ORDERED 로 바뀌면 래치가 풀려야 합니다. */
+static void test_rules_unordered_suppressed_by_probable_order(void) {
+    TrackList tl;
+    RulesEngine re;
+    EventLog elog;
+    RulesConfig rcfg = {3600.0, 30.0, 5.0, 1.8f, 2.2f, 0, 0, 0, 0, 0}; /* grace=30초 */
+    char error[128] = {0};
+    int before, i;
+    event_log_open(&elog, ":memory:", LOG_INFO, 0);
+    ASSERT_INT_EQ(tracks_init(&tl, 16, 0.3f, 5, 1800.0, 0.45f, error, sizeof(error)), 0);
+    ASSERT_INT_EQ(rules_init(&re, 16, &rcfg, error, sizeof(error)), 0);
+
+    tl.count = 1;
+    memset(&tl.items[0], 0, sizeof(tl.items[0]));
+    tl.items[0].id = 1;
+    tl.items[0].active = 1;
+    tl.items[0].dwell_seconds = 31.0;
+    tl.items[0].box = (Detection){0, 0, 30, 100, 0.9f};
+
+    /* 주문 추정이면 grace 를 넘어도 발화하지 않음 */
+    tl.items[0].order = TRACK_PROBABLY_ORDERED;
+    before = event_log_count(&elog, LOG_WARN);
+    rules_evaluate(&re, &tl, 100.0, &elog);
+    EXPECT_INT_EQ(event_log_count(&elog, LOG_WARN), before);
+
+    /* 미주문이면 발화, 같은 상태가 계속돼도 중복 없음 */
+    tl.items[0].order = TRACK_UNORDERED;
+    rules_evaluate(&re, &tl, 101.0, &elog);
+    EXPECT_INT_EQ(event_log_count(&elog, LOG_WARN), before + 1);
+    rules_evaluate(&re, &tl, 102.0, &elog);
+    EXPECT_INT_EQ(event_log_count(&elog, LOG_WARN), before + 1);
+
+    /* 발화 뒤 주문 추정으로 바뀌면 래치 해제 */
+    tl.items[0].order = TRACK_PROBABLY_ORDERED;
+    rules_evaluate(&re, &tl, 103.0, &elog);
+    for (i = 0; i < (int)re.capacity && re.states[i].track_id != 1; ++i) {}
+    ASSERT_TRUE(i < (int)re.capacity);
+    EXPECT_INT_EQ(re.states[i].unordered_latched, 0);
+
+    rules_destroy(&re);
+    tracks_destroy(&tl);
+    event_log_close(&elog);
+}
+
 /* ── CameraHealth 테스트 ─────────────────────────────────────────────────── */
 
 /* 그레이 버퍼와 이전 프레임 사본으로 한 프레임을 진행시키는 헬퍼입니다.
@@ -1367,23 +1412,13 @@ static void test_rules_obj_external_drink(void) {
     make_obj_list(&objs, 100, 100, 150, 200, 0.8f, 2 /* OBJ_BOTTLE */);
     rules_evaluate_objects(&re, &objs, &tl, 100.0, &elog);
 
-    /* track_id=-2 슬롯의 overstay_latched(drink latch)가 설정되어야 합니다. */
-    {
-        int i = 0;
-        while (i < (int)re.capacity && re.states[i].track_id != -2) i++;
-        ASSERT_TRUE(i < (int)re.capacity);
-        EXPECT_INT_EQ(re.states[i].overstay_latched, 1);
-    }
+    /* confirm 필터가 꺼진 설정(count=0)이므로 관측 즉시 drink 가 확정되어야 합니다. */
+    EXPECT_INT_EQ(re.obj_rule[OBJ_RULE_DRINK].latched, 1);
 
     /* 감지 없어지면 latch 해제 */
     objs.count = 0;
     rules_evaluate_objects(&re, &objs, &tl, 101.0, &elog);
-    {
-        int i = 0;
-        while (i < (int)re.capacity && re.states[i].track_id != -2) i++;
-        if (i < (int)re.capacity)
-            EXPECT_INT_EQ(re.states[i].overstay_latched, 0);
-    }
+    EXPECT_INT_EQ(re.obj_rule[OBJ_RULE_DRINK].latched, 0);
 
     rules_destroy(&re);
     tracks_destroy(&tl);
@@ -1407,12 +1442,7 @@ static void test_rules_obj_external_food(void) {
     make_obj_list(&objs, 50, 50, 100, 100, 0.75f, 11 /* pizza, OBJ_FOOD_FIRST+7 */);
     rules_evaluate_objects(&re, &objs, &tl, 100.0, &elog);
 
-    {
-        int i = 0;
-        while (i < (int)re.capacity && re.states[i].track_id != -2) i++;
-        ASSERT_TRUE(i < (int)re.capacity);
-        EXPECT_INT_EQ(re.states[i].unordered_latched, 1);  /* food latch */
-    }
+    EXPECT_INT_EQ(re.obj_rule[OBJ_RULE_FOOD].latched, 1);
 
     rules_destroy(&re);
     tracks_destroy(&tl);
@@ -1429,7 +1459,6 @@ static void test_rules_obj_animal_on_chair(void) {
     /* animal_iou_threshold=0.1: 동물/의자 IoU가 0.1 이상이면 발화 */
     RulesConfig rcfg = {3600.0, 300.0, 5.0, 1.8f, 2.2f, 0, 0, 0, 0, 0, 0.10f, 1};
     char error[128] = {0};
-    int i;
     event_log_open(&elog, ":memory:", LOG_INFO, 0);
     ASSERT_INT_EQ(tracks_init(&tl, 16, 0.3f, 5, 1800.0, 0.45f, error, sizeof(error)), 0);
     ASSERT_INT_EQ(rules_init(&re, 16, &rcfg, error, sizeof(error)), 0);
@@ -1452,10 +1481,7 @@ static void test_rules_obj_animal_on_chair(void) {
 
     rules_evaluate_objects(&re, &objs, &tl, 100.0, &elog);
 
-    i = 0;
-    while (i < (int)re.capacity && re.states[i].track_id != -2) i++;
-    ASSERT_TRUE(i < (int)re.capacity);
-    EXPECT_INT_EQ(re.states[i].fall_latched, 1);  /* animal_on_chair latch */
+    EXPECT_INT_EQ(re.obj_rule[OBJ_RULE_ANIMAL_CHAIR].latched, 1);
 
     rules_destroy(&re);
     tracks_destroy(&tl);
@@ -1471,7 +1497,6 @@ static void test_rules_obj_animal_on_table(void) {
     DetectionList objs;
     RulesConfig rcfg = {3600.0, 300.0, 5.0, 1.8f, 2.2f, 0, 0, 0, 0, 0, 0.10f, 1};
     char error[128] = {0};
-    int i;
     event_log_open(&elog, ":memory:", LOG_INFO, 0);
     ASSERT_INT_EQ(tracks_init(&tl, 16, 0.3f, 5, 1800.0, 0.45f, error, sizeof(error)), 0);
     ASSERT_INT_EQ(rules_init(&re, 16, &rcfg, error, sizeof(error)), 0);
@@ -1492,11 +1517,7 @@ static void test_rules_obj_animal_on_table(void) {
 
     rules_evaluate_objects(&re, &objs, &tl, 100.0, &elog);
 
-    i = 0;
-    while (i < (int)re.capacity && re.states[i].track_id != -2) i++;
-    ASSERT_TRUE(i < (int)re.capacity);
-    /* fall_start가 0이 아니면 animal_on_table latch가 설정된 것입니다. */
-    EXPECT_TRUE(re.states[i].fall_start != 0.0);
+    EXPECT_INT_EQ(re.obj_rule[OBJ_RULE_ANIMAL_TABLE].latched, 1);
 
     rules_destroy(&re);
     tracks_destroy(&tl);
@@ -1543,6 +1564,183 @@ static void test_rules_obj_no_cup_seated(void) {
     rules_destroy(&re);
     tracks_destroy(&tl);
     detection_list_destroy(&objs);
+    event_log_close(&elog);
+}
+
+/* 단발 오검출은 확정 필터(3-of-5)에서 걸러지고, 반복 관측은 1회만 발화한 뒤
+ * 5번 연속 안 보여야 해제되는지 확인합니다. */
+static void test_rules_obj_confirm_filter(void) {
+    TrackList tl;
+    RulesEngine re;
+    EventLog elog;
+    DetectionList objs;
+    RulesConfig rcfg;
+    char error[128] = {0};
+    int before, i;
+    double now = 100.0;
+    memset(&rcfg, 0, sizeof(rcfg));
+    rcfg.animal_iou_threshold = 0.15f; rcfg.no_cup_margin = 1;
+    rcfg.object_confirm_count = 3; rcfg.object_confirm_window = 5;
+    event_log_open(&elog, ":memory:", LOG_INFO, 0);
+    ASSERT_INT_EQ(tracks_init(&tl, 16, 0.3f, 5, 1800.0, 0.45f, error, sizeof(error)), 0);
+    ASSERT_INT_EQ(rules_init(&re, 16, &rcfg, error, sizeof(error)), 0);
+    ASSERT_INT_EQ(detection_list_init(&objs, 8), 0);
+
+    /* 한 번 보이고 사라지는 병: 발화하면 안 됩니다. */
+    before = event_log_count(&elog, LOG_WARN);
+    make_obj_list(&objs, 100, 100, 150, 200, 0.8f, OBJ_BOTTLE);
+    rules_evaluate_objects(&re, &objs, &tl, now++, &elog);
+    objs.count = 0;
+    for (i = 0; i < 5; ++i) rules_evaluate_objects(&re, &objs, &tl, now++, &elog);
+    EXPECT_INT_EQ(event_log_count(&elog, LOG_WARN), before);
+    EXPECT_INT_EQ(re.obj_rule[OBJ_RULE_DRINK].latched, 0);
+
+    /* 보임·보임·가려짐·보임 = 5번 중 3번 → 확정. 한 번의 누락이 리셋하지 않아야 합니다. */
+    make_obj_list(&objs, 100, 100, 150, 200, 0.8f, OBJ_BOTTLE);
+    rules_evaluate_objects(&re, &objs, &tl, now++, &elog);
+    rules_evaluate_objects(&re, &objs, &tl, now++, &elog);
+    EXPECT_INT_EQ(re.obj_rule[OBJ_RULE_DRINK].latched, 0);
+    objs.count = 0;
+    rules_evaluate_objects(&re, &objs, &tl, now++, &elog);
+    EXPECT_INT_EQ(re.obj_rule[OBJ_RULE_DRINK].latched, 0);
+    make_obj_list(&objs, 100, 100, 150, 200, 0.8f, OBJ_BOTTLE);
+    before = event_log_count(&elog, LOG_WARN);
+    rules_evaluate_objects(&re, &objs, &tl, now++, &elog);
+    EXPECT_INT_EQ(re.obj_rule[OBJ_RULE_DRINK].latched, 1);
+    EXPECT_INT_EQ(event_log_count(&elog, LOG_WARN), before + 1);
+
+    /* 계속 보여도 중복 발화 없음 */
+    rules_evaluate_objects(&re, &objs, &tl, now++, &elog);
+    EXPECT_INT_EQ(event_log_count(&elog, LOG_WARN), before + 1);
+
+    /* 4번 안 보임 → 아직 래치 유지, 5번째 → 해제 */
+    objs.count = 0;
+    for (i = 0; i < 4; ++i) rules_evaluate_objects(&re, &objs, &tl, now++, &elog);
+    EXPECT_INT_EQ(re.obj_rule[OBJ_RULE_DRINK].latched, 1);
+    rules_evaluate_objects(&re, &objs, &tl, now++, &elog);
+    EXPECT_INT_EQ(re.obj_rule[OBJ_RULE_DRINK].latched, 0);
+
+    rules_destroy(&re);
+    tracks_destroy(&tl);
+    detection_list_destroy(&objs);
+    event_log_close(&elog);
+}
+
+/* 인원 초과: hold 시간 유지돼야 발화, 한 번만 발화, 줄었다가 다시 초과하면 재발화 */
+static void test_rules_occupancy_exceeded(void) {
+    TrackList tl;
+    RulesEngine re;
+    EventLog elog;
+    RulesConfig rcfg;
+    char error[128] = {0};
+    int before;
+    memset(&rcfg, 0, sizeof(rcfg));
+    rcfg.dwell_limit_seconds = 3600.0; rcfg.unordered_grace_seconds = 300.0;
+    rcfg.fall_hold_seconds = 5.0;
+    rcfg.fall_aspect_ratio_kp = 1.8f; rcfg.fall_aspect_ratio_nokp = 2.2f;
+    rcfg.max_occupancy = 2; rcfg.max_occupancy_hold_seconds = 10.0;
+    event_log_open(&elog, ":memory:", LOG_INFO, 0);
+    ASSERT_INT_EQ(tracks_init(&tl, 16, 0.3f, 5, 1800.0, 0.45f, error, sizeof(error)), 0);
+    ASSERT_INT_EQ(rules_init(&re, 16, &rcfg, error, sizeof(error)), 0);
+
+    tl.count = 3;
+    memset(tl.items, 0, sizeof(tl.items[0]) * 3);
+    tl.items[0].id = 1; tl.items[0].active = 1;
+    tl.items[1].id = 2; tl.items[1].active = 1;
+    tl.items[2].id = 3; tl.items[2].active = 1;
+
+    before = event_log_count(&elog, LOG_WARN);
+    rules_evaluate(&re, &tl, 100.0, &elog);
+    rules_evaluate(&re, &tl, 109.0, &elog);
+    EXPECT_INT_EQ(event_log_count(&elog, LOG_WARN), before);       /* hold 미달 */
+    rules_evaluate(&re, &tl, 110.0, &elog);
+    EXPECT_INT_EQ(event_log_count(&elog, LOG_WARN), before + 1);   /* 확정 */
+    rules_evaluate(&re, &tl, 120.0, &elog);
+    EXPECT_INT_EQ(event_log_count(&elog, LOG_WARN), before + 1);   /* 중복 없음 */
+
+    tl.items[2].active = 0;                                         /* 2명으로 감소 → 해제 */
+    rules_evaluate(&re, &tl, 125.0, &elog);
+    EXPECT_INT_EQ(re.occ_latched, 0);
+    tl.items[2].active = 1;                                         /* 다시 초과 → hold 부터 */
+    rules_evaluate(&re, &tl, 130.0, &elog);
+    EXPECT_INT_EQ(event_log_count(&elog, LOG_WARN), before + 1);
+    rules_evaluate(&re, &tl, 140.0, &elog);
+    EXPECT_INT_EQ(event_log_count(&elog, LOG_WARN), before + 2);
+
+    /* 0 이면 비활성 */
+    rcfg.max_occupancy = 0;
+    rules_update_config(&re, &rcfg);
+    rules_evaluate(&re, &tl, 200.0, &elog);
+    rules_evaluate(&re, &tl, 300.0, &elog);
+    EXPECT_INT_EQ(event_log_count(&elog, LOG_WARN), before + 2);
+
+    rules_destroy(&re);
+    tracks_destroy(&tl);
+    event_log_close(&elog);
+}
+
+/* 서 있는 사람의 장시간 무동작: 정지 시 발화, 움직이면 해제 후 다시 세기,
+ * 앉은 자세(무릎이 엉덩이와 같은 높이)는 대상에서 제외 */
+static void set_standing_pose(Track *t, float knee_y, float dx) {
+    memset(&t->box, 0, sizeof(t->box));
+    t->box.x1 = 300 + dx; t->box.y1 = 0; t->box.x2 = 950 + dx; t->box.y2 = 700;
+    t->box.score = 0.9f; t->box.keypoint_count = 17;
+    t->box.kp[0]  = (Keypoint){625 + dx, 100, 0.9f};
+    t->box.kp[5]  = (Keypoint){450 + dx, 250, 0.9f};
+    t->box.kp[6]  = (Keypoint){800 + dx, 250, 0.9f};
+    t->box.kp[11] = (Keypoint){480 + dx, 400, 0.9f};
+    t->box.kp[12] = (Keypoint){770 + dx, 400, 0.9f};
+    t->box.kp[13] = (Keypoint){490 + dx, knee_y, 0.9f};
+    t->box.kp[14] = (Keypoint){760 + dx, knee_y, 0.9f};
+}
+
+static void test_rules_motionless_standing(void) {
+    RulesEngine re; Track t; TrackList tl; EventLog elog;
+    RulesConfig rcfg;
+    int before; double now;
+    memset(&rcfg, 0, sizeof(rcfg));
+    rcfg.dwell_limit_seconds = 3600.0; rcfg.unordered_grace_seconds = 300.0;
+    rcfg.fall_hold_seconds = 5.0;
+    rcfg.fall_aspect_ratio_kp = 1.8f; rcfg.fall_aspect_ratio_nokp = 2.2f;
+    rcfg.still_seconds = 60.0; rcfg.still_motion_threshold = 0.10f;
+    event_log_open(&elog, ":memory:", LOG_INFO, 0);
+    ASSERT_INT_EQ(rules_init(&re, 8, &rcfg, NULL, 0), 0);
+    memset(&t, 0, sizeof(t)); memset(&tl, 0, sizeof(tl));
+    tl.items = &t; tl.count = 1; t.id = 1; t.active = 1; t.match_score = 0.9f;
+
+    /* 정지 서 있음: 60초 유지 시 1회 발화 */
+    set_standing_pose(&t, 600, 0);
+    before = event_log_count(&elog, LOG_WARN);
+    for (now = 100; now < 160; now += 10) { t.last_seen = now; rules_evaluate(&re, &tl, now, &elog); }
+    EXPECT_INT_EQ(event_log_count(&elog, LOG_WARN), before);
+    t.last_seen = 160; rules_evaluate(&re, &tl, 160, &elog);
+    EXPECT_INT_EQ(event_log_count(&elog, LOG_WARN), before + 1);
+    t.last_seen = 170; rules_evaluate(&re, &tl, 170, &elog);
+    EXPECT_INT_EQ(event_log_count(&elog, LOG_WARN), before + 1);   /* 중복 없음 */
+
+    /* 박스 폭(650)의 10% 초과 이동 → 해제, 새 기준으로 다시 60초 */
+    set_standing_pose(&t, 600, 100);
+    t.last_seen = 180; rules_evaluate(&re, &tl, 180, &elog);
+    t.last_seen = 230; rules_evaluate(&re, &tl, 230, &elog);
+    EXPECT_INT_EQ(event_log_count(&elog, LOG_WARN), before + 1);
+    t.last_seen = 240; rules_evaluate(&re, &tl, 240, &elog);
+    EXPECT_INT_EQ(event_log_count(&elog, LOG_WARN), before + 2);
+
+    /* 앉은 자세(무릎 y == 엉덩이 y): 아무리 오래 가만있어도 대상 아님 */
+    set_standing_pose(&t, 410, 0);
+    before = event_log_count(&elog, LOG_WARN);
+    for (now = 300; now <= 900; now += 10) { t.last_seen = now; rules_evaluate(&re, &tl, now, &elog); }
+    EXPECT_INT_EQ(event_log_count(&elog, LOG_WARN), before);
+
+    /* 0 이면 비활성 */
+    rcfg.still_seconds = 0.0;
+    rules_update_config(&re, &rcfg);
+    set_standing_pose(&t, 600, 0);
+    before = event_log_count(&elog, LOG_WARN);
+    for (now = 1000; now <= 1400; now += 10) { t.last_seen = now; rules_evaluate(&re, &tl, now, &elog); }
+    EXPECT_INT_EQ(event_log_count(&elog, LOG_WARN), before);
+
+    rules_destroy(&re);
     event_log_close(&elog);
 }
 
@@ -3124,6 +3322,7 @@ int main(void) {
     RUN_TEST(test_fall_false_positive_regressions);
     RUN_TEST(test_rules_fall_requires_hold);
     RUN_TEST(test_rules_unordered_seated);
+    RUN_TEST(test_rules_unordered_suppressed_by_probable_order);
     RUN_TEST(test_rules_fall_no_hip_no_fire);
     RUN_TEST(test_rules_fall_with_hip_fires);
     RUN_TEST(test_config_rect_and_time);
@@ -3145,6 +3344,9 @@ int main(void) {
     RUN_TEST(test_rules_obj_animal_on_chair);
     RUN_TEST(test_rules_obj_animal_on_table);
     RUN_TEST(test_rules_obj_no_cup_seated);
+    RUN_TEST(test_rules_obj_confirm_filter);
+    RUN_TEST(test_rules_occupancy_exceeded);
+    RUN_TEST(test_rules_motionless_standing);
     /* 잔류물 감지 단위 테스트 */
     RUN_TEST(test_residue_no_event_before_confirm);
     RUN_TEST(test_residue_confirms_after_hold);
