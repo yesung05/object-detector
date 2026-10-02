@@ -68,7 +68,55 @@ typedef struct {
      * 구조체 끝에 둔 이유: 위치 초기화({...})를 쓰는 기존 코드가 자동으로 0(중심)이 됩니다.
      */
     int    roi_anchor_foot;
+
+    /*
+     * ── Tier 2 물체 룰 확정 필터 ────────────────────────────────────────
+     * Tier 2 는 detect_every_obj(기본 90프레임)마다 한 번 돌아 관측 사이 간격이 깁니다.
+     * 한 번의 관측으로 발화하면 선풍기→food, 가방→bottle 같은 단발 오검출이 그대로
+     * 경고가 됩니다. 최근 window 번의 관측 중 count 번 이상 보여야 확정하고, window 번
+     * 연속으로 안 보여야 해제합니다. 연속 K회가 아니라 K-of-N 으로 둔 이유: 컵·병은 손에
+     * 가려 한두 번 빠지는 일이 흔해서, 연속 조건이면 진짜 반입도 계속 리셋됩니다.
+     * 0 또는 1 이면 필터 없음(관측 즉시 발화, 안 보이면 즉시 해제) — 기존 동작과 같습니다.
+     * 구조체 끝에 둔 이유: 위치 초기화({...})를 쓰는 기존 코드가 자동으로 0(필터 없음)이 됩니다.
+     */
+    int    object_confirm_count;      /* 기본 3 — window 중 이만큼 보여야 확정 */
+    int    object_confirm_window;     /* 기본 5 — 최대 16 (비트마스크 폭) */
+
+    /* ── 인원 초과 ───────────────────────────────────────────────────────
+     * 0 이면 비활성: 적정 인원은 매장 평수·좌석 수마다 달라 일반적인 기본값이 없습니다.
+     * 트래커가 한 사람을 잠깐 둘로 쪼개는 경우가 있어 hold 초 이상 유지돼야 발화합니다. */
+    int    max_occupancy;             /* 기본 0(비활성) */
+    double max_occupancy_hold_seconds;/* 기본 10 */
+
+    /* ── 장시간 무동작 ───────────────────────────────────────────────────
+     * 서 있거나 누운 채 움직임이 없는 사람. 의자에 앉은 사람은 독서·휴대폰으로 정상적으로
+     * 오래 움직이지 않으므로 대상에서 제외합니다(무릎이 엉덩이보다 충분히 아래일 때만 "선 자세").
+     * 0 이면 비활성. */
+    double still_seconds;             /* 기본 300 */
+    /* 기준 자세 대비 관절·박스 중심 이동이 박스 높이의 이 비율을 넘으면 움직인 것으로 봅니다.
+     * 포즈 추정 자체의 떨림(수 %)보다 커야 서 있는 사람이 "움직임"으로 오인되지 않습니다. */
+    float  still_motion_threshold;    /* 기본 0.10 */
 } RulesConfig;
+
+/*
+ * Tier 2 물체 룰별 확정 상태입니다. 예전에는 track_id==-2 슬롯의 overstay_latched,
+ * fall_latched, fall_start 같은 필드를 룰마다 다른 뜻으로 돌려 썼는데, 필드 이름만 보고
+ * 쓰러짐 코드를 고치다 물체 룰이 깨지기 쉬운 구조였습니다. 룰마다 전용 상태를 둡니다.
+ */
+typedef enum {
+    OBJ_RULE_DRINK = 0,
+    OBJ_RULE_FOOD,
+    OBJ_RULE_ANIMAL_CHAIR,
+    OBJ_RULE_ANIMAL_TABLE,
+    OBJ_RULE_NO_CUP,
+    OBJ_RULE_COUNT
+} ObjRuleId;
+
+typedef struct {
+    unsigned history;  /* 최근 관측 비트열 (bit0 = 가장 최근, 1 = 보임) */
+    int      latched;  /* 발화 후 해제 전까지 1 */
+    double   since;    /* 확정 시각 — 로그에 지속 시간을 남기기 위함 */
+} ObjRuleState;
 
 /*
  * 트랙당 룰 상태입니다. track_id % capacity 로 슬롯을 인덱싱합니다.
@@ -84,7 +132,13 @@ typedef struct {
     double fall_last_observation, upright_start, upright_last;
     unsigned int upright_samples, fall_samples;
     int fall_gate; /* 0 idle, 1 confidence, 2 stale, 3 pose, 4 no upright history, 5 holding, 6 confirmed */
-    int    no_cup_latched; /* track_id==-2 슬롯에서 no_cup_seated 래치로 재활용 */
+    /* 장시간 무동작 — 기준 자세(anchor)와 비교해 움직였는지 봅니다.
+     * 직전 프레임과 비교하지 않는 이유: 천천히 걷는 사람은 프레임 간 이동이 떨림 수준이라
+     * 매번 "정지"로 보이지만, 시작 지점 기준으로는 누적 이동이 드러납니다. */
+    double still_start;                 /* 기준 자세를 잡은 시각 (0 이면 미시작) */
+    float  still_ax[6], still_ay[6];    /* [0]=박스 중심, [1..5]=FALL_KP_IDX 관절 */
+    int    still_valid_mask;            /* 기준 자세에서 유효했던 점의 비트마스크 */
+    int    still_latched;
 } TrackRuleState;
 
 /*
@@ -107,6 +161,9 @@ typedef struct {
      * 룰 엔진이 캡처를 직접 하지 않고 목록만 내놓는 이유: 룰은 프레임 픽셀을
      * 모르는 순수 판정으로 두어야 단위 테스트가 FFmpeg·파일 I/O 없이 돌아갑니다.
      */
+    ObjRuleState    obj_rule[OBJ_RULE_COUNT]; /* RulesEngine 값 소유 — 별도 해제 없음 */
+    double          occ_start;   /* 인원 초과가 시작된 시각 (0 이면 미초과) */
+    int             occ_latched;
     int             fall_fired_count;
     int             fall_fired_track[RULES_MAX_FIRED];
     Detection       fall_fired_box[RULES_MAX_FIRED];
@@ -140,6 +197,8 @@ void rules_evaluate(RulesEngine *re, TrackList *tl, double now, EventLog *elog);
 /*
  * Tier 2 물체 감지 결과를 기반으로 룰을 평가합니다.
  * 이 함수는 Tier 2 모델 실행 직후 호출됩니다.
+ *
+ * 모든 이벤트는 object_confirm_count/window 확정 필터를 통과해야 발화합니다.
  *
  * 발화 이벤트:
  *   external_drink     — bottle 감지

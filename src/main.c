@@ -1421,6 +1421,35 @@ static void apply_vanish_config(RulesConfig *rc, const Config *cfg) {
         (int)config_long(cfg, "vanish_require_residue", 0, 0, 1);
 }
 
+/*
+ * Tier 2 물체 룰·인원 초과·무동작 임계값. 시작과 hot-reload 양쪽에서 호출합니다.
+ *
+ * 한 곳에 모은 이유: 시작 경로는 RulesConfig 를 memset 0 으로 비운 뒤 일부 키만 읽어서,
+ * animal_iou_threshold·no_cup_margin 이 reload 가 한 번 돌기 전까지 config.json 값이
+ * 아니라 사용 시점의 폴백 값으로 동작했습니다. 새 키가 같은 함정에 빠지지 않게 합니다.
+ */
+static void apply_object_rule_config(RulesConfig *rc, const Config *cfg) {
+    rc->animal_iou_threshold =
+        config_float(cfg, "animal_iou_threshold", 0.15f, 0.01f, 1.0f);
+    rc->no_cup_margin =
+        (int)config_long(cfg, "no_cup_margin", 1, 0, 100);
+    /* 1 이하면 확정 필터가 꺼져 단발 관측으로 발화합니다. 기본 3-of-5. */
+    rc->object_confirm_count =
+        (int)config_long(cfg, "object_confirm_count", 3, 1, 16);
+    rc->object_confirm_window =
+        (int)config_long(cfg, "object_confirm_window", 5, 1, 16);
+    /* 0 = 비활성. 적정 인원은 매장마다 달라 기본값을 두지 않습니다. */
+    rc->max_occupancy =
+        (int)config_long(cfg, "max_occupancy", 0, 0, 200);
+    rc->max_occupancy_hold_seconds =
+        (double)config_float(cfg, "max_occupancy_hold_seconds", 10.0f, 1.0f, 600.0f);
+    /* 0 = 비활성 */
+    rc->still_seconds =
+        (double)config_float(cfg, "still_seconds", 300.0f, 0.0f, 86400.0f);
+    rc->still_motion_threshold =
+        config_float(cfg, "still_motion_threshold", 0.10f, 0.01f, 0.5f);
+}
+
 /* 키오스크 ROI 를 rules 설정에 채웁니다. 미설정이면 roi_kiosk_set = 0 이 되어
  * 주문 상태 전환 자체가 비활성화됩니다(호출자가 로그로 알립니다). */
 static void apply_roi_kiosk(RulesConfig *rc, const Config *cfg) {
@@ -1502,11 +1531,7 @@ static void reload_config(AppContext *app) {
         config_float(&cfg, "fall_aspect_ratio_kp", 1.8f, 0.8f, 5.0f);
     rules_cfg.fall_aspect_ratio_nokp =
         config_float(&cfg, "fall_aspect_ratio_nokp", 2.2f, 0.8f, 5.0f);
-    /* Tier 2 물체 룰 임계값 */
-    rules_cfg.animal_iou_threshold =
-        config_float(&cfg, "animal_iou_threshold", 0.15f, 0.01f, 1.0f);
-    rules_cfg.no_cup_margin =
-        (int)config_long(&cfg, "no_cup_margin", 1, 0, 100);
+    apply_object_rule_config(&rules_cfg, &cfg);
     apply_vanish_config(&rules_cfg, &cfg);
     apply_roi_kiosk(&rules_cfg, &cfg);
     rules_update_config(&app->rules, &rules_cfg);
@@ -3116,6 +3141,7 @@ int main(int argc, char **argv) {
             (double)config_float(&cfg, "idle_refresh_seconds", 10.0f, 1.0f, 3600.0f);
         apply_gate_config(&app, &cfg);
         apply_camera_health_config(&app, &cfg);
+        apply_object_rule_config(&rules_cfg, &cfg);
         apply_vanish_config(&rules_cfg, &cfg);
         apply_roi_kiosk(&rules_cfg, &cfg);
         /* 문 여닫이 설정 — door_load는 cfg 블록 밖에서 (data_dir 필요) */

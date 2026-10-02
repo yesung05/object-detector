@@ -56,14 +56,15 @@ LightTracker(SAD 패치)와 달리 프레임 간 안정적 ID를 부여하고 �
 **그리디 IoU 매칭 (O(M×N))**:
 1. 기존 트랙마다 IoU가 가장 높은 detection을 찾습니다.
 2. `iou_threshold`(기본 0.4) 이상이면 매칭 → box, dwell 갱신.
-3. 매칭 실패 시 `misses++`, `max_misses`(기본 5) 초과 시 `active=0`.
+3. 매칭 실패 시 `misses++`, `max_misses` 초과 시 `active=0`. 운영 값은 150(`main.c`가 `tracks_init`에 고정 전달). `tracks_update`는 추론한 프레임에서만 호출되므로 이 횟수는 카메라 프레임이 아니라 사람 추론 횟수 기준이다.
 4. 미매칭 detection → 빈 슬롯에 새 트랙 생성.
 
 `dwell_seconds`는 연속 매칭된 프레임 간격의 합입니다.
 
 **OrderState**:
 - `TRACK_UNORDERED`: 입장 후 기본 상태.
-- `TRACK_ORDERED`: 키오스크 ROI를 통과했거나 `tracks_mark_ordered()`가 호출된 상태.
+- `TRACK_PROBABLY_ORDERED`: 키오스크 앞 근접(bbox 높이 65%·면적 20% 이상, score 0.6 이상, 상체 직립)이 30초 유지된 상태. 결제 확인은 아니지만 결제 연동이 없어 `ORDERED`에 도달할 수 없으므로, 이 상태면 `unordered_seated`를 발화하지 않는다.
+- `TRACK_ORDERED`: `tracks_mark_ordered()`가 호출된 상태 (외부 결제 확인용). **현재 이 함수를 호출하는 코드가 없어 운영에서는 이 상태가 되지 않는다.**
 
 ### RulesEngine (`include/rules.h`, `src/rules.c`)
 
@@ -72,15 +73,25 @@ LightTracker(SAD 패치)와 달리 프레임 간 안정적 ID를 부여하고 �
 | 이벤트 | 조건 | 로그 레벨 |
 |---|---|---|
 | `overstay` | `dwell > dwell_limit_seconds` (기본 3600s) | WARN |
-| `unordered_seated` | `order==UNORDERED AND dwell > unordered_grace_seconds` (기본 300s) | WARN |
-| `person_fallen` | 수평 자세 `fall_hold_seconds`(기본 5s) 이상 지속 | ERROR |
+| `unordered_seated` | `order == UNORDERED AND dwell > unordered_grace_seconds` (기본 300s). `PROBABLY_ORDERED`면 발화하지 않고, 발화 후 `PROBABLY_ORDERED`가 되면 래치 해제 | WARN |
+| `person_fallen` | 직립 이력 뒤 수평 자세가 `fall_hold_seconds`(기본 5s) 이상 지속 (아래 참조) | ERROR |
+| `occupancy_exceeded` | 활성 트랙 수 > `max_occupancy`가 `max_occupancy_hold_seconds`(기본 10s) 유지. `max_occupancy=0`이면 꺼짐 | WARN |
+| `person_motionless` | 서 있거나 누운 사람이 기준 자세 대비 거의 움직이지 않고 `still_seconds`(기본 300s) 유지. 앉은 사람 제외. 0이면 꺼짐 | WARN |
 
-**쓰러짐 판정 (`is_horizontal_pose`)**:
-1. bbox 가로 > 세로 × 1.2 이어야 합니다.
-2. keypoint가 있으면 (score ≥ 0.4인 것 기준): 머리(0), 어깨(5,6), 엉덩이(11,12)의 y좌표 표준편차 / bbox 높이 ≤ 0.25 이어야 합니다.
-3. keypoint가 없으면 bbox 비율만으로 판정합니다.
+Tier 2 물체 이벤트(`external_drink`, `external_food`, `animal_on_chair`, `animal_on_table`, `no_cup_seated`)는 최근 `object_confirm_window`(기본 5)번 관측 중 `object_confirm_count`(기본 3)번 이상일 때만 발화한다. 상세는 `detection-status.md`.
 
-**ROI 키오스크**: `roi_kiosk_x/y/w/h`를 설정하면 박스 중심이 해당 영역을 통과할 때 `TRACK_ORDERED`로 전환합니다.
+**쓰러짐 판정** (`rules_evaluate`의 fall 게이트, `fall_torso_pose`, `is_horizontal_pose`):
+1. 관측 품질: 박스·매칭 score ≥ 0.5, 마지막 관측이 2초 이내인 **새 관측**일 때만 평가한다. 아니면 후보를 초기화한다.
+2. 몸통 자세: 어깨(5,6)·엉덩이(11,12)가 모두 score ≥ 0.5이고 박스 안(±10%)일 때 몸통 벡터로 직립/수평을 나눈다. 판정 불가면 후보를 초기화한다.
+3. 직립 이력: 직립이 3회·1초 이상 관측된 뒤 30초 이내여야 한다. 처음부터 누워 있던 사람은 이 경로로 발화하지 않는다.
+4. 수평 판정(`is_horizontal_pose`): 박스 세로 ≥ 30px, score ≥ 0.30. 박스가 화면 경계에 닿으면 비율을 믿지 않고 코-어깨 관계(상체 수평 여부)만 쓴다. 그 밖에는
+   - keypoint 충분: 가로 > 세로 × `fall_aspect_ratio_kp` **그리고** 코·어깨·엉덩이 y 표준편차/박스 높이 ≤ 0.20
+   - keypoint 부족·엉덩이 없음·keypoint 없음: 가로 > 세로 × `fall_aspect_ratio_nokp`
+5. 수평 샘플 3개 이상이 `fall_hold_seconds` 유지되면 `person_fallen`(ERROR)을 1회 발화한다.
+
+비율 기본값은 코드 안에서도 둘이다: `rules.c`의 기본 구조체는 1.3/1.6, `main.c`가 설정 키가 없을 때 쓰는 값은 1.8/2.2. 운영 `config.json`은 1.3/1.6이다. 머리 SAD 하강 속도(`fall_sudden`)로 즉시 발화하던 경로는 2026-09-26에 제거되어 지금은 매번 0으로 지워진다.
+
+**키오스크 근접**: `roi_kiosk`는 설정을 읽지만 주문 판정에는 쓰이지 않는다(보호 영역 계산에만 사용). 키오스크 근접 판정은 위 `PROBABLY_ORDERED` 조건(bbox 크기·자세)을 쓴다.
 
 ### EventLog (`include/log.h`, `src/log.c`)
 
