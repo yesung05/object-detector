@@ -661,7 +661,9 @@ static const char *extract_body(const char *buf, int buflen, int *body_len) {
     return NULL;
 }
 
-static int content_length(const char *buf) {
+/* max: 허용하는 최대 본문 크기. 일반 요청은 SURFACE_JSON_MAX(요청 버퍼에 들어가는 크기),
+   음성 업로드만 ANNOUNCE_UPLOAD_MAX 를 넘겨 별도 경로에서 받습니다. */
+static int content_length_max(const char *buf, long max) {
     const char *p=strstr(buf,"\r\n");int found=0,result=0;
     while(p&&p[2]&&p[2]!='\r') {
         const char *line=p+2,*next=strstr(line,"\r\n");char *end;long n;
@@ -672,13 +674,15 @@ static int content_length(const char *buf) {
             while(*line==' '||*line=='\t')line++;
             n=strtol(line,&end,10);
             while(*end==' '||*end=='\t')end++;
-            if(end==line||end!=next||n<0||n>SURFACE_JSON_MAX)return -1;
+            if(end==line||end!=next||n<0||n>max)return -1;
             result=(int)n;
         }
         p=next;
     }
     return result;
 }
+
+static int content_length(const char *buf) { return content_length_max(buf, SURFACE_JSON_MAX); }
 
 /* 저장 전후 config 를 비교해 바뀐 키만 "key old→new" 로 이어 붙입니다.
  * "누가 문 감지를 꺼놨지?"를 로그 한 줄로 답하기 위한 것입니다. 상한을 넘으면 …로 끝냅니다. */
@@ -845,6 +849,7 @@ done:
     free(data);ReleaseSRWLockExclusive(&g_surface_config_lock);
 }
 #include "replay_api.h"
+#include "announce_api.h"
 
 static DWORD WINAPI client_thread(LPVOID arg) {
     SOCKET s = (SOCKET)(uintptr_t)arg;
@@ -868,7 +873,9 @@ static DWORD WINAPI client_thread(LPVOID arg) {
     /* TCP recv() 한 번에 HTTP POST 본문 전체가 도착한다는 보장은 없습니다.
      * config 저장 요청은 Content-Length만큼 끝까지 받아야 브라우저에서
      * 간헐적으로 빈 본문으로 처리되는 일을 막을 수 있습니다. */
-    if (strcmp(method, "POST") == 0) {
+    /* 음성 업로드는 64KB 요청 버퍼에 들어가지 않으므로 본문을 여기서 받지 않습니다.
+       접근 제어(서브넷+PIN)를 통과한 뒤 serve_announce_upload 가 직접 받습니다. */
+    if (strcmp(method, "POST") == 0 && strcmp(path, "/api/announce/upload") != 0) {
         int body_len = 0;
         const char *body = extract_body(buf, n, &body_len);
         int expected = content_length(buf);
@@ -945,6 +952,10 @@ static DWORD WINAPI client_thread(LPVOID arg) {
             serve_page(s,"surfaces.html");
         } else if (strcmp(path,"/research")==0) {
             serve_page(s,"research.html");
+        } else if (strcmp(path,"/announce")==0) {
+            serve_page(s,"announce.html");
+        } else if (strcmp(path,"/api/announce")==0) {
+            serve_announce(s,"GET",path,query,NULL,0,&acc);
         } else if (strcmp(path,"/api/surfaces")==0) {
             serve_surfaces(s,NULL,0,NULL);
         } else if (strcmp(path, "/api/logs") == 0) {
@@ -970,6 +981,11 @@ static DWORD WINAPI client_thread(LPVOID arg) {
             serve_replay(s,path,query,body,body_len,1);
         } else if (strcmp(path, "/api/surfaces") == 0) {
             serve_surfaces(s,body,content_length(buf),&acc);
+        } else if (strcmp(path, "/api/announce/upload") == 0) {
+            /* body: 요청 버퍼에 이미 들어온 앞부분(없을 수 있음). 나머지는 소켓에서 직접 수신. */
+            serve_announce_upload(s, query, body, body_len, content_length_max(buf, ANNOUNCE_UPLOAD_MAX), &acc);
+        } else if (strncmp(path, "/api/announce/", 14) == 0) {
+            serve_announce(s, "POST", path, query, body, body_len, &acc);
         } else if (strcmp(path, "/api/config") == 0) {
             serve_config_post(s, body, body_len, &acc);
         } else {
