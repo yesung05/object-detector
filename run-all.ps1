@@ -22,7 +22,7 @@ if (-not (Test-Path $configPath)) { [IO.File]::WriteAllText($configPath, "{`"str
 
 # ── find exe ──────────────────────────────────────────────────────────────────
 $exe = $null
-foreach ($d in @("$ROOT", "$ROOT\build-windows\Release", "$ROOT\build\Release")) {
+foreach ($d in @("$ROOT", "$ROOT\build-windows\Release", "$ROOT\build-g\Release", "$ROOT\build\Release")) {
     if (Test-Path "$d\unmanned_detector.exe") { $exe = "$d\unmanned_detector.exe"; break }
 }
 if (-not $exe) {
@@ -33,19 +33,19 @@ if (-not $exe) {
 }
 
 $dashboard = $null
-foreach ($d in @("$ROOT", "$ROOT\build-windows\Release", "$ROOT\build\Release")) {
+foreach ($d in @("$ROOT", "$ROOT\build-windows\Release", "$ROOT\build-g\Release", "$ROOT\build\Release")) {
     if (Test-Path "$d\unmanned_detector-dashboard.exe") { $dashboard = "$d\unmanned_detector-dashboard.exe"; break }
 }
 
 # ── DLL paths ─────────────────────────────────────────────────────────────────
 $ffmpegBin = $null
-foreach ($d in @("$ROOT", "$ROOT\build-windows\Release", "$ROOT\build\Release",
+foreach ($d in @("$ROOT", "$ROOT\build-windows\Release", "$ROOT\build-g\Release", "$ROOT\build\Release",
                  "C:\dev\ffmpeg-master-latest-win64-gpl-shared\bin",
                  "C:\deps\ffmpeg\bin")) {
     if (Test-Path "$d\avcodec-63.dll") { $ffmpegBin = $d; break }
 }
 $ortLib = $null
-foreach ($d in @("$ROOT", "$ROOT\build-windows\Release", "$ROOT\build\Release",
+foreach ($d in @("$ROOT", "$ROOT\build-windows\Release", "$ROOT\build-g\Release", "$ROOT\build\Release",
                  "C:\dev\onnxruntime-win-x64-1.26.0\lib",
                  "C:\deps\onnxruntime\lib")) {
     if (Test-Path "$d\onnxruntime.dll") { $ortLib = $d; break }
