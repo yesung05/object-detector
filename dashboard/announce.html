@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>매장 음성 안내</title>
+<style>
+/* 모바일 우선 단일 열. 점주가 폰으로 여는 화면이라 버튼은 44px 이상, 별도 프레임워크 없음. */
+:root{--bg:#e8ebf0;--card:#f4f6f9;--text:#2d3748;--muted:#718096;--accent:#4f8ef7;--red:#e8445a;--border:#d8e0ea}
+@media(prefers-color-scheme:dark){:root{--bg:#1c2028;--card:#262b36;--text:#e2e8f0;--muted:#8a94a6;--border:#394152}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:15px/1.5 'Noto Sans KR',system-ui,sans-serif}
+header{display:flex;align-items:center;gap:12px;padding:0 16px;height:56px;background:var(--card);position:sticky;top:0;border-bottom:1px solid var(--border)}
+header a{color:var(--accent);text-decoration:none}
+main{max-width:640px;margin:0 auto;padding:12px}
+section{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:14px;margin-bottom:12px}
+h2{margin:0 0 8px;font-size:16px}
+p.hint{margin:0 0 10px;color:var(--muted);font-size:13px}
+button{min-height:44px;padding:0 16px;border:0;border-radius:10px;background:var(--accent);color:#fff;font:inherit;font-weight:700;cursor:pointer}
+button.sub{background:var(--bg);color:var(--text);border:1px solid var(--border)}
+button.stop{background:var(--red)}
+button:disabled{opacity:.5}
+.filebtn{display:flex;align-items:center;justify-content:center;min-height:44px;padding:0 16px;border-radius:10px;font-weight:700;cursor:pointer;background:var(--bg);color:var(--text);border:1px solid var(--border)}
+.clip{display:flex;gap:6px}.clip button:first-child{flex:1;min-width:0}.clip .del{flex:0 0 44px;padding:0;background:var(--bg);color:var(--red);border:1px solid var(--border)}
+.clips{display:grid;grid-template-columns:1fr;gap:8px}
+.clips button{text-align:left;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.row{display:flex;gap:8px;flex-wrap:wrap}
+.row>*{flex:1 1 140px}
+textarea{width:100%;min-height:96px;padding:10px;border:1px solid var(--border);border-radius:10px;background:var(--bg);color:var(--text);font:inherit;resize:vertical}
+#status{min-height:1.5em;font-size:13px;color:var(--muted)}
+#status.err{color:var(--red)}
+@media(min-width:520px){.clips{grid-template-columns:1fr 1fr}}
+</style>
+</head>
+<body>
+<header><a href="/">← 대시보드</a><strong>매장 음성 안내</strong></header>
+<main>
+  <section>
+    <h2>녹음/mp3 안내</h2>
+    <p class="hint">매장 PC의 <code>announce</code> 폴더에 mp3·wav 파일을 넣으면 여기에 나타납니다. 파일명은 영문·숫자·_ - 만 쓸 수 있습니다.</p>
+    <div class="clips" id="clips"></div>
+    <div class="row" style="margin-top:10px">
+      <button class="sub" id="random" type="button">무작위 1개 재생</button>
+      <button class="stop" id="stop" type="button">재생 중지</button>
+    </div>
+  </section>
+  <section>
+    <h2>직접 녹음</h2>
+    <p class="hint" id="rec-hint">녹음 후 들어보고 저장하면 위 목록에 추가됩니다. 최대 60초.</p>
+    <div class="row">
+      <button id="rec" type="button">● 녹음 시작</button>
+      <label class="filebtn sub">폰 녹음기·파일 선택<input id="recfile" type="file" accept="audio/*" capture hidden></label>
+    </div>
+    <div id="recbox" hidden style="margin-top:10px">
+      <audio id="preview" controls style="width:100%"></audio>
+      <input id="recname" maxlength="40" placeholder="이름 (영문·숫자·_ -)" style="width:100%;margin:8px 0;min-height:44px;padding:0 10px;border:1px solid var(--border);border-radius:10px;background:var(--bg);color:var(--text);font:inherit">
+      <div class="row"><button id="recsave" type="button">저장</button><button class="sub" id="recdrop" type="button">버리기</button></div>
+    </div>
+  </section>
+  <section>
+    <h2>문구 읽기 (TTS)</h2>
+    <p class="hint">Windows 내장 음성으로 읽습니다. 인터넷으로 전송되지 않습니다. 최대 100자 안팎.</p>
+    <textarea id="text" maxlength="100" placeholder="예) 영업 종료 10분 전입니다. 이용해 주셔서 감사합니다."></textarea>
+    <div class="row" style="margin-top:10px"><button id="speak" type="button">읽기</button></div>
+  </section>
+  <div id="status" role="status"></div>
+</main>
+<script>
+/* PIN 처리는 index.html 의 authFetch 와 같은 규칙: 서버가 403 을 줄 때만 묻고 sessionStorage 에 보관. */
+let pin=sessionStorage.getItem('hunikPin')||'';
+const $=id=>document.getElementById(id), st=$('status');
+function say(msg,err){st.textContent=msg;st.className=err?'err':'';}
+async function post(url,body,retried){
+  const h={'Content-Type':'text/plain; charset=utf-8'}; if(pin)h['X-Hunik-Pin']=pin;
+  const r=await fetch(url,{method:'POST',headers:h,body:body||''});
+  if(r.status===403&&!retried){
+    let e='';try{e=(await r.clone().json()).error}catch(_){}
+    if(e==='pin_locked'){say('PIN 오류가 반복되어 이 기기는 10분간 잠겼습니다.',1);return r;}
+    if(e==='pin_required'||e==='pin_wrong'){
+      const p=prompt(e==='pin_wrong'?'PIN 이 틀렸습니다. 다시 입력하세요:':'음성 안내 재생에는 접근 PIN 이 필요합니다:');
+      if(p===null)return r; pin=p.trim(); sessionStorage.setItem('hunikPin',pin); return post(url,body,true);
+    }
+  }
+  return r;
+}
+const ERR={no_clips:'announce 폴더에 재생할 파일이 없습니다.',not_found:'파일을 찾을 수 없습니다.',bad_file:'허용되지 않는 파일입니다.',
+  play_failed:'재생에 실패했습니다. 파일이 손상됐거나 오디오 장치가 없습니다.',tts_failed:'음성 합성에 실패했습니다. Windows 한국어 음성 설치를 확인하세요.',bad_text:'문구가 비었거나 너무 깁니다.'};
+async function run(url,body,okMsg,btn){
+  if(btn)btn.disabled=true; say('요청 중…');
+  try{const r=await post(url,body);let j={};try{j=await r.json()}catch(_){}
+    if(r.ok&&j.ok)say(okMsg(j));else say(ERR[j.error]||('실패 ('+r.status+')'),1);
+  }catch(e){say('서버에 연결하지 못했습니다.',1)}
+  if(btn)btn.disabled=false;
+}
+async function load(){
+  try{const j=await (await fetch('/api/announce')).json(); const box=$('clips'); box.textContent='';
+    if(!j.clips.length){box.textContent='등록된 파일이 없습니다.';return;}
+    for(const f of j.clips){const w=document.createElement('div');w.className='clip';
+      const b=document.createElement('button');b.type='button';b.textContent='▶ '+f;
+      b.onclick=()=>run('/api/announce/play?file='+encodeURIComponent(f),'',()=>f+' 재생 중',b);
+      const d=document.createElement('button');d.type='button';d.className='del';d.textContent='🗑';d.setAttribute('aria-label',f+' 삭제');
+      d.onclick=async()=>{if(!confirm(f+' 을(를) 삭제할까요?'))return;await run('/api/announce/delete?file='+encodeURIComponent(f),'',()=>f+' 삭제함',d);load();};
+      w.append(b,d);box.appendChild(w);}
+  }catch(e){say('목록을 불러오지 못했습니다.',1)}
+}
+$('random').onclick=e=>run('/api/announce/play?file=random','',j=>j.file+' 재생 중',e.target);
+$('stop').onclick=()=>run('/api/announce/stop','',()=>'중지했습니다');
+$('speak').onclick=e=>{const t=$('text').value.trim(); if(!t){say('문구를 입력하세요.',1);return;} run('/api/announce/tts',t,()=>'읽는 중',e.target);};
+/* ── 녹음 ───────────────────────────────────────────────────────────────────
+   MediaRecorder 결과(webm/m4a)는 서버 MediaPlayer 가 못 읽을 수 있어, 브라우저에서 16kHz 모노 WAV 로
+   바꿔 보냅니다. 서버에 ffmpeg 변환을 두지 않는 이유: 매장 PC 의존성을 늘리지 않고 변환 부하를 폰/브라우저에 둠. */
+const REC_MAX_SEC=60, RATE=16000;
+let rec=null,chunks=[],timer=null,wavBlob=null,previewUrl=null;
+const canMic=!!(navigator.mediaDevices&&navigator.mediaDevices.getUserMedia&&window.MediaRecorder&&isSecureContext);
+if(!canMic){$('rec').disabled=true;
+  $('rec-hint').textContent='이 주소(http)에서는 브라우저가 마이크를 막습니다. 폰에서는 오른쪽 "폰 녹음기·파일 선택"으로 녹음하거나, 매장 PC의 localhost 에서 여세요.';}
+async function toWav(blob){
+  const ac=new (window.AudioContext||window.webkitAudioContext)();
+  let src; try{src=await ac.decodeAudioData(await blob.arrayBuffer());}finally{ac.close();}
+  if(src.duration>REC_MAX_SEC+1)throw Error('long');
+  const oc=new OfflineAudioContext(1,Math.max(1,Math.ceil(src.duration*RATE)),RATE);
+  const s=oc.createBufferSource();s.buffer=src;s.connect(oc.destination);s.start();
+  const pcm=(await oc.startRendering()).getChannelData(0);
+  const out=new DataView(new ArrayBuffer(44+pcm.length*2)),W=(o,t)=>{for(let i=0;i<t.length;i++)out.setUint8(o+i,t.charCodeAt(i))};
+  W(0,'RIFF');out.setUint32(4,36+pcm.length*2,true);W(8,'WAVE');W(12,'fmt ');out.setUint32(16,16,true);out.setUint16(20,1,true);out.setUint16(22,1,true);
+  out.setUint32(24,RATE,true);out.setUint32(28,RATE*2,true);out.setUint16(32,2,true);out.setUint16(34,16,true);W(36,'data');out.setUint32(40,pcm.length*2,true);
+  for(let i=0;i<pcm.length;i++)out.setInt16(44+i*2,Math.max(-1,Math.min(1,pcm[i]))*0x7fff,true);
+  return new Blob([out],{type:'audio/wav'});
+}
+function stamp(){const d=new Date(),p=n=>String(n).padStart(2,'0');return 'rec_'+d.getFullYear()+p(d.getMonth()+1)+p(d.getDate())+'_'+p(d.getHours())+p(d.getMinutes())+p(d.getSeconds());}
+async function showTake(blob){
+  try{wavBlob=await toWav(blob);}catch(e){say(e.message==='long'?'녹음이 '+REC_MAX_SEC+'초를 넘습니다.':'이 녹음 형식을 변환하지 못했습니다.',1);return;}
+  if(previewUrl)URL.revokeObjectURL(previewUrl);previewUrl=URL.createObjectURL(wavBlob);
+  $('preview').src=previewUrl;$('recname').value=stamp();$('recbox').hidden=false;say('들어보고 저장하세요.');
+}
+function stopRec(){clearInterval(timer);timer=null;if(rec&&rec.state!=='inactive')rec.stop();$('rec').textContent='● 녹음 시작';}
+$('rec').onclick=async()=>{
+  if(rec&&rec.state==='recording'){stopRec();return;}
+  let stream;try{stream=await navigator.mediaDevices.getUserMedia({audio:true});}catch(e){say('마이크를 사용할 수 없습니다. 권한을 허용했는지 확인하세요.',1);return;}
+  chunks=[];rec=new MediaRecorder(stream);
+  rec.ondataavailable=e=>{if(e.data.size)chunks.push(e.data)};
+  /* 마이크 표시등이 계속 켜져 있지 않도록 트랙을 반드시 멈춘다. */
+  rec.onstop=()=>{stream.getTracks().forEach(t=>t.stop());showTake(new Blob(chunks,{type:rec.mimeType}));};
+  rec.start();let sec=0;$('rec').textContent='■ 녹음 중지 (0초)';
+  timer=setInterval(()=>{sec++;$('rec').textContent='■ 녹음 중지 ('+sec+'초)';if(sec>=REC_MAX_SEC)stopRec();},1000);
+};
+$('recfile').onchange=e=>{const f=e.target.files[0];e.target.value='';if(f)showTake(f);};
+$('recdrop').onclick=()=>{wavBlob=null;$('recbox').hidden=true;$('preview').removeAttribute('src');say('');};
+$('recsave').onclick=async e=>{
+  const name=$('recname').value.trim();
+  if(!/^[A-Za-z0-9_-]{1,40}$/.test(name)){say('이름은 영문·숫자·_ - 만 40자까지 쓸 수 있습니다.',1);return;}
+  e.target.disabled=true;say('저장 중…');
+  ERR.exists='같은 이름의 파일이 이미 있습니다. 다른 이름을 쓰세요.';ERR.too_large='녹음이 너무 큽니다.';ERR.bad_audio='올바른 오디오가 아닙니다.';ERR.bad_name='이름이 올바르지 않습니다.';ERR.incomplete='전송이 중간에 끊겼습니다. 다시 시도하세요.';
+  try{const r=await post('/api/announce/upload?name='+encodeURIComponent(name),wavBlob);let j={};try{j=await r.json()}catch(_){}
+    if(r.ok&&j.ok){say(j.file+' 저장됨');$('recdrop').click();say(j.file+' 저장됨');load();}else say(ERR[j.error]||('실패 ('+r.status+')'),1);
+  }catch(_){say('서버에 연결하지 못했습니다.',1)}
+  e.target.disabled=false;
+};
+load();
+</script>
+</body>
+</html>

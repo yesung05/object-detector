@@ -786,6 +786,18 @@ details.fallback-block > summary:hover { color: var(--accent); }
   .brand-en    { display: none; }
   .cam-badge span:last-child { display: none; }
   .mode-panel  { padding: 12px 10px 24px; }
+  /* 360px 폭 기기에서 헤더가 378px 로 넘쳤음(brand/header-right 가 flex-shrink:0 + 좌우 24px).
+     brand 만 줄어들 수 있게 하고 여백·구분선을 줄여 한 줄에 맞춘다. */
+  header       { padding: 0 12px; gap: 8px; }
+  .brand       { flex-shrink: 1; min-width: 0; gap: 8px; }
+  .brand-text  { min-width: 0; }
+  .brand-ko    { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .header-right { gap: 8px; }
+  .header-sep  { display: none; }
+  .mode-btn    { padding: 6px 10px; }
+  /* 손가락 터치 최소 크기(44px) — PC 용 작은 버튼이 모바일에서 오탭을 만든다. */
+  .mode-btn, .theme-btn, .adv-tab, .neu-btn { min-height: 44px; }
+  .theme-btn   { min-width: 44px; }
 }
 @media (max-width: 400px) {
   .status-grid { grid-template-columns: 1fr 1fr; gap: 10px; }
@@ -986,6 +998,8 @@ details.dev-accordion[open] > summary { color: var(--red) !important; }
       <div class="alert-empty" id="alert-empty">감지된 알림이 없습니다.</div>
     </div>
   </div>
+
+  <a class="neu-btn" href="/announce" style="display:flex;justify-content:center;align-items:center;margin-top:12px;text-decoration:none">🔊 매장 음성 안내</a>
 
   </div><!-- /easy-side -->
 </div>
@@ -1323,6 +1337,9 @@ details.dev-accordion[open] > summary { color: var(--red) !important; }
           영업이 끝난 한산한 시각을 권합니다. 예정 시각에 매장에 사람이 있으면 미루고,
           <strong>1시간 안에 비지 않으면 그날은 건너뜁니다</strong> — 낮에 갑자기 재시작되는 것을 막기 위함입니다.
         </div>
+      </div><div class="preset-card neu-raised"><strong>매장 음성 안내</strong>
+        <p class="setting-desc">mp3 파일 선택 재생 또는 문구 읽기(TTS)를 수동으로 재생합니다.</p>
+        <div class="setup-actions"><a class="neu-btn" href="/announce">음성 안내 열기</a></div>
       </div></div></details></div><!-- /simple-settings -->
 
     <!-- ─ 고급 설정 (기존 controls) ─ -->
@@ -1795,8 +1812,7 @@ details.dev-accordion[open] > summary { color: var(--red) !important; }
 
     <!-- ── 로그 탭 ── -->
     <div class="adv-panel" id="adv-logs">
-      <p><a class="neu-btn" href="/replay">좌표 기록 재생·오탐 검토</a></p>
-      <div class="log-toolbar">
+      <p><a class="neu-btn" href="/replay">좌표 기록 재생·오탐 검토</a></p>      <div class="log-toolbar">
         <select id="log-select" class="neu-select" title="로그 파일 선택"></select>
         <div class="level-filter-group">
           <label><input type="checkbox" class="level-filter" value="INFO"  checked> INFO</label>
