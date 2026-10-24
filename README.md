@@ -179,3 +179,30 @@ build/test_media input.mp4 /tmp/test-output.mp4
 - Windows DirectML 성능은 실제 i5-4200U 대상 장치에서 CPU provider와 같은
   조건으로 측정해야 합니다.
 - 배포 전 Ultralytics 모델/코드와 FFmpeg 빌드 구성의 라이선스를 확인해야 합니다.
+
+## 데이터셋 출처
+
+### HomeObjects-3K
+
+Tier 2 물체 감지 학습 실험에 **HomeObjects-3K**를 사용했습니다. 데이터셋은 Ultralytics가 제작·공개했고 [AGPL-3.0](https://github.com/ultralytics/ultralytics/blob/main/LICENSE) 라이선스이며, 출처 표기와 인용을 요구합니다.
+
+- 데이터셋: <https://docs.ultralytics.com/datasets/detect/homeobjects-3k>
+- 사용 범위: `chair`·`table`의 train split 라벨(각 2,208개, 2,561개)을 학습 실험에 추가했고, val split(404장)은 평가에만 썼습니다. 나머지 10개 클래스는 사용하지 않았습니다.
+- **현재 배포되는 `models/yolo11n_tier2_*.onnx`는 이 데이터로 학습하지 않았습니다.** 실험 결과와 채택하지 않은 이유는 [`docs/tier2-homeobjects-before-after-2026-10-25.md`](docs/tier2-homeobjects-before-after-2026-10-25.md)에 있습니다.
+- 데이터 자체는 저장소에 포함하지 않습니다(`datasets/`는 `.gitignore` 대상).
+
+```bibtex
+@dataset{Jocher_Ultralytics_Datasets_2025,
+    author = {Jocher, Glenn and Rizwan, Muhammad},
+    license = {AGPL-3.0},
+    month = {May},
+    title = {Ultralytics Datasets: HomeObjects-3K Detection Dataset},
+    url = {https://docs.ultralytics.com/datasets/detect/homeobjects-3k},
+    version = {1.0.0},
+    year = {2025}
+}
+```
+
+### 기존 학습 기반
+
+기존 Tier 2/Pose 모델은 COCO 2017 주석과 Ultralytics 사전학습 가중치(AGPL-3.0)에서 출발했습니다. 현장 기기에 모델을 배포할 때의 라이선스 의무는 위 [제한 사항](#제한-사항)의 항목과 같이 배포 전에 확인해야 합니다.

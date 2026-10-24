@@ -45,6 +45,18 @@ def parse_args():
     p.add_argument("--warmup-bias-lr", type=float, default=0.1)
     p.add_argument("--weight-decay", type=float, default=0.0005)
     p.add_argument("--no-export", action="store_true")
+    p.add_argument("--imgsz", type=int, default=IMGSZ,
+                   help="학습·내보내기 해상도. 기본 320. 320에서 3~5m 거리 병·컵이 작아 AP가 "
+                        "낮은 것이 구조적 한계라 416 등을 비교 실험할 수 있게 열어 둠")
+    p.add_argument("--cache", default="False", choices=["ram", "disk", "False"],
+                   help="이미지 캐시. 데이터가 USB 같은 느린 저장소에 있으면 디코딩 전에 읽기에서 GPU가 "
+                        "놀기 때문에(실측: 읽기 17MB/s, GPU 사용률 10~99% 출렁임) ram 으로 한 번만 읽게 함")
+    p.add_argument("--no-int8", action="store_true",
+                   help="INT8 내보내기 생략. Haswell(i5-4200U)에서 INT8이 FP32보다 느리고 정확도도 "
+                        "떨어져(docs/haswell-u8s8-quantization-benchmark.md) 비교 실험에는 불필요")
+    p.add_argument("--no-deploy-copy", action="store_true",
+                   help="내보낸 ONNX를 models/ 로 복사하지 않음. 기본(복사)은 기존 동작이며 "
+                        "models/yolo11n_tier2_*.onnx 를 덮어쓰므로 실험 때는 반드시 켤 것")
     p.add_argument("--no-test", action="store_true", help="학습 후 보류 test split 평가를 생략합니다")
     p.add_argument("--resume", metavar="LAST_PT",
                    help="중단된 학습을 last.pt에서 이어서 진행합니다")
@@ -98,11 +110,12 @@ def train(args):
             res = model.train(
                 data=args.data,
                 epochs=args.epochs,
-                imgsz=IMGSZ,
+                imgsz=args.imgsz,
                 batch=batch,
                 device=args.device,
                 patience=args.patience,
                 workers=args.workers,
+                cache=False if args.cache == "False" else args.cache,
                 project=args.project,
                 name="train",
                 exist_ok=True,
@@ -130,7 +143,8 @@ def train(args):
             print(f"\n[oom] VRAM 부족 — batch를 {batch}로 낮춰 재시도합니다\n")
 
 
-def export(save_dir: pathlib.Path, data: str):
+def export(save_dir: pathlib.Path, data: str, imgsz: int = IMGSZ,
+           int8: bool = True, deploy_copy: bool = True):
     from ultralytics import YOLO
 
     best_pt = save_dir / "weights" / "best.pt"
@@ -138,7 +152,7 @@ def export(save_dir: pathlib.Path, data: str):
         sys.exit(f"best.pt를 찾을 수 없습니다: {best_pt}")
 
     best = YOLO(str(best_pt))
-    best.export(format="onnx", imgsz=IMGSZ, simplify=True)
+    best.export(format="onnx", imgsz=imgsz, simplify=True)
     fp32 = best_pt.with_suffix(".onnx")
     fp32_named = best_pt.parent / "best_fp32.onnx"
     if fp32.exists():
@@ -150,8 +164,12 @@ def export(save_dir: pathlib.Path, data: str):
     # 캘리브레이션하는데 이는 이미지 4장짜리 샘플 데이터셋입니다. 활성값 분포가
     # 실제 입력과 전혀 달라 양자화 스케일이 어긋나고, 배포 모델의 정확도가
     # 조용히 무너집니다(경고만 뜨고 export는 성공합니다).
-    best.export(format="onnx", imgsz=IMGSZ, int8=True, simplify=True, data=data)
+    if int8:
+        best.export(format="onnx", imgsz=imgsz, int8=True, simplify=True, data=data)
 
+    if not deploy_copy:
+        print("[export] --no-deploy-copy: models/ 는 건드리지 않았습니다:", best_pt.parent)
+        return
     models = pathlib.Path("models")
     models.mkdir(exist_ok=True)
     for f in best_pt.parent.glob("best_*.onnx"):
@@ -172,7 +190,7 @@ def evaluate_test(save_dir: pathlib.Path, args):
     metrics = model.val(
         data=args.data,
         split="test",
-        imgsz=IMGSZ,
+        imgsz=args.imgsz,
         batch=args.batch,
         device=args.device,
         workers=args.workers,
@@ -192,7 +210,8 @@ def main():
         sys.exit(f"데이터 YAML이 없습니다: {args.data}\n  먼저 scripts/build_tier2_balanced.py 를 실행하세요.")
 
     if args.export_only:
-        export(pathlib.Path(args.export_only), args.data)
+        export(pathlib.Path(args.export_only), args.data, args.imgsz,
+               not args.no_int8, not args.no_deploy_copy)
         print("EXPORT_DONE")
         return
 
@@ -203,7 +222,7 @@ def main():
     if not args.no_test:
         evaluate_test(save_dir, args)
     if not args.no_export:
-        export(save_dir, args.data)
+        export(save_dir, args.data, args.imgsz, not args.no_int8, not args.no_deploy_copy)
     print("EXPORT_DONE")
 
 
