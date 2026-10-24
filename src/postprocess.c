@@ -495,8 +495,13 @@ int yolo11_decode(const float *output, const int64_t *shape, size_t rank,
     /*
      * NMS(Non-Maximum Suppression):
      * 1) 점수가 높은 순서로 정렬합니다.
-     * 2) 이미 선택한 박스와 IoU가 기준보다 큰 후보는 같은 사람의 중복으로 봅니다.
+     * 2) 이미 선택한 박스와 IoU가 기준보다 큰 후보는 같은 물체의 중복으로 봅니다.
      * 3) 겹치지 않은 박스만 앞으로 복사하고 최대 개수에서 멈춥니다.
+     *
+     * 같은 class_id 끼리만 억제하는 이유: Tier 2 는 의자·식탁·동물을 함께 내는데 의자는
+     * 식탁 앞에, 고양이는 의자 위에 놓여 박스가 정상적으로 크게 겹칩니다. 클래스를 구분하지
+     * 않으면 점수가 낮은 쪽(주로 의자)이 통째로 지워져 slot_monitor 와 animal_on_chair 가
+     * 근거를 잃습니다. Pose 모델은 class_id 가 항상 0 이라 이 조건이 동작을 바꾸지 않습니다.
      *
      * 별도의 결과 배열을 만들지 않고 items 안에서 앞쪽으로 덮어써 메모리를 아낍니다.
      */
@@ -506,7 +511,8 @@ int yolo11_decode(const float *output, const int64_t *shape, size_t rank,
     for (size_t i = 0; i < detections->count; ++i) {
         int suppressed = 0;
         for (size_t j = 0; j < kept; ++j) {
-            if (intersection_over_union(&detections->items[i],
+            if (detections->items[i].class_id == detections->items[j].class_id &&
+                intersection_over_union(&detections->items[i],
                                         &detections->items[j]) > iou) {
                 suppressed = 1;
                 break;

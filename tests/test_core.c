@@ -246,7 +246,10 @@ static void test_decode_channel_last(void) {
 }
 
 static void test_decode_embedded_nms(void) {
-    /* [1, 2, 6]: shape[2]==6 → embedded_nms. class≠0인 row는 필터링됩니다. */
+    /* [1, 2, 6]: shape[2]==6 → embedded_nms. class_id 는 보존해서 돌려주고, 어떤 클래스를
+     * 쓸지는 호출자가 정합니다(postprocess.c 주석). 같은 자리의 서로 다른 클래스 row 는
+     * NMS 가 클래스별이므로 둘 다 남습니다. 예전에는 클래스 비구분 NMS 가 class=1 row 를
+     * 우연히 지워서 "필터링된 것처럼" 보였을 뿐입니다. */
     const float output[] = {
         10.0f, 10.0f, 60.0f, 60.0f, 0.85f, 0.0f,  /* person(class=0) */
         10.0f, 10.0f, 60.0f, 60.0f, 0.70f, 1.0f   /* non-person(class=1) */
@@ -256,8 +259,10 @@ static void test_decode_embedded_nms(void) {
     DetectionList list;
     ASSERT_INT_EQ(detection_list_init(&list, 8), 0);
     ASSERT_INT_EQ(yolo11_decode(output, shape, 3, &t, 0.25f, 0.45f, &list, 8), 0);
-    EXPECT_INT_EQ((int)list.count, 1);
+    EXPECT_INT_EQ((int)list.count, 2);
+    EXPECT_INT_EQ(list.items[0].class_id, 0);
     EXPECT_FLOAT_NEAR(list.items[0].score, 0.85f, 0.001f);
+    EXPECT_INT_EQ(list.items[1].class_id, 1);
     detection_list_destroy(&list);
 }
 
@@ -1467,6 +1472,55 @@ static void test_decode_tier2_layouts_and_legacy(void) {
             }
         }
     }
+    detection_list_destroy(&list);
+}
+
+/* 7클래스 Tier 2 출력 [1,11,N]에 박스 2개를 직접 써 넣고 NMS 결과 개수를 봅니다.
+ * 채널 0~3=cx,cy,w,h, 4~10=cat,dog,bottle,cup,food,chair,dining table 점수. */
+static int decode_two_boxes(int class_a, float score_a, int class_b, float score_b,
+                            DetectionList *list, int *out_first, int *out_second) {
+    /* N 은 채널 수(C)보다 커야 디코더가 [1,C,N] 채널-우선 배치로 인식합니다. */
+    enum { N = 16, C = 11 };
+    float output[C * N];
+    int64_t shape[3] = {1, C, N};
+    Letterbox t = {320, 320, 320, 320, 1.0f, 0, 0};
+    int rc;
+    memset(output, 0, sizeof(output));
+    /* 두 박스는 100x100에 중심이 10px 어긋나 IoU≈0.68 — NMS 기준 0.45를 넘습니다. */
+    output[0 * N + 0] = 160.0f; output[1 * N + 0] = 160.0f;
+    output[2 * N + 0] = 100.0f; output[3 * N + 0] = 100.0f;
+    output[(4 + class_a) * N + 0] = score_a;
+    output[0 * N + 1] = 170.0f; output[1 * N + 1] = 165.0f;
+    output[2 * N + 1] = 100.0f; output[3 * N + 1] = 100.0f;
+    output[(4 + class_b) * N + 1] = score_b;
+    rc = yolo11_decode(output, shape, 3, &t, .2f, .45f, list, 8);
+    if (out_first && list->count > 0) *out_first = list->items[0].class_id;
+    if (out_second && list->count > 1) *out_second = list->items[1].class_id;
+    return rc;
+}
+
+/* 의자와 식탁은 서로 겹쳐 있는 것이 정상입니다(의자가 식탁 앞에 있음). 클래스가 다른 박스를
+ * NMS가 지우면 한쪽이 통째로 사라져 slot_monitor·animal_on_chair 가 근거를 잃습니다. */
+static void test_nms_keeps_overlapping_boxes_of_different_classes(void) {
+    DetectionList list;
+    int first = -1, second = -1;
+    ASSERT_INT_EQ(detection_list_init(&list, 8), 0);
+
+    /* 다른 클래스(chair=5, dining table=6): 둘 다 남아야 합니다. */
+    ASSERT_INT_EQ(decode_two_boxes(5, 0.9f, 6, 0.8f, &list, &first, &second), 0);
+    EXPECT_INT_EQ((int)list.count, 2);
+    EXPECT_INT_EQ(first, OBJ_CHAIR);
+    EXPECT_INT_EQ(second, OBJ_DININGTABLE);
+
+    /* 같은 클래스(둘 다 chair): 중복이므로 점수 높은 것 하나만 남습니다. */
+    ASSERT_INT_EQ(decode_two_boxes(5, 0.9f, 5, 0.8f, &list, &first, &second), 0);
+    EXPECT_INT_EQ((int)list.count, 1);
+    EXPECT_INT_EQ(first, OBJ_CHAIR);
+
+    /* 고양이와 의자(animal_on_chair 의 전형적 배치)도 둘 다 남아야 합니다. */
+    ASSERT_INT_EQ(decode_two_boxes(0, 0.9f, 5, 0.7f, &list, &first, &second), 0);
+    EXPECT_INT_EQ((int)list.count, 2);
+
     detection_list_destroy(&list);
 }
 
@@ -3494,6 +3548,7 @@ int main(void) {
     RUN_TEST(test_decode_class_id_multiclass_argmax);
     RUN_TEST(test_decode_tier2_layouts_and_legacy);
     RUN_TEST(test_draw_tier2_confidence_and_masks);
+    RUN_TEST(test_nms_keeps_overlapping_boxes_of_different_classes);
     RUN_TEST(test_rules_obj_external_drink);
     RUN_TEST(test_rules_obj_external_requires_person);
     RUN_TEST(test_rules_obj_external_food);
