@@ -17,6 +17,7 @@
 #include "calib.h"
 #include "capture.h"
 #include "reconnect.h"
+#include "../third_party/sqlite/sqlite3.h" /* count_events: 룰 발화 횟수 검증 */
 
 #if defined(_WIN32)
 #include <direct.h>
@@ -680,6 +681,117 @@ static void test_tracks_eviction(void) {
 
 /* ── RulesEngine 테스트 ──────────────────────────────────────────────────── */
 
+/* events 테이블에서 message 가 prefix 로 시작하는 행 수를 셉니다.
+ * 기존 룰 테스트는 발화를 확인하지 않고 지나가기만 해서, 재발화 같은 "횟수" 문제는
+ * 이 헬퍼 없이는 잡을 수 없습니다. */
+static int count_events(const EventLog *elog, const char *prefix) {
+    sqlite3_stmt *st = NULL; /* 소유: 이 함수, finalize 로 해제 */
+    char like[96];
+    int n = -1;
+    snprintf(like, sizeof(like), "%s%%", prefix);
+    if (sqlite3_prepare_v2(elog->db, "SELECT count(*) FROM events WHERE message LIKE ?",
+                           -1, &st, NULL) != SQLITE_OK) return -1;
+    sqlite3_bind_text(st, 1, like, -1, SQLITE_TRANSIENT);
+    if (sqlite3_step(st) == SQLITE_ROW) n = sqlite3_column_int(st, 0);
+    sqlite3_finalize(st);
+    return n;
+}
+
+/* limbo 중인 트랙이 부활해도 overstay 를 다시 발화하면 안 됩니다.
+ * 현장 로그에서 한 트랙이 214회 재발화한 원인이 이 경로였습니다. */
+static void test_rules_limbo_revive_does_not_refire(void) {
+    TrackList tl;
+    RulesEngine re;
+    EventLog elog;
+    RulesConfig rcfg = {60.0, 300.0, 5.0, 1.8f, 2.2f, 0, 0, 0, 0, 0};
+    char error[128] = {0};
+    event_log_open(&elog, ":memory:", LOG_INFO, 0);
+    ASSERT_INT_EQ(tracks_init(&tl, 16, 0.3f, 5, 1800.0, 0.45f, error, sizeof(error)), 0);
+    ASSERT_INT_EQ(rules_init(&re, 16, &rcfg, error, sizeof(error)), 0);
+
+    tl.count = 1;
+    tl.items[0].id = 1;
+    tl.items[0].active = 1;
+    tl.items[0].dwell_seconds = 120.0;
+    tl.items[0].order = TRACK_UNORDERED;
+    rules_evaluate(&re, &tl, 100.0, &elog);
+    EXPECT_INT_EQ(count_events(&elog, "overstay"), 1);
+
+    /* limbo 진입(만료 전) → 부활: 같은 id·dwell 이므로 다시 발화하면 안 됩니다. */
+    tl.items[0].active = 0;
+    tl.items[0].limbo_expired_at = 1900.0;
+    rules_evaluate(&re, &tl, 101.0, &elog);
+    tl.items[0].active = 1;
+    rules_evaluate(&re, &tl, 102.0, &elog);
+    EXPECT_INT_EQ(count_events(&elog, "overstay"), 1);
+
+    rules_destroy(&re);
+    tracks_destroy(&tl);
+    event_log_close(&elog);
+}
+
+/* limbo 가 만료되면 상태를 반납하므로, 그 슬롯을 물려받은 새 트랙은 새로 판정받습니다. */
+static void test_rules_limbo_expiry_releases_state(void) {
+    TrackList tl;
+    RulesEngine re;
+    EventLog elog;
+    RulesConfig rcfg = {60.0, 300.0, 5.0, 1.8f, 2.2f, 0, 0, 0, 0, 0};
+    char error[128] = {0};
+    event_log_open(&elog, ":memory:", LOG_INFO, 0);
+    ASSERT_INT_EQ(tracks_init(&tl, 16, 0.3f, 5, 1800.0, 0.45f, error, sizeof(error)), 0);
+    ASSERT_INT_EQ(rules_init(&re, 16, &rcfg, error, sizeof(error)), 0);
+
+    tl.count = 1;
+    tl.items[0].id = 1;
+    tl.items[0].active = 1;
+    tl.items[0].dwell_seconds = 120.0;
+    tl.items[0].order = TRACK_UNORDERED;
+    rules_evaluate(&re, &tl, 100.0, &elog);
+    EXPECT_INT_EQ(count_events(&elog, "overstay"), 1);
+
+    tl.items[0].active = 0;
+    tl.items[0].limbo_expired_at = 150.0;
+    rules_evaluate(&re, &tl, 200.0, &elog);   /* 만료 후 → 반납 */
+    tl.items[0].active = 1;                    /* 슬롯을 재사용한 새 트랙 */
+    rules_evaluate(&re, &tl, 201.0, &elog);
+    EXPECT_INT_EQ(count_events(&elog, "overstay"), 2);
+
+    rules_destroy(&re);
+    tracks_destroy(&tl);
+    event_log_close(&elog);
+}
+
+/* roi_kiosk 가 없으면 ORDERED 로 갈 수 없으므로 unordered_seated 를 판정하지 않습니다. */
+static void test_rules_unordered_requires_roi(void) {
+    TrackList tl;
+    RulesEngine re;
+    EventLog elog;
+    RulesConfig no_roi = {3600.0, 30.0, 5.0, 1.8f, 2.2f, 0, 0, 0, 0, 0};
+    RulesConfig with_roi = {3600.0, 30.0, 5.0, 1.8f, 2.2f, 10, 10, 50, 50, 1};
+    char error[128] = {0};
+    event_log_open(&elog, ":memory:", LOG_INFO, 0);
+    ASSERT_INT_EQ(tracks_init(&tl, 16, 0.3f, 5, 1800.0, 0.45f, error, sizeof(error)), 0);
+
+    tl.count = 1;
+    tl.items[0].id = 1;
+    tl.items[0].active = 1;
+    tl.items[0].dwell_seconds = 31.0;
+    tl.items[0].order = TRACK_UNORDERED;
+
+    ASSERT_INT_EQ(rules_init(&re, 16, &no_roi, error, sizeof(error)), 0);
+    rules_evaluate(&re, &tl, 100.0, &elog);
+    EXPECT_INT_EQ(count_events(&elog, "unordered_seated"), 0);
+    rules_destroy(&re);
+
+    ASSERT_INT_EQ(rules_init(&re, 16, &with_roi, error, sizeof(error)), 0);
+    rules_evaluate(&re, &tl, 100.0, &elog);
+    EXPECT_INT_EQ(count_events(&elog, "unordered_seated"), 1);
+    rules_destroy(&re);
+
+    tracks_destroy(&tl);
+    event_log_close(&elog);
+}
+
 static void test_rules_overstay_latches_once(void) {
     TrackList tl;
     RulesEngine re;
@@ -861,7 +973,8 @@ static void test_rules_unordered_suppressed_by_probable_order(void) {
     TrackList tl;
     RulesEngine re;
     EventLog elog;
-    RulesConfig rcfg = {3600.0, 30.0, 5.0, 1.8f, 2.2f, 0, 0, 0, 0, 0}; /* grace=30초 */
+    /* grace=30초. roi_kiosk 가 있어야 unordered_seated 를 판정하므로 ROI 를 설정합니다. */
+    RulesConfig rcfg = {3600.0, 30.0, 5.0, 1.8f, 2.2f, 10, 10, 50, 50, 1};
     char error[128] = {0};
     int before, i;
     event_log_open(&elog, ":memory:", LOG_INFO, 0);
@@ -1409,6 +1522,9 @@ static void test_rules_obj_external_drink(void) {
     ASSERT_INT_EQ(rules_init(&re, 16, &rcfg, error, sizeof(error)), 0);
     ASSERT_INT_EQ(detection_list_init(&objs, 8), 0);
 
+    /* 외부 음료는 사람이 있어야 성립합니다(rules.c). 사람 없이 병만 있을 때는 아래 별도 테스트. */
+    tl.count = 1; tl.items[0].id = 1; tl.items[0].active = 1;
+
     make_obj_list(&objs, 100, 100, 150, 200, 0.8f, 2 /* OBJ_BOTTLE */);
     rules_evaluate_objects(&re, &objs, &tl, 100.0, &elog);
 
@@ -1419,6 +1535,39 @@ static void test_rules_obj_external_drink(void) {
     objs.count = 0;
     rules_evaluate_objects(&re, &objs, &tl, 101.0, &elog);
     EXPECT_INT_EQ(re.obj_rule[OBJ_RULE_DRINK].latched, 0);
+
+    rules_destroy(&re);
+    tracks_destroy(&tl);
+    detection_list_destroy(&objs);
+    event_log_close(&elog);
+}
+
+/* 사람이 없으면 병·음식이 보여도 발화하지 않습니다(진열 병이 무인 시간대에 오탐되던 문제). */
+static void test_rules_obj_external_requires_person(void) {
+    TrackList tl;
+    RulesEngine re;
+    EventLog elog;
+    DetectionList objs;
+    RulesConfig rcfg = {3600.0, 300.0, 5.0, 1.8f, 2.2f, 0, 0, 0, 0, 0, 0.15f, 1};
+    char error[128] = {0};
+    event_log_open(&elog, ":memory:", LOG_INFO, 0);
+    ASSERT_INT_EQ(tracks_init(&tl, 16, 0.3f, 5, 1800.0, 0.45f, error, sizeof(error)), 0);
+    ASSERT_INT_EQ(rules_init(&re, 16, &rcfg, error, sizeof(error)), 0);
+    ASSERT_INT_EQ(detection_list_init(&objs, 8), 0);
+
+    make_obj_list(&objs, 100, 100, 150, 200, 0.8f, OBJ_BOTTLE);
+    rules_evaluate_objects(&re, &objs, &tl, 100.0, &elog);   /* 사람 0명 */
+    EXPECT_INT_EQ(re.obj_rule[OBJ_RULE_DRINK].latched, 0);
+    EXPECT_INT_EQ(count_events(&elog, "external_drink"), 0);
+
+    make_obj_list(&objs, 50, 50, 100, 100, 0.75f, OBJ_FOOD_FIRST);
+    rules_evaluate_objects(&re, &objs, &tl, 101.0, &elog);
+    EXPECT_INT_EQ(count_events(&elog, "external_food"), 0);
+
+    tl.count = 1; tl.items[0].id = 1; tl.items[0].active = 1;  /* 사람 등장 */
+    make_obj_list(&objs, 100, 100, 150, 200, 0.8f, OBJ_BOTTLE);
+    rules_evaluate_objects(&re, &objs, &tl, 102.0, &elog);
+    EXPECT_INT_EQ(count_events(&elog, "external_drink"), 1);
 
     rules_destroy(&re);
     tracks_destroy(&tl);
@@ -1439,6 +1588,7 @@ static void test_rules_obj_external_food(void) {
     ASSERT_INT_EQ(rules_init(&re, 16, &rcfg, error, sizeof(error)), 0);
     ASSERT_INT_EQ(detection_list_init(&objs, 8), 0);
 
+    tl.count = 1; tl.items[0].id = 1; tl.items[0].active = 1; /* 사람이 있어야 성립 */
     make_obj_list(&objs, 50, 50, 100, 100, 0.75f, 11 /* pizza, OBJ_FOOD_FIRST+7 */);
     rules_evaluate_objects(&re, &objs, &tl, 100.0, &elog);
 
@@ -1585,6 +1735,8 @@ static void test_rules_obj_confirm_filter(void) {
     ASSERT_INT_EQ(tracks_init(&tl, 16, 0.3f, 5, 1800.0, 0.45f, error, sizeof(error)), 0);
     ASSERT_INT_EQ(rules_init(&re, 16, &rcfg, error, sizeof(error)), 0);
     ASSERT_INT_EQ(detection_list_init(&objs, 8), 0);
+
+    tl.count = 1; tl.items[0].id = 1; tl.items[0].active = 1; /* 사람이 있어야 성립 */
 
     /* 한 번 보이고 사라지는 병: 발화하면 안 됩니다. */
     before = event_log_count(&elog, LOG_WARN);
@@ -3318,6 +3470,9 @@ int main(void) {
     RUN_TEST(test_tracks_id_stability);
     RUN_TEST(test_tracks_eviction);
     RUN_TEST(test_rules_overstay_latches_once);
+    RUN_TEST(test_rules_limbo_revive_does_not_refire);
+    RUN_TEST(test_rules_limbo_expiry_releases_state);
+    RUN_TEST(test_rules_unordered_requires_roi);
     RUN_TEST(test_rules_fall_geometry);
     RUN_TEST(test_fall_false_positive_regressions);
     RUN_TEST(test_rules_fall_requires_hold);
@@ -3340,6 +3495,7 @@ int main(void) {
     RUN_TEST(test_decode_tier2_layouts_and_legacy);
     RUN_TEST(test_draw_tier2_confidence_and_masks);
     RUN_TEST(test_rules_obj_external_drink);
+    RUN_TEST(test_rules_obj_external_requires_person);
     RUN_TEST(test_rules_obj_external_food);
     RUN_TEST(test_rules_obj_animal_on_chair);
     RUN_TEST(test_rules_obj_animal_on_table);

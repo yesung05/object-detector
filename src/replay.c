@@ -3,8 +3,12 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
-/* Budget is per event database, and covers coordinate JSON payloads, not other logs. */
-#define REPLAY_BUDGET (1024LL*1024*1024)
+/* Budget is per event database, and covers coordinate JSON payloads, not other logs.
+ * 128MB: 현장 로그 6일에서 시간당 DB 최대가 93MB(룰 오탐이 WARN을 쏟아내 replay 가
+ * 계속 "이벤트 구간" 모드로 5Hz 저장하던 시간)였습니다. 정상 운영에서는 닿지 않고 폭주만
+ * 막는 안전판이라 설정으로 내보내지 않습니다. 시간당 DB 하나이므로 최악의 일 사용량은
+ * 24×128MB 입니다(이전 1GB 상한은 24GB). 넘치면 r->full 로 표시되어 상태 API 에 드러납니다. */
+#define REPLAY_BUDGET (128LL*1024*1024)
 static const char *schema=
  "CREATE TABLE IF NOT EXISTS replay_sessions(id INTEGER PRIMARY KEY,created TEXT DEFAULT CURRENT_TIMESTAMP,metadata TEXT NOT NULL);"
  "CREATE TABLE IF NOT EXISTS replay_frames(session INTEGER,mono REAL,payload TEXT NOT NULL,PRIMARY KEY(session,mono));"

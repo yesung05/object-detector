@@ -260,6 +260,12 @@ typedef struct {
     CalibOptions calib_opt;
     char         calib_path[600];    /* 비어 있으면(--config 미지정) 기능 비활성 */
     double       calib_progress_log_time;
+    /* 표본 부족으로 끝난 안정화의 재시도 예약(안정화 시계 기준). retry_at<=0 이면 예약 없음.
+     * 첫 안정화가 매장이 붐비는 시간에 걸려 실패하면, 재시작 전까지 보정 없이 며칠을
+     * 운영하게 되므로(현장 로그 6일) 프로세스 안에서 다시 시도합니다. */
+    double       calib_retry_at;
+    double       calib_retry_seconds;  /* 0 이면 재시도 안 함 */
+    int          calib_retry_w, calib_retry_h;
     /*
      * 안정화 시계. 카메라는 벽시계, 영상 파일은 영상 시간(index / fps)을 씁니다.
      * 파일은 실시간보다 수백 배 빨리 디코딩되어 벽시계로는 10분 녹화본이
@@ -888,6 +894,8 @@ static void apply_gate_config(AppContext *app, const Config *cfg) {
         config_float(cfg, "calib_noise_ratio", 0.3f, 0.05f, 1.0f);
     app->calib_opt.max_area_ratio =
         config_float(cfg, "calib_max_area_ratio", 0.15f, 0.01f, 0.5f);
+    app->calib_retry_seconds =
+        60.0 * (double)config_float(cfg, "calib_retry_minutes", 30.0f, 0.0f, 1440.0f);
 }
 
 /*
@@ -1131,7 +1139,7 @@ static int calib_save_file(const char *path, int frame_w, int frame_h,
  */
 #define CALIB_MIN_SAMPLES 60
 
-static void calib_finish(AppContext *app) {
+static void calib_finish(AppContext *app, double now) {
     /* 문 + 키오스크 + 활성 가구 슬롯. 흔들려 보여도 무시하면 안 되는 구역입니다 —
      * 슬롯을 무시하면 그 테이블·의자의 청결 감지가 통째로 꺼집니다. */
     GrayRect protect[2 + SLOT_MAX];
@@ -1142,14 +1150,26 @@ static void calib_finish(AppContext *app) {
     int samples = app->calib.samples;
 
     if (samples < CALIB_MIN_SAMPLES) {
-        snprintf(msg, sizeof(msg),
-                 "done 표본 부족 samples=%d skipped_global=%d (최소 %d) — "
-                 "저장하지 않음, 다음 시작 시 재시도",
-                 samples, app->calib.skipped_global, CALIB_MIN_SAMPLES);
+        /* 재시도에 쓸 해상도는 calib_destroy 가 지우기 전에 보관합니다. */
+        app->calib_retry_w = frame_w;
+        app->calib_retry_h = frame_h;
+        app->calib_retry_at = app->calib_retry_seconds > 0.0 ? now + app->calib_retry_seconds : 0.0;
+        if (app->calib_retry_at > 0.0)
+            snprintf(msg, sizeof(msg),
+                     "done 표본 부족 samples=%d skipped_global=%d (최소 %d) — "
+                     "저장하지 않음, %.0f분 뒤 매장이 비면 재시도",
+                     samples, app->calib.skipped_global, CALIB_MIN_SAMPLES,
+                     app->calib_retry_seconds / 60.0);
+        else
+            snprintf(msg, sizeof(msg),
+                     "done 표본 부족 samples=%d skipped_global=%d (최소 %d) — "
+                     "저장하지 않음, calib_retry_minutes=0 이라 다음 시작 시 재시도",
+                     samples, app->calib.skipped_global, CALIB_MIN_SAMPLES);
         event_log_write(&app->event_log, LOG_WARN, "calib", msg);
         calib_destroy(&app->calib);
         return;
     }
+    app->calib_retry_at = 0.0; /* 성공 — 예약된 재시도가 있었다면 해제 */
 
     if (app->door.enabled && app->door.roi_w > 0 && app->door.roi_h > 0) {
         protect[protect_count].x1 = (float)app->door.roi_x;
@@ -1259,7 +1279,25 @@ static void calib_boot(AppContext *app, int frame_w, int frame_h, double now) {
 static void calib_step(AppContext *app, double now) {
     GrayRect people[64];
     int n;
-    if (!calib_active(&app->calib)) return;
+    if (!calib_active(&app->calib)) {
+        /* 예약된 재시도: 시각이 지났어도 활성 트랙(limbo 제외)이 있으면 60초 미룹니다.
+         * 사람이 있는 채로 시작하면 같은 이유로 또 표본 부족이 되기 때문입니다.
+         * 시작 자체는 calib_boot 가 합니다 — 파일이 이미 생겼으면 그쪽에서 불러오고 끝납니다. */
+        if (app->calib_retry_at > 0.0 && now >= app->calib_retry_at) {
+            size_t i;
+            int busy = 0;
+            for (i = 0; i < app->tracks.count; ++i)
+                if (app->tracks.items[i].active) { busy = 1; break; }
+            if (busy) {
+                app->calib_retry_at = now + 60.0;
+            } else {
+                app->calib_retry_at = 0.0;
+                event_log_write(&app->event_log, LOG_INFO, "calib", "재시도 시작 — 활성 트랙 없음");
+                calib_boot(app, app->calib_retry_w, app->calib_retry_h, now);
+            }
+        }
+        return;
+    }
 
     n = collect_person_rects(app, people, 64);
     calib_tick(&app->calib, &app->gray, people, n, app->block_min_changed, now);
@@ -1274,7 +1312,7 @@ static void calib_step(AppContext *app, double now) {
                  app->calib.samples, app->calib.skipped_global, n);
         event_log_write(&app->event_log, LOG_INFO, "calib", msg);
     }
-    if (calib_elapsed_done(&app->calib, now)) calib_finish(app);
+    if (calib_elapsed_done(&app->calib, now)) calib_finish(app, now);
 }
 
 /*
@@ -1398,9 +1436,13 @@ static void apply_throttle_config(AppContext *app, const Config *cfg) {
     tc.heavy_percent      = (int)config_long(cfg, "throttle_heavy_percent",   70, 10, 100);
     tc.minimal_percent    = (int)config_long(cfg, "throttle_minimal_percent", 85, 10, 100);
     /* 히스테리시스와 측정 주기는 설정으로 내보내지 않습니다 — 잘못 만지면 단계가 흔들려
-       오히려 불안정해지고, 현장에서 조절할 이유가 거의 없습니다. */
+       오히려 불안정해지고, 현장에서 조절할 이유가 거의 없습니다.
+       복귀 최소 유지시간을 5→30초로 올린 이유: 현장 로그에서 단계 전환 255회 중 177회가
+       10초 이내 왕복이었습니다(others_cpu 69%→11%가 6초 만에 바뀜). 키오스크 부하가 짧게
+       튀는 매장에서 5초 유지로는 detect_every 가 계속 x1↔x2 로 흔들립니다. 상승은 이
+       값과 무관하게 즉시 반영되므로 키오스크 보호에는 영향이 없습니다. */
     tc.hysteresis_percent = 10;
-    tc.min_level_seconds  = 5.0;
+    tc.min_level_seconds  = 30.0;
     tc.check_seconds      = 2.0;
     throttle_configure(&app->throttle, &tc);
 }
@@ -3258,7 +3300,7 @@ int main(int argc, char **argv) {
         if (!app.rules.config.roi_kiosk_set)
             event_log_write(&app.event_log, LOG_WARN, "startup",
                             "roi_kiosk 미설정 — 주문 상태 전환(ORDERED) 비활성, "
-                            "order_unverified 판정 근거 없음");
+                            "unordered_seated 판정 비활성(근거 없는 발화 방지)");
         else {
             snprintf(msg, sizeof(msg),
                      "roi_kiosk=%.0f,%.0f,%.0f,%.0f anchor=%s 주문 상태 전환 활성",

@@ -384,12 +384,17 @@ void rules_evaluate_objects(RulesEngine *re, const DetectionList *objs,
         if (tl->items[i].active) active_persons++;
     }
 
-    /* 룰마다 "이번 관측에서 조건이 성립했는가"만 넘기고 확정·해제는 한 함수가 맡습니다. */
-    if (obj_rule_observe(re, &re->obj_rule[OBJ_RULE_DRINK], found_bottle, now) == 1) {
+    /* 룰마다 "이번 관측에서 조건이 성립했는가"만 넘기고 확정·해제는 한 함수가 맡습니다.
+     * 외부 음료·음식은 반입·취식하는 사람이 있어야 성립하므로 활성 사람이 없으면 관측하지
+     * 않습니다. 현장 로그에서 사람이 없는 00~06시에도 external_drink 가 1,400건 넘게 나왔는데,
+     * 진열 병 같은 정지 물체가 검출됐다 사라질 때마다 래치가 풀렸다 다시 걸린 것입니다. */
+    if (obj_rule_observe(re, &re->obj_rule[OBJ_RULE_DRINK],
+                         found_bottle && active_persons > 0, now) == 1) {
         snprintf(detail, sizeof(detail), "cups=%d", cup_count);
         obj_rule_log(re, elog, "external_drink", detail, &re->obj_rule[OBJ_RULE_DRINK]);
     }
-    if (obj_rule_observe(re, &re->obj_rule[OBJ_RULE_FOOD], found_food, now) == 1)
+    if (obj_rule_observe(re, &re->obj_rule[OBJ_RULE_FOOD],
+                         found_food && active_persons > 0, now) == 1)
         obj_rule_log(re, elog, "external_food", "", &re->obj_rule[OBJ_RULE_FOOD]);
     if (obj_rule_observe(re, &re->obj_rule[OBJ_RULE_ANIMAL_CHAIR], animal_on_chair, now) == 1) {
         snprintf(detail, sizeof(detail), "iou_thresh=%.2f", iou_thresh);
@@ -646,7 +651,13 @@ void rules_evaluate(RulesEngine *re, TrackList *tl, double now, EventLog *elog) 
         TrackRuleState *s;
 
         if (!t->active) {
-            release_state(re, t->id);
+            /* limbo 동안은 슬롯을 반납하지 않습니다. tracks.c 는 limbo 트랙을 같은 id·같은
+             * dwell 로 Re-ID 부활시키는데, 여기서 바로 반납하면 부활 때 get_state 가 0 으로
+             * 초기화해 overstay/unordered 래치가 풀리고 같은 사람에게 수 분마다 재발화합니다
+             * (현장 로그 6일: track 하나가 214회). limbo_expired_at 이후에만 슬롯이 재사용되므로
+             * 그때 반납해도 다른 사람에게 상태가 새지 않습니다. 시계는 tracks.c 와 같은
+             * platform_monotonic_seconds 입니다. */
+            if (now >= t->limbo_expired_at) release_state(re, t->id);
             continue;
         }
 
@@ -695,8 +706,13 @@ void rules_evaluate(RulesEngine *re, TrackList *tl, double now, EventLog *elog) 
          * ORDERED 에 도달할 방법이 없으므로, 억제하지 않으면 정상적으로 주문한 손님을 포함한
          * 오래 머문 모든 사람에게 발화합니다. 대신 키오스크 앞에 서 있다가 결제하지 않고
          * 앉은 사람은 놓칠 수 있습니다 — 근접은 결제 증거가 아니라는 위 판단은 그대로이며,
-         * 이 조합이 오탐(점주 신뢰 하락)보다 미탐을 택한 결과입니다. */
-        if (t->order == TRACK_UNORDERED &&
+         * 이 조합이 오탐(점주 신뢰 하락)보다 미탐을 택한 결과입니다.
+         *
+         * roi_kiosk 가 없으면 PROBABLY_ORDERED 에 도달할 근거 자체가 없어 정상 손님까지
+         * 전부 발화합니다(현장 로그 6일: 5,746건). 근거 없는 판정은 하지 않고, 꺼져 있다는
+         * 사실은 기동 시 startup 로그가 알립니다. */
+        if (re->config.roi_kiosk_set &&
+            t->order == TRACK_UNORDERED &&
             t->dwell_seconds > re->config.unordered_grace_seconds) {
             if (!s->unordered_latched) {
                 s->unordered_latched = 1;
