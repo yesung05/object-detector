@@ -5,6 +5,7 @@ yolo11-person
 .DS_Store
 result/
 __pycache__/
+TODO/
 *.pyc
 *.pt
 *.onnx
@@ -59,7 +60,7 @@ docs/**/references/*.pdf
 docs/**/references/*.download
 runs/surface-experiments/
 runs/scenario-voice/
-
+docs/논문
 # Local datasets, recordings and generated experiment artifacts (not source).
 /datasets/
 /records/

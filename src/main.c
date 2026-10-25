@@ -3051,7 +3051,7 @@ int main(int argc, char **argv) {
     /* 인스턴스 중복 실행 방지: 두 번째 프로세스는 즉시 종료합니다.
      * 카메라 2대를 2프로세스로 운용할 때 스레드 예산(OS 예비 1개)을 보호하기 위해
      * 하나의 감지 프로세스만 허용합니다. */
-    {
+    if (!args.video_clock) {
         int lock = platform_single_instance_try_lock();
         if (lock == 0) {
             fprintf(stderr, "error: hunik-detector가 이미 실행 중입니다.\n");
