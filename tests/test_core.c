@@ -18,6 +18,7 @@
 #include "capture.h"
 #include "reconnect.h"
 #include "../third_party/sqlite/sqlite3.h" /* count_events: 룰 발화 횟수 검증 */
+#include "infer_cache.h"
 
 #if defined(_WIN32)
 #include <direct.h>
@@ -1522,6 +1523,210 @@ static void test_nms_keeps_overlapping_boxes_of_different_classes(void) {
     EXPECT_INT_EQ((int)list.count, 2);
 
     detection_list_destroy(&list);
+}
+
+/* ── 영상 시간 / 추론 캐시 ─────────────────────────────────────────────── */
+
+/* 영상 시간: 프레임 번호/fps + 오프셋. 모르는 fps 는 -1 로 알려 호출자가 벽시계로 대체하게 한다. */
+static void test_platform_video_seconds(void) {
+    EXPECT_FLOAT_NEAR((float)platform_video_seconds(0, 3.0), 1000.0f, 1e-4f);
+    EXPECT_FLOAT_NEAR((float)platform_video_seconds(30, 3.0), 1010.0f, 1e-4f);
+    /* 간격은 오프셋과 무관해야 룰의 유지 시간 계산이 영상 길이를 따른다(3fps 에서 한 프레임 = 1/3 초). */
+    EXPECT_FLOAT_NEAR((float)(platform_video_seconds(4, 3.0) - platform_video_seconds(3, 3.0)),
+                      0.33333f, 1e-4f);
+    EXPECT_TRUE(platform_video_seconds(5, 0.0) < 0.0);
+    EXPECT_TRUE(platform_video_seconds(-1, 30.0) < 0.0);
+    /* 0초로 시작하지 않아야 "시각 0 = 미설정" 표식과 겹치지 않는다. */
+    EXPECT_TRUE(platform_video_seconds(0, 30.0) > 0.0);
+}
+
+enum { IC_W = 64, IC_H = 48 };
+
+static void ic_frame(uint8_t *rgb, uint8_t seed) {
+    int i;
+    for (i = 0; i < IC_W * IC_H * 3; ++i) rgb[i] = (uint8_t)(i * 7 + seed);
+}
+
+/* memset 후 채워 패딩까지 결정적으로 만든다(캐시는 구조체를 그대로 저장하므로 memcmp 로 비교 가능). */
+static void ic_fill(DetectionList *l, int n, float base) {
+    int i, k;
+    l->count = (size_t)n;
+    for (i = 0; i < n; ++i) {
+        Detection *d = &l->items[i];
+        memset(d, 0, sizeof(*d));
+        d->x1 = base + (float)i; d->y1 = base * 2.0f; d->x2 = base + 50.0f; d->y2 = base + 90.0f;
+        d->score = 0.9f - 0.1f * (float)i;
+        d->class_id = i % 3;
+        d->keypoint_count = YOLO11_NUM_KEYPOINTS;
+        for (k = 0; k < YOLO11_NUM_KEYPOINTS; ++k) {
+            d->kp[k].x = base + (float)k; d->kp[k].y = base - (float)k; d->kp[k].score = 0.5f;
+        }
+    }
+}
+
+static InferCacheIdentity ic_identity(void) {
+    InferCacheIdentity id;
+    memset(&id, 0, sizeof(id));
+    id.model_bytes = 1234; id.max_candidates = 128; id.max_detections = 100;
+    id.confidence = 0.25f; id.iou = 0.45f; id.input_width = 416; id.input_height = 224;
+    return id;
+}
+
+/* 기록한 호출을 같은 순서·같은 프레임으로 재생하면 같은 검출(키포인트 포함)을 돌려주고, 기록이 끝나면 miss. */
+static void test_infer_cache_record_then_replay(void) {
+    const char *path = "infer_cache_unit_test.bin";
+    InferCacheIdentity id = ic_identity();
+    uint8_t f0[IC_W * IC_H * 3], f1[IC_W * IC_H * 3];
+    DetectionList in, out;
+    Detection saved[2];
+    char err[160] = {0};
+    InferCache *c;
+    ASSERT_INT_EQ(detection_list_init(&in, 128), 0);
+    ASSERT_INT_EQ(detection_list_init(&out, 128), 0);
+    ic_frame(f0, 1); ic_frame(f1, 2);
+    remove(path);
+
+    c = infer_cache_open(path, &id, err, sizeof(err));
+    ASSERT_TRUE(c != NULL);
+    EXPECT_INT_EQ((int)infer_cache_mode(c), (int)INFER_CACHE_RECORD);
+    EXPECT_INT_EQ(infer_cache_lookup(c, f0, IC_W, IC_H, IC_W * 3, 0.25f, &out), -1); /* RECORD 에서 lookup 은 오류 */
+    ic_fill(&in, 2, 10.0f);
+    memcpy(saved, in.items, sizeof(saved));
+    ASSERT_INT_EQ(infer_cache_store(c, f0, IC_W, IC_H, IC_W * 3, 0.25f, &in), 0);
+    ic_fill(&in, 0, 0.0f);   /* 검출 0개인 호출도 순번을 차지한다 */
+    ASSERT_INT_EQ(infer_cache_store(c, f1, IC_W, IC_H, IC_W * 3, 0.25f, &in), 0);
+    infer_cache_close(c);
+
+    c = infer_cache_open(path, &id, err, sizeof(err));
+    ASSERT_TRUE(c != NULL);
+    EXPECT_INT_EQ((int)infer_cache_mode(c), (int)INFER_CACHE_REPLAY);
+    out.count = 99;
+    EXPECT_INT_EQ(infer_cache_lookup(c, f0, IC_W, IC_H, IC_W * 3, 0.25f, &out), 1);
+    EXPECT_INT_EQ((int)out.count, 2);
+    EXPECT_INT_EQ(memcmp(out.items, saved, sizeof(saved)), 0);
+    EXPECT_INT_EQ(infer_cache_lookup(c, f1, IC_W, IC_H, IC_W * 3, 0.25f, &out), 1);
+    EXPECT_INT_EQ((int)out.count, 0);
+    EXPECT_INT_EQ(infer_cache_lookup(c, f1, IC_W, IC_H, IC_W * 3, 0.25f, &out), 0); /* 기록 끝 */
+    EXPECT_INT_EQ(infer_cache_lookup(c, f0, IC_W, IC_H, IC_W * 3, 0.25f, &out), 0); /* 이후는 계속 miss */
+    infer_cache_close(c);
+
+    remove(path);
+    detection_list_destroy(&in);
+    detection_list_destroy(&out);
+}
+
+/* 틀린 결과를 조용히 재생하면 안 된다: 프레임·신뢰도가 다르면 miss 이고, 한 번 miss 가 나면 이후도 miss. */
+static void test_infer_cache_mismatch_is_a_miss(void) {
+    const char *path = "infer_cache_unit_test.bin";
+    InferCacheIdentity id = ic_identity();
+    uint8_t f0[IC_W * IC_H * 3], f1[IC_W * IC_H * 3];
+    DetectionList in, out;
+    char err[160] = {0};
+    InferCache *c;
+    ASSERT_INT_EQ(detection_list_init(&in, 128), 0);
+    ASSERT_INT_EQ(detection_list_init(&out, 128), 0);
+    ic_frame(f0, 1); ic_frame(f1, 2);
+    remove(path);
+    c = infer_cache_open(path, &id, err, sizeof(err));
+    ASSERT_TRUE(c != NULL);
+    ic_fill(&in, 1, 5.0f);
+    ASSERT_INT_EQ(infer_cache_store(c, f0, IC_W, IC_H, IC_W * 3, 0.25f, &in), 0);
+    ASSERT_INT_EQ(infer_cache_store(c, f0, IC_W, IC_H, IC_W * 3, 0.25f, &in), 0);
+    infer_cache_close(c);
+
+    /* 다른 프레임 */
+    c = infer_cache_open(path, &id, err, sizeof(err));
+    ASSERT_TRUE(c != NULL);
+    EXPECT_INT_EQ(infer_cache_lookup(c, f1, IC_W, IC_H, IC_W * 3, 0.25f, &out), 0);
+    EXPECT_INT_EQ(infer_cache_lookup(c, f0, IC_W, IC_H, IC_W * 3, 0.25f, &out), 0); /* 맞는 프레임이어도 이미 어긋남 */
+    infer_cache_close(c);
+
+    /* 같은 프레임이라도 생성 뒤 바뀐 신뢰도(detector_set_confidence)는 다른 결과이므로 miss */
+    c = infer_cache_open(path, &id, err, sizeof(err));
+    ASSERT_TRUE(c != NULL);
+    EXPECT_INT_EQ(infer_cache_lookup(c, f0, IC_W, IC_H, IC_W * 3, 0.10f, &out), 0);
+    infer_cache_close(c);
+
+    /* 해상도가 다른 입력 */
+    c = infer_cache_open(path, &id, err, sizeof(err));
+    ASSERT_TRUE(c != NULL);
+    EXPECT_INT_EQ(infer_cache_lookup(c, f0, IC_W / 2, IC_H, IC_W * 3, 0.25f, &out), 0);
+    infer_cache_close(c);
+
+    remove(path);
+    detection_list_destroy(&in);
+    detection_list_destroy(&out);
+}
+
+/* 다른 모델·설정의 캐시, 우리 것이 아닌 파일, 중단된 파일, 용량 초과를 각각 안전하게 처리한다. */
+static void test_infer_cache_refuses_unsafe_files(void) {
+    const char *path = "infer_cache_unit_test.bin";
+    InferCacheIdentity id = ic_identity(), other;
+    uint8_t f0[IC_W * IC_H * 3];
+    DetectionList in, out, small;
+    char err[160] = {0};
+    InferCache *c;
+    FILE *fp;
+    char buf[8] = {0};
+    uint32_t zero = 0;
+    ASSERT_INT_EQ(detection_list_init(&in, 128), 0);
+    ASSERT_INT_EQ(detection_list_init(&out, 128), 0);
+    ASSERT_INT_EQ(detection_list_init(&small, 2), 0);
+    ic_frame(f0, 1);
+    remove(path);
+
+    c = infer_cache_open(path, &id, err, sizeof(err));
+    ASSERT_TRUE(c != NULL);
+    ic_fill(&in, 5, 3.0f);
+    ASSERT_INT_EQ(infer_cache_store(c, f0, IC_W, IC_H, IC_W * 3, 0.25f, &in), 0);
+    infer_cache_close(c);
+
+    /* 모델 크기가 다르면(=다른 모델) 재생하지 않고 거부한다. 파일은 그대로 둔다. */
+    other = id; other.model_bytes = 9999;
+    EXPECT_TRUE(infer_cache_open(path, &other, err, sizeof(err)) == NULL);
+    EXPECT_TRUE(err[0] != 0);
+    other = id; other.confidence = 0.5f;
+    EXPECT_TRUE(infer_cache_open(path, &other, err, sizeof(err)) == NULL);
+
+    /* 기록이 out 의 capacity(2)보다 많으면 오류(-1): 잘라서 돌려주면 룰 입력이 달라진다. */
+    c = infer_cache_open(path, &id, err, sizeof(err));
+    ASSERT_TRUE(c != NULL);
+    EXPECT_INT_EQ((int)infer_cache_mode(c), (int)INFER_CACHE_REPLAY);
+    EXPECT_INT_EQ(infer_cache_lookup(c, f0, IC_W, IC_H, IC_W * 3, 0.25f, &small), -1);
+    infer_cache_close(c);
+
+    /* 정상 종료되지 않은 파일(complete=0): 신뢰하지 않고 처음부터 다시 기록한다. complete 는 오프셋 12. */
+    fp = fopen(path, "rb+");
+    ASSERT_TRUE(fp != NULL);
+    ASSERT_INT_EQ(fseek(fp, 12, SEEK_SET), 0);
+    ASSERT_INT_EQ((int)fwrite(&zero, sizeof(zero), 1, fp), 1);
+    fclose(fp);
+    c = infer_cache_open(path, &id, err, sizeof(err));
+    ASSERT_TRUE(c != NULL);
+    EXPECT_INT_EQ((int)infer_cache_mode(c), (int)INFER_CACHE_RECORD);
+    infer_cache_close(c);   /* 이번에는 정상 종료 */
+    c = infer_cache_open(path, &id, err, sizeof(err));
+    ASSERT_TRUE(c != NULL);
+    EXPECT_INT_EQ((int)infer_cache_mode(c), (int)INFER_CACHE_REPLAY);
+    infer_cache_close(c);
+
+    /* 우리 파일이 아니면 덮어쓰지 않는다. */
+    remove(path);
+    fp = fopen(path, "wb");
+    ASSERT_TRUE(fp != NULL);
+    fputs("hello!!", fp);
+    fclose(fp);
+    EXPECT_TRUE(infer_cache_open(path, &id, err, sizeof(err)) == NULL);
+    fp = fopen(path, "rb");
+    ASSERT_TRUE(fp != NULL);
+    EXPECT_TRUE(fread(buf, 1, 7, fp) == 7);
+    fclose(fp);
+    EXPECT_INT_EQ(strcmp(buf, "hello!!"), 0);
+
+    remove(path);
+    detection_list_destroy(&in);
+    detection_list_destroy(&out);
+    detection_list_destroy(&small);
 }
 
 static void test_draw_tier2_confidence_and_masks(void) {
@@ -3549,6 +3754,10 @@ int main(void) {
     RUN_TEST(test_decode_tier2_layouts_and_legacy);
     RUN_TEST(test_draw_tier2_confidence_and_masks);
     RUN_TEST(test_nms_keeps_overlapping_boxes_of_different_classes);
+    RUN_TEST(test_platform_video_seconds);
+    RUN_TEST(test_infer_cache_record_then_replay);
+    RUN_TEST(test_infer_cache_mismatch_is_a_miss);
+    RUN_TEST(test_infer_cache_refuses_unsafe_files);
     RUN_TEST(test_rules_obj_external_drink);
     RUN_TEST(test_rules_obj_external_requires_person);
     RUN_TEST(test_rules_obj_external_food);

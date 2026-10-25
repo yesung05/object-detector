@@ -109,6 +109,7 @@ if(ORT_INCLUDE_DIR AND ORT_LIBRARY AND FFMPEG_INCLUDE_DIR AND FFMPEG_FOUND)
         src/postprocess.c
         src/draw.c
         src/detector_ort.c
+        src/infer_cache.c
         src/media_ffmpeg.c
         src/tracker.c
         src/platform.c
@@ -188,6 +189,7 @@ add_test(NAME table_mapper_unit COMMAND test_table_mapper)
 
 add_executable(test_core
     tests/test_core.c
+    src/infer_cache.c
     src/postprocess.c
     src/draw.c
     src/tracker.c
@@ -231,7 +233,8 @@ if(ORT_INCLUDE_DIR AND ORT_LIBRARY)
         src/draw.c
         src/tracker.c
         src/platform.c
-        src/detector_ort.c)
+        src/detector_ort.c
+        src/infer_cache.c)
     target_include_directories(test_detector PRIVATE
         include "${ORT_INCLUDE_DIR}" tests)
     target_link_libraries(test_detector PRIVATE "${ORT_LIBRARY}")
@@ -285,7 +288,7 @@ else()
 endif()
 add_test(NAME surface_unit COMMAND test_surface)
 if(ORT_INCLUDE_DIR AND ORT_LIBRARY AND WIN32)
-    add_executable(evaluate_surface_video tests/evaluate_surface_video.c src/detector_ort.c
+    add_executable(evaluate_surface_video tests/evaluate_surface_video.c src/detector_ort.c src/infer_cache.c
         src/postprocess.c src/surface_config.c src/surface_monitor.c src/log.c src/platform.c third_party/sqlite/sqlite3.c)
     target_include_directories(evaluate_surface_video PRIVATE include "${ORT_INCLUDE_DIR}")
     target_link_libraries(evaluate_surface_video PRIVATE "${ORT_LIBRARY}" psapi)

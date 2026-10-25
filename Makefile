@@ -40,7 +40,7 @@ endif
 # 각 .c 파일을 .o(목적 파일)로 컴파일한 뒤 마지막에 실행 파일로 연결합니다.
 # CMakeLists.txt 의 yolo11-person 타겟과 같은 목록을 유지해야 합니다.
 # stream.c 는 WinSocket2 전용이라 제외하고, main.c 가 스텁으로 대체합니다.
-SOURCES := src/main.c src/postprocess.c src/draw.c src/detector_ort.c \
+SOURCES := src/main.c src/postprocess.c src/draw.c src/detector_ort.c src/infer_cache.c \
            src/media_ffmpeg.c src/tracker.c src/platform.c \
            src/gray.c src/log.c src/config.c src/camera_health.c \
            src/tracks.c src/rules.c src/door.c src/model_select.c \
@@ -93,7 +93,7 @@ build/test_surface: tests/test_surface.c src/surface_config.c src/surface_monito
 	@mkdir -p build
 	$(CC) $(CPPFLAGS) -O1 -g $(WARNINGS) -std=c11 tests/test_surface.c src/surface_config.c src/surface_monitor.c src/log.c src/platform.c third_party/sqlite/sqlite3.c -lm -o $@
 
-TEST_CORE_SRCS := tests/test_core.c src/postprocess.c src/draw.c \
+TEST_CORE_SRCS := tests/test_core.c src/infer_cache.c src/postprocess.c src/draw.c \
                   src/tracker.c src/platform.c src/rules.c src/log.c \
                   src/config.c src/tracks.c src/camera_health.c \
                   src/gray.c src/door.c src/model_select.c \
@@ -111,12 +111,12 @@ build/test_core: $(TEST_CORE_SRCS) tests/test_runner.h \
 
 build/test_detector: tests/test_detector.c tests/test_runner.h \
                      src/postprocess.c src/draw.c src/tracker.c \
-                     src/platform.c src/detector_ort.c \
+                     src/platform.c src/detector_ort.c src/infer_cache.c \
                      include/yolo11.h include/tracker.h include/platform.h
 	@mkdir -p build
 	$(CC) $(CPPFLAGS) $(ORT_CFLAGS) -Itests -O1 -g $(WARNINGS) -std=c11 \
 		tests/test_detector.c src/postprocess.c src/draw.c \
-		src/tracker.c src/platform.c src/detector_ort.c \
+		src/tracker.c src/platform.c src/detector_ort.c src/infer_cache.c \
 		$(ORT_LIBS) -lm -o $@
 
 build/test_media: tests/test_media.c src/media_ffmpeg.c src/platform.c src/reconnect.c \

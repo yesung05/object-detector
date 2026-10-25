@@ -1,4 +1,5 @@
 #include "yolo11.h"
+#include "infer_cache.h"
 #include "platform.h"
 
 #include <onnxruntime_c_api.h>
@@ -7,6 +8,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#if !defined(_WIN32)
+#include <sys/stat.h> /* model_file_bytes: Windows 는 GetFileAttributesExW 를 쓴다 */
+#endif
 
 #if defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN
@@ -79,6 +83,10 @@ struct Detector {
     double latency_p50_ms;
     double latency_p95_ms;
     double latency_max_ms;
+    /* 추론 결과 기록·재생 캐시(꺼져 있으면 NULL). 소유권: Detector 소유. 수명: detector_create 성공
+     * 시점부터 detector_destroy 까지. 해제 책임: detector_release_members 가 infer_cache_close 로
+     * 닫는다(RECORD 였다면 이때 "정상 종료"가 파일에 표시된다). */
+    InferCache *cache;
 };
 
 /* 백분위 재계산 주기(초). 스로틀링 감시(10분 단위 비교)에 충분한 해상도입니다. */
@@ -132,6 +140,26 @@ static wchar_t *utf8_to_wide(const char *text, char *error,
 #endif
 
 /*
+ * 모델 파일 크기. 추론 캐시가 "다른 모델의 결과를 재생하지 않기 위한 지문"으로 쓴다.
+ * 실패하면 0 을 돌려주고, 그래도 캐시는 동작한다(지문이 약해질 뿐 오류는 아니다).
+ */
+static uint64_t model_file_bytes(const char *path) {
+#if defined(_WIN32)
+    WIN32_FILE_ATTRIBUTE_DATA attr;
+    wchar_t *wide = utf8_to_wide(path, NULL, 0);  /* 소유: 이 함수, 아래에서 free */
+    uint64_t bytes = 0;
+    if (!wide) return 0;
+    if (GetFileAttributesExW(wide, GetFileExInfoStandard, &attr))
+        bytes = ((uint64_t)attr.nFileSizeHigh << 32) | attr.nFileSizeLow;
+    free(wide);
+    return bytes;
+#else
+    struct stat st;
+    return stat(path, &st) == 0 ? (uint64_t)st.st_size : 0;
+#endif
+}
+
+/*
  * detector_create() 도중 어느 단계에서 실패하더라도 사용할 수 있는 공통 정리
  * 함수입니다. 각 포인터가 NULL인지 확인하므로 일부만 생성된 상태도 안전합니다.
  *
@@ -157,6 +185,8 @@ static void detector_release_members(Detector *d) {
     free(d->input_data);
     free(d->latency_buf);
     free(d->latency_sorted);
+    infer_cache_close(d->cache);  /* NULL 안전 */
+    d->cache = NULL;
 }
 
 Detector *detector_create(const char *model_path, const DetectorOptions *options,
@@ -521,6 +551,30 @@ Detector *detector_create(const char *model_path, const DetectorOptions *options
         goto fail;
     }
 
+    /*
+     * 추론 캐시(선택). 열기에 실패해도 감지기 생성은 실패시키지 않고 캐시만 끈다 — 평가용 부가
+     * 기능이 운영 경로를 막으면 안 되고, 틀린 캐시를 쓰는 것보다 실제 추론이 안전하다.
+     */
+    if (options->cache_path && options->cache_path[0]) {
+        InferCacheIdentity id;
+        char cache_error[160] = {0};
+        memset(&id, 0, sizeof(id));
+        id.model_bytes = model_file_bytes(model_path);
+        id.max_candidates = (uint64_t)options->max_candidates;
+        id.max_detections = (uint64_t)options->max_detections;
+        id.confidence = options->confidence;
+        id.iou = options->iou;
+        id.input_width = d->input_width;
+        id.input_height = d->input_height;
+        d->cache = infer_cache_open(options->cache_path, &id, cache_error, sizeof(cache_error));
+        if (d->cache)
+            fprintf(stderr, "infer-cache: %s %s\n",
+                    infer_cache_mode(d->cache) == INFER_CACHE_REPLAY ? "replay" : "record",
+                    options->cache_path);
+        else
+            fprintf(stderr, "infer-cache: disabled (%s) %s\n", cache_error, options->cache_path);
+    }
+
     return d;
 
 fail:
@@ -562,6 +616,21 @@ int detector_run(Detector *d, const uint8_t *rgb, int width, int height,
     }
 
     memset(&d->last_stats, 0, sizeof(d->last_stats));
+
+    /*
+     * 재생 모드: 기록된 검출이 이 호출과 순번·프레임·신뢰도까지 같으면 ONNX 를 건너뛴다.
+     * miss(0)는 실제 추론으로 이어지고, -1 은 기록이 out 용량을 넘는 비정상이라 실패시킨다.
+     */
+    if (d->cache && infer_cache_mode(d->cache) == INFER_CACHE_REPLAY) {
+        int hit = infer_cache_lookup(d->cache, rgb, width, height, stride,
+                                     d->options.confidence, detections);
+        if (hit < 0) {
+            set_error(error, error_size, "infer-cache: cached detections exceed capacity");
+            return -1;
+        }
+        if (hit > 0) return 0;
+    }
+
     phase_start = platform_monotonic_seconds();
     /* RGB 한 장을 재사용 중인 input_data에 letterbox + NCHW 형태로 직접 씁니다. */
     if ((d->options.fast_preprocess
@@ -699,6 +768,12 @@ int detector_run(Detector *d, const uint8_t *rgb, int width, int height,
         platform_monotonic_seconds() - phase_start;
 
 done:
+    /* 기록 모드: 실제 추론에 성공했을 때만 이번 호출의 결과를 남긴다(실패한 호출은 남기지 않음). */
+    if (result == 0 && d->cache && infer_cache_mode(d->cache) == INFER_CACHE_RECORD) {
+        if (infer_cache_store(d->cache, rgb, width, height, stride,
+                              d->options.confidence, detections) != 0)
+            fprintf(stderr, "infer-cache: write failed, recording stopped\n");
+    }
     /*
      * shape_info는 실행할 때마다 받은 임시 메타데이터입니다.
      * 동적 output만 ORT 소유이므로 여기서 ReleaseValue하고, 고정 output은 다음

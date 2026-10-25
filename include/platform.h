@@ -1,6 +1,8 @@
 #ifndef PLATFORM_H
 #define PLATFORM_H
 
+#include <stdint.h>
+
 /*
  * OS별 시간/프로세서 API 차이를 감추는 작은 이식 계층입니다.
  * 모든 시간 함수는 초 단위 double을 반환합니다.
@@ -14,6 +16,14 @@ void platform_sleep_milliseconds(unsigned int milliseconds);
  * Linux: /sys/class/thermal/thermal_zoneN/temp (N=0..3) 순서로 시도합니다.
  * Windows/macOS: 미지원, -1 반환. */
 int platform_cpu_temperature_celsius(void);
+
+/*
+ * 영상 시간: 파일 입력에서 프레임 번호와 fps 로 계산한 시각(초)입니다. fps<=0 이면 -1 을 돌려줍니다.
+ * 기준을 0 이 아니라 큰 값에서 시작하는 이유: 코드 곳곳이 시각 0 을 "아직 설정 안 됨"의 표식으로
+ * 쓰므로(예: hud_start_time==0.0, replay.now<=0), 첫 프레임이 0 초이면 그 표식과 겹칩니다. 모든 간격은
+ * 오프셋과 무관합니다. 오프라인 평가(--video-clock) 전용이며 라이브 카메라에는 쓰지 않습니다.
+ */
+double platform_video_seconds(int64_t frame_index, double fps);
 
 /* 현재 프로세스 RSS(Resident Set Size)를 KB 단위로 반환합니다.
  * Windows: GetProcessMemoryInfo WorkingSetSize

@@ -237,3 +237,11 @@ int platform_cpu_temperature_celsius(void) {
 #endif
 
 #endif
+
+/* 플랫폼 분기 밖의 순수 계산이라 test_core 에서 그대로 검증한다. */
+#define PLATFORM_VIDEO_CLOCK_EPOCH 1000.0
+
+double platform_video_seconds(int64_t frame_index, double fps) {
+    if (!(fps > 0.0) || frame_index < 0) return -1.0;
+    return PLATFORM_VIDEO_CLOCK_EPOCH + (double)frame_index / fps;
+}

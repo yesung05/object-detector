@@ -108,6 +108,13 @@ typedef struct {
     int warmup_runs;
     DetectorProvider provider;
     int device_id;
+    /*
+     * 추론 결과 기록·재생 캐시 파일 경로(NULL 또는 빈 문자열이면 꺼짐). 오프라인 평가 전용이며
+     * 자세한 의미는 include/infer_cache.h 를 본다. 소유권: 호출자 소유, detector_create 동안만
+     * 읽고 그 안에서 열기만 하므로 포인터를 보관하지 않는다(수명 = detector_create 호출 동안).
+     * 구조체 끝에 둔 이유: 위치 초기화({...})를 쓰는 기존 코드가 자동으로 0(꺼짐)이 된다.
+     */
+    const char *cache_path;
 } DetectorOptions;
 
 typedef struct {

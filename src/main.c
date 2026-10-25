@@ -272,6 +272,8 @@ typedef struct {
      * 몇 초 만에 끝나고, 녹화본으로 현장 안정화를 재현·검증할 수 없게 됩니다.
      */
     int          realtime_input;
+    int          video_clock;        /* --video-clock: process_frame 의 now 를 영상 시간으로 */
+    int          video_clock_warned; /* fps 를 몰라 벽시계로 대체했다고 한 번만 알림 */
     const MediaStats *media_stats;   /* main() 지역 변수를 빌려 씀 — media_process 동안 유효 */
 
     /* 이벤트 캡처. capture.dir 가 비어 있으면(--config 미지정·폴더 생성 실패) 비활성 */
@@ -311,6 +313,9 @@ typedef struct {
     /* Tier 2 물체 감지 */
     const char *obj_model;     /* --obj-model PATH, NULL=비활성 */
     int detect_every_obj;      /* --detect-every-obj N, 기본 90 */
+    /* 오프라인 평가 전용(기본 꺼짐). 라이브 카메라 동작에는 영향이 없다. */
+    int video_clock;           /* --video-clock: 룰 시간을 영상 시간(frame/fps)으로 */
+    const char *infer_cache;   /* --infer-cache PATH: 추론 결과 기록·재생, NULL=꺼짐 */
 } Arguments;
 
 /* SIGINT/SIGTERM 처리기는 비동기 신호에 안전한 sig_atomic_t 값만 변경합니다. */
@@ -418,6 +423,8 @@ static void usage(const char *program) {
         "  --motion-gate 0|1       skip inference on static scenes (default: 1)\n"
         "  --obj-model PATH        Tier 2 object detection model (ONNX); omit to disable\n"
         "  --detect-every-obj N    run Tier 2 every N frames (default: 90, ~3s at 30fps)\n"
+        "  --video-clock           offline evaluation: rule time = video time (frame/fps), not wall clock\n"
+        "  --infer-cache PATH      offline evaluation: record/replay model outputs (PATH.obj for Tier 2)\n"
         "\n",
         program, program);
 }
@@ -657,6 +664,11 @@ static int parse_arguments(int argc, char **argv, Arguments *args) {
             if (require_value(argc, argv, &i, &value) != 0 ||
                 parse_long(value, 1, 10000, &parsed) != 0) return -1;
             args->detect_every_obj = (int)parsed;
+        } else if (strcmp(argv[i], "--video-clock") == 0) {
+            args->video_clock = 1;
+        } else if (strcmp(argv[i], "--infer-cache") == 0) {
+            if (require_value(argc, argv, &i, &args->infer_cache) != 0)
+                return -1;
         } else {
             fprintf(stderr, "unknown option: %s\n", argv[i]);
             return -1;
@@ -675,6 +687,11 @@ static int parse_arguments(int argc, char **argv, Arguments *args) {
         (args->camera && args->input) ||
         (!args->camera && !args->input))
         return -1;
+    /* 라이브 카메라에는 영상 시간축이 없다. 조용히 무시하지 않고 거부한다. */
+    if (args->video_clock && args->camera) {
+        fprintf(stderr, "--video-clock cannot be used with --camera (live input has no video timeline)\n");
+        return -1;
+    }
     if (args->camera) {
         args->media.input_format = args->camera_format
                                        ? args->camera_format
@@ -1240,6 +1257,27 @@ static double calib_clock(const AppContext *app, const RgbFrame *frame, double n
     return (double)frame->index / fps;
 }
 
+/*
+ * 영상 시간 모드(--video-clock)의 now. 파일을 실시간보다 빨리 돌리면 벽시계 기준 룰(쓰러짐 유지 시간,
+ * 체류 시간, 소실 판정 등)이 영상과 어긋나므로, 오프라인 평가에서는 프레임 번호/fps 로 시간을 만든다.
+ * 같은 계산이 calib_clock 에도 있지만 그쪽은 보정 전용이라 오프셋이 없어 따로 둔다.
+ * fps 를 알 수 없으면 벽시계로 대체하고 한 번만 알린다(조용히 틀린 시간으로 평가하지 않기 위해).
+ */
+static double video_clock_now(AppContext *app, const RgbFrame *frame) {
+    double fps = app->media_stats ? app->media_stats->frame_rate : 0.0;
+    double t = platform_video_seconds(frame->index, fps);
+    if (t < 0.0) {
+        if (!app->video_clock_warned) {
+            app->video_clock_warned = 1;
+            fprintf(stderr, "video-clock: input frame rate unknown, falling back to wall clock\n");
+            event_log_write(&app->event_log, LOG_WARN, "startup",
+                            "video_clock: 입력 fps를 알 수 없어 벽시계로 대체합니다 — 룰 시간이 영상과 맞지 않습니다");
+        }
+        return platform_monotonic_seconds();
+    }
+    return t;
+}
+
 /* 첫 프레임에서 한 번 호출합니다. 해상도는 프레임이 와야 알 수 있기 때문입니다. */
 static void calib_boot(AppContext *app, int frame_w, int frame_h, double now) {
     char msg[256];
@@ -1787,7 +1825,8 @@ static int process_frame(RgbFrame *frame, void *opaque,
     int gate_hard_block = 0;
     const char *kind = "reused";
     double started;
-    double now = platform_monotonic_seconds();
+    double now = app->video_clock ? video_clock_now(app, frame)
+                                  : platform_monotonic_seconds();
     if (log_rotation_tick(&app->log_rotation, &app->event_log, &app->replay, &app->perf_log, now) > 0)
         app->replay_geometry_revision=-1;
     app->replay.now=now;
@@ -1915,7 +1954,11 @@ static int process_frame(RgbFrame *frame, void *opaque,
     /* ── 적응형 감속 ───────────────────────────────────────────────────────
      * 단계가 바뀔 때만 로그를 남깁니다. 남기지 않으면 "왜 갑자기 감지가 느려졌지"에
      * 답할 방법이 없습니다. module 을 perf 로 두면 대시보드 피드에서 걸러지므로 throttle 로 둡니다. */
-    if (throttle_update(&app->throttle, now, platform_process_cpu_seconds(),
+    /* 영상 시간 모드에서는 감속을 끈다: throttle_update 는 now 와 실제 CPU 카운터를 섞어 쓰므로, 영상
+     * 시간(프레임당 0.33초)과 실제 경과가 달라 "다른 프로그램이 CPU 를 쓴다"고 오판해 추론 주기를
+     * 늘릴 수 있다. 오프라인 평가에서는 추론 주기가 바뀌면 결과가 달라진다. */
+    if (!app->video_clock &&
+        throttle_update(&app->throttle, now, platform_process_cpu_seconds(),
                         (int)platform_cpu_count())) {
         char tmsg[220];
         ThrottleLevel lv = app->throttle.level;
@@ -3037,6 +3080,7 @@ int main(int argc, char **argv) {
     args.media.stats = &media_stats;
     app.media_stats = &media_stats;
     app.realtime_input = args.media.realtime;
+    app.video_clock = args.video_clock;
     args.media.on_event = on_camera_event;
     args.media.event_opaque = &app;
 
@@ -3104,6 +3148,7 @@ int main(int argc, char **argv) {
         args.model = auto_model;
     }
 
+    args.detector.cache_path = args.infer_cache;  /* NULL 이면 꺼짐. 포인터는 이 호출 동안만 읽힌다 */
     app.detector = detector_create(args.model, &args.detector,
                                    error, sizeof(error));
     if (!app.detector) {
@@ -3126,6 +3171,13 @@ int main(int argc, char **argv) {
         DetectorOptions obj_opts = args.detector;  /* 스레드 수 등 공유 */
         /* 2단계 매칭으로 낮춘 신뢰도는 사람 추적 전용입니다. 물체 감지는 원래 기준을 씁니다. */
         if (app.keep_score > 0.0f) obj_opts.confidence = app.keep_score;
+        /* Tier 2 는 모델·호출 순서가 Tier 1 과 달라 같은 캐시 파일을 쓰면 지문이 어긋난다. 접미사로 분리. */
+        char obj_cache_path[1100];
+        obj_opts.cache_path = NULL;
+        if (args.infer_cache && args.infer_cache[0]) {
+            snprintf(obj_cache_path, sizeof(obj_cache_path), "%s.obj", args.infer_cache);
+            obj_opts.cache_path = obj_cache_path;  /* 이 블록 안에서 detector_create 동안만 쓰인다 */
+        }
         app.obj_detector = detector_create(args.obj_model, &obj_opts,
                                            error, sizeof(error));
         if (!app.obj_detector) {
@@ -3297,6 +3349,17 @@ int main(int argc, char **argv) {
      */
     {
         char msg[192];
+        if (app.video_clock)
+            event_log_write(&app.event_log, LOG_INFO, "startup",
+                            "video_clock=on — 룰·트래커·문 판정 시간을 영상 시간(프레임 번호/fps)으로 계산, "
+                            "throttle 비활성 (오프라인 평가 전용)");
+        if (args.infer_cache && args.infer_cache[0]) {
+            char cmsg[1200];
+            snprintf(cmsg, sizeof(cmsg),
+                     "infer_cache=%s — 모델 출력 기록·재생 (오프라인 평가 전용, Tier 2 는 .obj 접미사)",
+                     args.infer_cache);
+            event_log_write(&app.event_log, LOG_INFO, "startup", cmsg);
+        }
         if (!app.rules.config.roi_kiosk_set)
             event_log_write(&app.event_log, LOG_WARN, "startup",
                             "roi_kiosk 미설정 — 주문 상태 전환(ORDERED) 비활성, "
