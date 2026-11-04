@@ -882,6 +882,104 @@ static void test_fall_false_positive_regressions(void) {
     }
 }
 
+/* ── 쓰러짐 보강: 트랙 인계와 넓은 박스 증거(둘 다 config 로 켜는 기능, 기본 꺼짐) ───────────── */
+
+/* 서 있던 트랙 1 이 쓰러지며 매칭이 끊기고, 같은 자리에 누운 사람이 새 트랙 2 로 잡힌 상황을 만든다. */
+static int fall_handoff_scenario(double handoff_seconds, double track2_first_seen, float track2_dx) {
+    TrackList tl; RulesEngine re = {0}; EventLog log; char error[128] = {0};
+    RulesConfig cfg = {3600, 300, 5, 1.8f, 2.2f};
+    int fired, j;
+    cfg.fall_handoff_seconds = handoff_seconds;
+    event_log_open(&log, ":memory:", LOG_INFO, 0);
+    tracks_init(&tl, 16, .3f, 5, 1800, .45f, error, sizeof(error));
+    rules_init(&re, 16, &cfg, error, sizeof(error));
+    tl.count = 2;
+    tl.items[0].id = 1; tl.items[0].active = 1;
+    fall_seed_upright(&re, &tl, &log);                 /* 트랙 1: 직립 이력(98~99.1초) */
+    tl.items[0].box = fall_test_pose(1);               /* 끊기기 직전 마지막 박스는 선 모양 */
+    tl.items[0].misses = 1; tl.items[0].last_seen = 99.1; /* 이후 매칭되지 않음 */
+    tl.items[1].id = 2; tl.items[1].active = 1; tl.items[1].first_seen = track2_first_seen;
+    tl.items[1].box = fall_test_pose(0);
+    tl.items[1].box.x1 += track2_dx; tl.items[1].box.x2 += track2_dx;
+    for (j = 0; j < 9; ++j) {
+        double now = 100.0 + j;
+        tl.items[1].last_seen = now; tl.items[1].match_score = .9f;
+        rules_evaluate(&re, &tl, now, &log);
+    }
+    fired = count_events(&log, "person_fallen");
+    rules_destroy(&re); tracks_destroy(&tl); event_log_close(&log);
+    return fired;
+}
+
+static void test_fall_handoff_links_fragmented_track(void) {
+    EXPECT_INT_EQ(fall_handoff_scenario(0.0, 99.5, 0.0f), 0);   /* 꺼짐(기본): 새 트랙은 직립 이력이 없어 막힌다 */
+    EXPECT_INT_EQ(fall_handoff_scenario(3.0, 99.5, 0.0f), 1);   /* 켜짐: 이력을 승계해 발화 */
+    EXPECT_INT_EQ(fall_handoff_scenario(3.0, 110.0, 0.0f), 0);  /* 새 트랙이 한참 뒤에 태어남 = 다른 사람 */
+    EXPECT_INT_EQ(fall_handoff_scenario(3.0, 99.5, 5000.0f), 0);/* 멀리 떨어진 곳 = 다른 사람 */
+}
+
+/* 이미 매칭 중인 트랙(아직 보이는 사람)의 이력은 새 트랙에 넘기지 않는다. */
+static void test_fall_handoff_ignores_matched_track(void) {
+    TrackList tl; RulesEngine re = {0}; EventLog log; char error[128] = {0};
+    RulesConfig cfg = {3600, 300, 5, 1.8f, 2.2f};
+    int j;
+    cfg.fall_handoff_seconds = 3.0;
+    event_log_open(&log, ":memory:", LOG_INFO, 0);
+    tracks_init(&tl, 16, .3f, 5, 1800, .45f, error, sizeof(error));
+    rules_init(&re, 16, &cfg, error, sizeof(error));
+    tl.count = 2;
+    tl.items[0].id = 1; tl.items[0].active = 1;
+    fall_seed_upright(&re, &tl, &log);
+    tl.items[0].box = fall_test_pose(1);               /* 트랙 1 은 계속 서 있다(misses==0) */
+    tl.items[1].id = 2; tl.items[1].active = 1; tl.items[1].first_seen = 99.5;
+    tl.items[1].box = fall_test_pose(0);
+    for (j = 0; j < 9; ++j) {
+        double now = 100.0 + j;
+        tl.items[0].last_seen = now; tl.items[0].match_score = .9f;
+        tl.items[1].last_seen = now; tl.items[1].match_score = .9f;
+        rules_evaluate(&re, &tl, now, &log);
+    }
+    EXPECT_INT_EQ(count_events(&log, "person_fallen"), 0);
+    rules_destroy(&re); tracks_destroy(&tl); event_log_close(&log);
+}
+
+/* 직립 이력이 있는 트랙의 낮은 점수 넓은 박스. mode: 0 기본, 1 이력 없음, 2 점수 낮음, 3 가장자리, 4 비율 부족, 5 중간에 직립 복귀 */
+static int fall_wide_scenario(float wide_ratio, int mode) {
+    TrackList tl; RulesEngine re = {0}; EventLog log; char error[128] = {0};
+    RulesConfig cfg = {3600, 300, 5, 1.8f, 2.2f};
+    int fired, j;
+    cfg.fall_wide_ratio = wide_ratio; cfg.fall_wide_min_score = .25f;
+    event_log_open(&log, ":memory:", LOG_INFO, 0);
+    tracks_init(&tl, 16, .3f, 5, 1800, .45f, error, sizeof(error));
+    rules_init(&re, 16, &cfg, error, sizeof(error));
+    rules_set_frame_size(&re, 1920, 1080);
+    tl.count = 1; tl.items[0].id = 1; tl.items[0].active = 1;
+    if (mode != 1) fall_seed_upright(&re, &tl, &log);
+    for (j = 0; j < 9; ++j) {
+        Track *t = &tl.items[0]; double now = 100.0 + j;
+        t->box = (Detection){0};
+        t->box.x1 = mode == 3 ? 0.0f : 100.0f; t->box.x2 = t->box.x1 + (mode == 4 ? 110.0f : 250.0f);
+        t->box.y1 = 200; t->box.y2 = 300; t->box.keypoint_count = 0; /* 키포인트 판정 불가 */
+        t->box.score = mode == 2 ? .2f : .3f;
+        t->match_score = t->box.score; t->last_seen = now;
+        if (mode == 5 && j == 3) { t->box = fall_test_pose(1); t->match_score = .9f; } /* 다시 일어섬 */
+        rules_evaluate(&re, &tl, now, &log);
+    }
+    fired = count_events(&log, "person_fallen");
+    rules_destroy(&re); tracks_destroy(&tl); event_log_close(&log);
+    return fired;
+}
+
+static void test_fall_wide_box_evidence(void) {
+    EXPECT_INT_EQ(fall_wide_scenario(0.0f, 0), 0);   /* 꺼짐(기본): 낮은 신뢰도 박스는 근거가 아니다 */
+    EXPECT_INT_EQ(fall_wide_scenario(1.6f, 0), 1);   /* 켜짐: 이력 + 넓은 박스 유지 → 발화 */
+    EXPECT_INT_EQ(fall_wide_scenario(1.6f, 1), 0);   /* 직립 이력 없음 */
+    EXPECT_INT_EQ(fall_wide_scenario(1.6f, 2), 0);   /* 관측 점수가 최소 미만 */
+    EXPECT_INT_EQ(fall_wide_scenario(1.6f, 3), 0);   /* 화면 가장자리에 닿아 비율을 믿을 수 없음 */
+    EXPECT_INT_EQ(fall_wide_scenario(1.6f, 4), 0);   /* 박스가 충분히 넓지 않음(1.1) */
+    EXPECT_INT_EQ(fall_wide_scenario(1.6f, 5), 0);   /* 중간에 다시 서면 누적이 초기화됨 */
+}
+
 static void test_rules_fall_geometry(void) {
     /* 수평 bbox(keypoint 없음) + fall_hold 충족 → person_fallen 이벤트 */
     TrackList tl;
@@ -3733,6 +3831,9 @@ int main(void) {
     RUN_TEST(test_rules_limbo_expiry_releases_state);
     RUN_TEST(test_rules_unordered_requires_roi);
     RUN_TEST(test_rules_fall_geometry);
+    RUN_TEST(test_fall_handoff_links_fragmented_track);
+    RUN_TEST(test_fall_handoff_ignores_matched_track);
+    RUN_TEST(test_fall_wide_box_evidence);
     RUN_TEST(test_fall_false_positive_regressions);
     RUN_TEST(test_rules_fall_requires_hold);
     RUN_TEST(test_rules_unordered_seated);

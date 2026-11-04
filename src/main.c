@@ -1491,6 +1491,16 @@ static void apply_throttle_config(AppContext *app, const Config *cfg) {
     throttle_configure(&app->throttle, &tc);
 }
 
+/* 쓰러짐 보강 설정. 기본값은 모두 꺼짐(rules.h 의 이유 참조). 시작 시와 hot-reload 양쪽에서 호출합니다. */
+static void apply_fall_extra_config(RulesConfig *rc, const Config *cfg) {
+    rc->fall_handoff_seconds =
+        (double)config_float(cfg, "fall_handoff_seconds", 0.0f, 0.0f, 30.0f);
+    rc->fall_wide_ratio =
+        config_float(cfg, "fall_wide_ratio", 0.0f, 0.0f, 5.0f);
+    rc->fall_wide_min_score =
+        config_float(cfg, "fall_wide_min_score", 0.25f, 0.05f, 0.99f);
+}
+
 /* 미확인 소실 임계값. 시작 시와 hot-reload 양쪽에서 같은 값을 쓰도록 한 곳에 모읍니다. */
 static void apply_vanish_config(RulesConfig *rc, const Config *cfg) {
     rc->vanish_enabled =
@@ -1619,6 +1629,7 @@ static void reload_config(AppContext *app) {
         config_float(&cfg, "fall_aspect_ratio_nokp", 2.2f, 0.8f, 5.0f);
     apply_object_rule_config(&rules_cfg, &cfg);
     apply_vanish_config(&rules_cfg, &cfg);
+    apply_fall_extra_config(&rules_cfg, &cfg);
     apply_roi_kiosk(&rules_cfg, &cfg);
     rules_update_config(&app->rules, &rules_cfg);
 
@@ -3271,6 +3282,7 @@ int main(int argc, char **argv) {
         apply_camera_health_config(&app, &cfg);
         apply_object_rule_config(&rules_cfg, &cfg);
         apply_vanish_config(&rules_cfg, &cfg);
+        apply_fall_extra_config(&rules_cfg, &cfg);
         apply_roi_kiosk(&rules_cfg, &cfg);
         /* 문 여닫이 설정 — door_load는 cfg 블록 밖에서 (data_dir 필요) */
         app.door.enabled                 = (int)config_long (&cfg, "door_enabled",        1,    0,    1);

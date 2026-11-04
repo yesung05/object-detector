@@ -277,6 +277,114 @@ int is_horizontal_pose_for_test(const Detection *box, float ratio_kp, float rati
     return is_horizontal_pose(box, ratio_kp, ratio_nokp, frame_w, frame_h);
 }
 
+/* 상태를 만들지 않고 찾기만 합니다(get_state 는 없으면 할당한다). 반환은 RulesEngine 소유. */
+static TrackRuleState *find_state(RulesEngine *re, int track_id) {
+    size_t i;
+    for (i = 0; i < re->capacity; ++i)
+        if (re->states[i].track_id == track_id) return &re->states[i];
+    return NULL;
+}
+
+/* 박스가 화면 경계에 닿으면 잘렸을 수 있어 비율을 믿을 수 없습니다(is_horizontal_pose 와 같은 기준). */
+static int box_touches_edge(const Detection *b, int frame_w, int frame_h) {
+    return frame_w > 0 && frame_h > 0 &&
+           (b->x1 <= 2.0f || b->y1 <= 2.0f ||
+            b->x2 >= (float)frame_w - 2.0f || b->y2 >= (float)frame_h - 2.0f);
+}
+
+/*
+ * 트랙 인계: 쓰러지는 순간 IoU 매칭이 끊겨 누운 사람이 새 트랙이 된 경우, 끊긴 직립 트랙의 직립 이력을 넘겨받습니다.
+ *
+ * 새 트랙은 직립 이력이 0 이라 수평 자세가 아무리 확실해도 "처음부터 누워 있던 사람"으로 보여 막힙니다(fall_gate 4).
+ * 이 막힘은 오탐 방지의 핵심이라 풀면 안 되고, 대신 "방금 서 있다가 끊긴 트랙과 같은 사람"이라는 증거가 있을
+ * 때만 이력을 넘깁니다. 다음을 모두 요구해 다른 사람 사이의 승계를 막습니다.
+ *   - 이력을 줄 트랙이 지금은 매칭되지 않고 있음(아직 매칭 중인 트랙은 다른 사람)
+ *   - 새 트랙이 태어난 시각이 그 트랙의 마지막 관측과 handoff 시간 안임(동시에 끊기고 생겼다)
+ *   - 새 박스 중심이 끊긴 박스에서 "몸 길이" 이내임(누운 사람은 선 자리 근처에 있다)
+ * 이력은 한 번만 넘깁니다(넘긴 쪽을 0 으로). 반환 1 = 승계함.
+ */
+static int try_fall_handoff(RulesEngine *re, const TrackList *tl, const Track *t,
+                            TrackRuleState *s, double now, EventLog *elog) {
+    double win = re->config.fall_handoff_seconds;
+    float tcx = (t->box.x1 + t->box.x2) * 0.5f, tcy = (t->box.y1 + t->box.y2) * 0.5f;
+    float tw = t->box.x2 - t->box.x1;
+    const Track *best = NULL;
+    TrackRuleState *best_state = NULL;
+    float best_dist = 0.0f;
+    size_t i;
+    if (win <= 0.0) return 0;
+    for (i = 0; i < tl->count; ++i) {
+        const Track *o = &tl->items[i];
+        TrackRuleState *os;
+        float ocx, ocy, oh, reach, dist, dx, dy;
+        double gap;
+        if (o->id <= 0 || o->id == t->id) continue;
+        if (o->active && o->misses == 0) continue;
+        os = find_state(re, o->id);
+        if (!os || os->upright_last <= 0 || now - os->upright_last > 30.0) continue;
+        gap = t->first_seen - o->last_seen;
+        if (gap > win || gap < -win) continue;
+        ocx = (o->box.x1 + o->box.x2) * 0.5f; ocy = (o->box.y1 + o->box.y2) * 0.5f;
+        oh = o->box.y2 - o->box.y1;
+        reach = oh > tw ? oh : tw;
+        dx = tcx - ocx; dy = tcy - ocy;
+        dist = (float)sqrt((double)(dx * dx + dy * dy));
+        if (dist > reach) continue;
+        if (!best || dist < best_dist) { best = o; best_state = os; best_dist = dist; }
+    }
+    if (!best) return 0;
+    s->upright_last = best_state->upright_last;
+    best_state->upright_last = 0.0;  /* 한 번만 승계 */
+    if (elog) {
+        char m[160];
+        snprintf(m, sizeof(m), "fall_handoff from=%d to=%d dist=%.0f gap=%.1fs",
+                 best->id, t->id, best_dist, t->first_seen - best->last_seen);
+        event_log_write(elog, LOG_INFO, "rules", m);
+    }
+    return 1;
+}
+
+/*
+ * 넓은 박스 증거(fall_wide_ratio): 키포인트 판정이 불가능한 쓰러짐을 박스 모양만으로 잡습니다.
+ *
+ * 쓰러진 사람은 포즈 모델 점수가 무너져(AI-Hub dev: 정답 구간 중앙값 0.33) 기존 경로가 신뢰도·몸통 자세 게이트에서
+ * 막힙니다. 그래도 박스는 가로로 넓게(구간 중앙값 가로/세로 1.8) 남습니다. 오탐을 막으려고 다음을 모두 요구합니다.
+ *   - 직립 이력이 있음(서 있던 사람이 이 모양이 되었다는 전이 증거, 인계 포함)
+ *   - 실제 입력 점수가 fall_wide_min_score 이상(이월된 점수가 아님 — 기존 회귀 테스트가 막으려던 경우)
+ *   - 화면 가장자리에 닿지 않음(잘린 박스의 비율은 믿지 않는다)
+ *   - 같은 조건이 3샘플 이상, fall_hold_seconds 이상 유지
+ * 직립으로 다시 판정되면 즉시 초기화합니다. 반환 1 = 이번에 발화.
+ */
+static int fall_wide_step(RulesEngine *re, const TrackList *tl, const Track *t,
+                          TrackRuleState *s, int quality, int pose, double now,
+                          EventLog *elog) {
+    const Detection *b = &t->box;
+    float w = b->x2 - b->x1, h = b->y2 - b->y1;
+    int have_hist, wide;
+    char msg[256];
+    if (re->config.fall_wide_ratio <= 0.0f || s->fall_latched) return 0;
+    if (quality && pose == 1) { s->wide_start = 0.0; s->wide_samples = 0; return 0; }
+    have_hist = s->upright_last > 0 && now - s->upright_last <= 30.0;
+    if (!have_hist && s->upright_last <= 0)
+        have_hist = try_fall_handoff(re, tl, t, s, now, elog);
+    wide = have_hist && h >= FALL_MIN_H && w > h * re->config.fall_wide_ratio &&
+           isfinite(t->match_score) && t->match_score >= re->config.fall_wide_min_score &&
+           !box_touches_edge(b, re->frame_width, re->frame_height);
+    if (!wide) { s->wide_start = 0.0; s->wide_samples = 0; return 0; }
+    if (s->wide_start <= 0.0) s->wide_start = now;
+    s->wide_samples++;
+    if (s->wide_samples >= 3 && now - s->wide_start >= re->config.fall_hold_seconds) {
+        s->fall_latched = 1; s->fall_gate = 6;
+        snprintf(msg, sizeof(msg),
+                 "person_fallen track=%d hold=%.1fs score=%.2f match=%.2f samples=%u evidence=upright_to_wide_box",
+                 t->id, now - s->wide_start, b->score, t->match_score, s->wide_samples);
+        event_log_write(elog, LOG_ERROR, "rules", msg);
+        note_fall(re, t);
+        return 1;
+    }
+    return 0;
+}
+
 /*
  * 물체 감지 결과(DetectionList)와 현재 사람 트랙(TrackList)을 조합하여
  * Tier 2 룰을 평가합니다. Tier 1의 track_id 기반 latch와 달리
@@ -746,6 +854,7 @@ void rules_evaluate(RulesEngine *re, TrackList *tl, double now, EventLog *elog) 
             quality=isfinite(b->score)&&isfinite(t->match_score)&&b->score>=.5f&&t->match_score>=.5f;
             pose=quality?fall_torso_pose(b):0;
             if(quality)s->dbg_pose=pose;
+            fall_wide_step(re,tl,t,s,quality,pose,now,elog); /* 꺼져 있으면(기본) 즉시 반환 */
             if(!quality || !pose) {
                 s->fall_gate=quality?3:1;s->fall_start=0;s->fall_samples=0;
                 s->upright_start=0;s->upright_samples=0;
@@ -766,6 +875,8 @@ void rules_evaluate(RulesEngine *re, TrackList *tl, double now, EventLog *elog) 
             s->dbg_horizontal=horizontal;
             if(!horizontal) {s->fall_start=0;s->fall_samples=0;s->fall_gate=3;continue;}
             if(s->fall_latched) {s->fall_gate=6;continue;}
+            if(s->upright_last<=0 && re->config.fall_handoff_seconds>0)
+                try_fall_handoff(re,tl,t,s,now,elog); /* 성공하면 아래 직립 이력 검사를 통과한다 */
             if(s->upright_last<=0 || now-s->upright_last>30.0) {
                 s->fall_gate=4;s->fall_start=0;s->fall_samples=0;continue;
             }
