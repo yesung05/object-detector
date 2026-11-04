@@ -1495,6 +1495,8 @@ static void apply_throttle_config(AppContext *app, const Config *cfg) {
 static void apply_fall_extra_config(RulesConfig *rc, const Config *cfg) {
     rc->fall_handoff_seconds =
         (double)config_float(cfg, "fall_handoff_seconds", 0.0f, 0.0f, 30.0f);
+    rc->fall_handoff_reach =
+        config_float(cfg, "fall_handoff_reach", 1.0f, 0.1f, 3.0f);
     rc->fall_wide_ratio =
         config_float(cfg, "fall_wide_ratio", 0.0f, 0.0f, 5.0f);
     rc->fall_wide_min_score =

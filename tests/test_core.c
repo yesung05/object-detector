@@ -885,11 +885,12 @@ static void test_fall_false_positive_regressions(void) {
 /* ── 쓰러짐 보강: 트랙 인계와 넓은 박스 증거(둘 다 config 로 켜는 기능, 기본 꺼짐) ───────────── */
 
 /* 서 있던 트랙 1 이 쓰러지며 매칭이 끊기고, 같은 자리에 누운 사람이 새 트랙 2 로 잡힌 상황을 만든다. */
-static int fall_handoff_scenario(double handoff_seconds, double track2_first_seen, float track2_dx) {
+static int fall_handoff_scenario(double handoff_seconds, double track2_first_seen, float track2_dx,
+                                 float reach) {
     TrackList tl; RulesEngine re = {0}; EventLog log; char error[128] = {0};
     RulesConfig cfg = {3600, 300, 5, 1.8f, 2.2f};
     int fired, j;
-    cfg.fall_handoff_seconds = handoff_seconds;
+    cfg.fall_handoff_seconds = handoff_seconds; cfg.fall_handoff_reach = reach;
     event_log_open(&log, ":memory:", LOG_INFO, 0);
     tracks_init(&tl, 16, .3f, 5, 1800, .45f, error, sizeof(error));
     rules_init(&re, 16, &cfg, error, sizeof(error));
@@ -912,10 +913,13 @@ static int fall_handoff_scenario(double handoff_seconds, double track2_first_see
 }
 
 static void test_fall_handoff_links_fragmented_track(void) {
-    EXPECT_INT_EQ(fall_handoff_scenario(0.0, 99.5, 0.0f), 0);   /* 꺼짐(기본): 새 트랙은 직립 이력이 없어 막힌다 */
-    EXPECT_INT_EQ(fall_handoff_scenario(3.0, 99.5, 0.0f), 1);   /* 켜짐: 이력을 승계해 발화 */
-    EXPECT_INT_EQ(fall_handoff_scenario(3.0, 110.0, 0.0f), 0);  /* 새 트랙이 한참 뒤에 태어남 = 다른 사람 */
-    EXPECT_INT_EQ(fall_handoff_scenario(3.0, 99.5, 5000.0f), 0);/* 멀리 떨어진 곳 = 다른 사람 */
+    EXPECT_INT_EQ(fall_handoff_scenario(0.0, 99.5, 0.0f, 0.0f), 0);   /* 꺼짐(기본): 새 트랙은 직립 이력이 없어 막힌다 */
+    EXPECT_INT_EQ(fall_handoff_scenario(3.0, 99.5, 0.0f, 0.0f), 1);   /* 켜짐: 이력을 승계해 발화 */
+    EXPECT_INT_EQ(fall_handoff_scenario(3.0, 110.0, 0.0f, 0.0f), 0);  /* 새 트랙이 한참 뒤에 태어남 = 다른 사람 */
+    EXPECT_INT_EQ(fall_handoff_scenario(3.0, 99.5, 5000.0f, 0.0f), 0);/* 멀리 떨어진 곳 = 다른 사람 */
+    /* 도달 거리 배율: 두 박스 중심 거리 약 99px, 기본 도달 250px. 배율 1.0 은 기본과 같고 0.3(75px)은 막힌다. */
+    EXPECT_INT_EQ(fall_handoff_scenario(3.0, 99.5, 0.0f, 1.0f), 1);
+    EXPECT_INT_EQ(fall_handoff_scenario(3.0, 99.5, 0.0f, 0.3f), 0);
 }
 
 /* 이미 매칭 중인 트랙(아직 보이는 사람)의 이력은 새 트랙에 넘기지 않는다. */

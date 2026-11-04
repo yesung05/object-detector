@@ -310,7 +310,7 @@ static int try_fall_handoff(RulesEngine *re, const TrackList *tl, const Track *t
     float tw = t->box.x2 - t->box.x1;
     const Track *best = NULL;
     TrackRuleState *best_state = NULL;
-    float best_dist = 0.0f;
+    float best_dist = 0.0f, best_reach = 0.0f;
     size_t i;
     if (win <= 0.0) return 0;
     for (i = 0; i < tl->count; ++i) {
@@ -326,19 +326,19 @@ static int try_fall_handoff(RulesEngine *re, const TrackList *tl, const Track *t
         if (gap > win || gap < -win) continue;
         ocx = (o->box.x1 + o->box.x2) * 0.5f; ocy = (o->box.y1 + o->box.y2) * 0.5f;
         oh = o->box.y2 - o->box.y1;
-        reach = oh > tw ? oh : tw;
+        reach = (oh > tw ? oh : tw) * (re->config.fall_handoff_reach > 0.0f ? re->config.fall_handoff_reach : 1.0f);
         dx = tcx - ocx; dy = tcy - ocy;
         dist = (float)sqrt((double)(dx * dx + dy * dy));
         if (dist > reach) continue;
-        if (!best || dist < best_dist) { best = o; best_state = os; best_dist = dist; }
+        if (!best || dist < best_dist) { best = o; best_state = os; best_dist = dist; best_reach = reach; }
     }
     if (!best) return 0;
     s->upright_last = best_state->upright_last;
     best_state->upright_last = 0.0;  /* 한 번만 승계 */
     if (elog) {
         char m[160];
-        snprintf(m, sizeof(m), "fall_handoff from=%d to=%d dist=%.0f gap=%.1fs",
-                 best->id, t->id, best_dist, t->first_seen - best->last_seen);
+        snprintf(m, sizeof(m), "fall_handoff from=%d to=%d dist=%.0f gap=%.1fs reach=%.0f",
+                 best->id, t->id, best_dist, t->first_seen - best->last_seen, best_reach);
         event_log_write(elog, LOG_INFO, "rules", m);
     }
     return 1;

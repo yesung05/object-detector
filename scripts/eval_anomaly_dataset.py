@@ -22,6 +22,7 @@ import csv
 import json
 import os
 import sqlite3
+import shutil
 import statistics
 import subprocess
 import sys
@@ -67,8 +68,20 @@ def run_clip(a, row, label_dir, cache_dir):
     cmd = [a.exe, "--model", a.model, "--provider", "cpu", "--threads", str(a.threads),
            "--input", row["video"], "--video-clock", "--motion-gate", "0", "--detect-fps", "0",
            "--detect-every", "1", "--event-log", str(db)]
+    cfg_dir = None
     if a.config:
-        cmd += ["--config", a.config]
+        # unmanned_detector.exe 의 데이터 디렉터리는 --config 파일이 있는 폴더라서(main.c data_dir), 잔류물 기준
+        # 이미지(residue_clean_reference.raw)·문 위치(door_location.json)·보정(calibration.json) 같은 상태 파일이 그
+        # 폴더에 저장되고 같은 설정을 쓰는 모든 클립이 공유한다. 한 클립이 만든 기준을 다음 클립이 이어받아 잔류물
+        # 이벤트가 쏟아지는 누수가 실제로 있었다(유기 평가). 설정을 클립별 폴더로 복사해 상태를 격리한다.
+        if a.shared_config:
+            cmd += ["--config", a.config]
+        else:
+            cfg_dir = label_dir / "_cfg" / clip
+            cfg_dir.mkdir(parents=True, exist_ok=True)
+            iso = cfg_dir / Path(a.config).name
+            shutil.copyfile(a.config, iso)
+            cmd += ["--config", str(iso)]
     if cache_dir:
         cmd += ["--infer-cache", str(cache_dir / f"{clip}.bin")]
     t0 = time.time()
@@ -78,17 +91,19 @@ def run_clip(a, row, label_dir, cache_dir):
             status = "ok" if r.returncode == 0 else f"exit={r.returncode}"
         except subprocess.TimeoutExpired:
             status = "timeout"
+    if cfg_dir is not None:
+        shutil.rmtree(cfg_dir, ignore_errors=True)  # 상태 파일(captures 등)을 남기지 않는다
     return row, db, time.time() - t0, status
 
 
-def read_events(db, fps):
-    """룰 이벤트를 (프레임, 레벨, 토큰, 메시지) 로 돌려준다. 영상 시간이 없는 이벤트는 프레임 None."""
+def read_events(db, fps, module="rules"):
+    """해당 모듈의 이벤트를 (프레임, 레벨, 토큰, 메시지) 로 돌려준다. 영상 시간이 없는 이벤트는 프레임 None."""
     con = sqlite3.connect(f"file:{str(db).replace(chr(92), '/')}?mode=ro", uri=True)
     try:
         q = ("SELECT e.id, e.level, e.module, e.message, r.mono FROM events e "
-             "LEFT JOIN replay_events r ON r.event_id = e.id WHERE e.module = 'rules' ORDER BY e.id")
+             "LEFT JOIN replay_events r ON r.event_id = e.id WHERE e.module = ? ORDER BY e.id")
         out = []
-        for _id, level, module, msg, mono in con.execute(q):
+        for _id, level, mod, msg, mono in con.execute(q, (module,)):
             frame = None if mono is None else int(round((mono - EPOCH) * fps))
             out.append({"frame": frame, "level": level, "token": msg.split(" ")[0], "message": msg})
         return out
@@ -107,8 +122,9 @@ def evaluate(a, results):
         if status not in ("ok", "resumed") or not Path(db).exists():
             clip_rows.append(rec)
             continue
-        evs = read_events(db, a.fps)
-        target = [e for e in evs if e["token"] == a.event]
+        evs = read_events(db, a.fps, a.module)
+        targets = set(a.event.split(","))  # 쉼표로 여러 이벤트(예: person_fallen,person_unaccounted)를 합산
+        target = [e for e in evs if e["token"] in targets]
         gt = json.loads(row["events"])
         windows = [[s - pre, (e if e is not None else s) + post] for s, e in gt]
         is_positive = cls in a.positive_classes
@@ -166,7 +182,8 @@ def main():
     ap.add_argument("--split", default="dev", choices=["dev", "test", "pool"])
     ap.add_argument("--classes", default="07", help="쉼표 구분 분류 코드(07=전도, 14=교통약자 ...)")
     ap.add_argument("--positive-classes", default="07", help="--event 가 정답 구간에 있어야 하는 분류")
-    ap.add_argument("--event", default="person_fallen")
+    ap.add_argument("--event", default="person_fallen", help="쉼표로 여러 개 가능(하나라도 있으면 검출)")
+    ap.add_argument("--module", default="rules", help="이벤트 로그의 module 열(룰=rules, 잔류물=residue)")
     ap.add_argument("--limit", type=int, default=0, help="분류별 최대 클립 수(균등 간격 추출), 0=전부")
     ap.add_argument("--per-scene", type=int, default=0, help="장면(카메라 6대 동시 촬영)당 최대 클립 수, 0=전부")
     ap.add_argument("--jobs", type=int, default=3)
@@ -178,6 +195,8 @@ def main():
     ap.add_argument("--cache-dir", default="", help="추론 캐시 폴더(없으면 매번 추론)")
     ap.add_argument("--timeout", type=int, default=900)
     ap.add_argument("--resume", action="store_true")
+    ap.add_argument("--shared-config", action="store_true",
+                    help="설정 폴더를 모든 클립이 공유(상태 파일이 클립 간에 샌다 — 디버깅 용도로만)")
     a = ap.parse_args()
     a.positive_classes = set(a.positive_classes.split(","))
     classes = set(a.classes.split(","))
