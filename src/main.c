@@ -66,6 +66,7 @@ typedef struct {
     LightTracker *tracker;
     FILE *detection_log;
     FILE *keypoint_log;   /* --keypoints CSV (박스당 관절 좌표), NULL 이면 비활성 */
+    FILE *fall_trace;     /* --fall-trace CSV. 소유: main(), 종료 시 fclose. NULL 이면 비활성 */
     FILE *preview_pipe;
     int detect_every;
     int tracking;
@@ -296,6 +297,7 @@ typedef struct {
     const char *camera_format;
     const char *detections_path;
     const char *keypoints_path;
+    const char *fall_trace_path; /* --fall-trace: 프레임·트랙별 쓰러짐 게이트 CSV(오프라인 진단 전용) */
     const char *metrics_path;
     const char *config_path;
     const char *event_log_path;
@@ -423,6 +425,7 @@ static void usage(const char *program) {
         "  --motion-gate 0|1       skip inference on static scenes (default: 1)\n"
         "  --obj-model PATH        Tier 2 object detection model (ONNX); omit to disable\n"
         "  --detect-every-obj N    run Tier 2 every N frames (default: 90, ~3s at 30fps)\n"
+        "  --fall-trace PATH       offline diagnosis: per-frame fall-rule gate CSV\n"
         "  --video-clock           offline evaluation: rule time = video time (frame/fps), not wall clock\n"
         "  --infer-cache PATH      offline evaluation: record/replay model outputs (PATH.obj for Tier 2)\n"
         "\n",
@@ -664,6 +667,9 @@ static int parse_arguments(int argc, char **argv, Arguments *args) {
             if (require_value(argc, argv, &i, &value) != 0 ||
                 parse_long(value, 1, 10000, &parsed) != 0) return -1;
             args->detect_every_obj = (int)parsed;
+        } else if (strcmp(argv[i], "--fall-trace") == 0) {
+            if (require_value(argc, argv, &i, &args->fall_trace_path) != 0)
+                return -1;
         } else if (strcmp(argv[i], "--video-clock") == 0) {
             args->video_clock = 1;
         } else if (strcmp(argv[i], "--infer-cache") == 0) {
@@ -2416,6 +2422,25 @@ static int process_frame(RgbFrame *frame, void *opaque,
         /* 쓰러짐 판정이 bbox 잘림을 확인할 수 있도록 프레임 크기를 알려 줍니다. */
         rules_set_frame_size(&app->rules, frame->width, frame->height);
         rules_evaluate(&app->rules, &app->tracks, now, &app->event_log);
+        if (app->fall_trace) {
+            /* 추론한 프레임에서만 한 번 호출되므로 프레임당 트랙 수만큼만 쓴다. 룰 상태는 읽기만 한다. */
+            size_t ti, si;
+            for (ti = 0; ti < app->tracks.count; ++ti) {
+                const Track *t = &app->tracks.items[ti];
+                const TrackRuleState *s = NULL; /* RulesEngine 소유, 이 블록 안에서만 읽음 */
+                if (t->id <= 0 || !t->active) continue;
+                for (si = 0; si < app->rules.capacity; ++si)
+                    if (app->rules.states[si].track_id == t->id) { s = &app->rules.states[si]; break; }
+                if (!s) continue;
+                fprintf(app->fall_trace,
+                        "%lld,%d,%d,%.3f,%.3f,%.1f,%.1f,%.1f,%.1f,%d,%d,%d,%.2f,%u,%.2f,%d\n",
+                        (long long)frame->index, t->id, t->misses, t->box.score, t->match_score,
+                        t->box.x1, t->box.y1, t->box.x2, t->box.y2, s->fall_gate, s->dbg_pose,
+                        s->dbg_horizontal, s->upright_last > 0 ? now - s->upright_last : -1.0,
+                        s->fall_samples, s->fall_start > 0 ? now - s->fall_start : 0.0,
+                        s->fall_latched);
+            }
+        }
         capture_fall_events(app, frame);
 
         /* Tier 2: detect_every_obj 주기마다 실행.
@@ -3198,6 +3223,15 @@ int main(int argc, char **argv) {
         }
         fputs("frame,kind,x1,y1,x2,y2,score\n", app.detection_log);
     }
+    if (args.fall_trace_path) {
+        app.fall_trace = fopen(args.fall_trace_path, "w");
+        if (!app.fall_trace) {
+            fprintf(stderr, "failed to open fall trace: %s\n", args.fall_trace_path);
+            goto done;
+        }
+        fputs("frame,track,misses,score,match,x1,y1,x2,y2,gate,pose,horizontal,upright_age,fall_samples,fall_hold,latched\n",
+              app.fall_trace);
+    }
     if (args.keypoints_path) {
         app.keypoint_log = fopen(args.keypoints_path, "w");
         if (!app.keypoint_log) {
@@ -3736,6 +3770,7 @@ done:
      */
     if (app.detection_log) fclose(app.detection_log);
     if (app.keypoint_log)  fclose(app.keypoint_log);
+    if (app.fall_trace)    fclose(app.fall_trace);
     if (app.preview_pipe) pclose(app.preview_pipe);
     replay_close(&app.replay,&app.event_log);
     event_log_close(&app.event_log);

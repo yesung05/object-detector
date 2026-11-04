@@ -732,6 +732,7 @@ void rules_evaluate(RulesEngine *re, TrackList *tl, double now, EventLog *elog) 
             double gap=t->last_seen-s->fall_last_observation;
             int pose, horizontal, quality;
             t->fall_sudden=0; /* Head template movement cannot bypass person validation. */
+            s->dbg_pose=s->dbg_horizontal=-1;
             if(t->misses || t->last_seen<=0 || now-t->last_seen>2.0 || t->last_seen>now+.01) {
                 s->fall_gate=2;s->fall_start=0;s->fall_samples=0;
                 still_reset(s); /* 관측이 끊긴 구간은 움직임 없음의 증거가 아닙니다 */
@@ -744,6 +745,7 @@ void rules_evaluate(RulesEngine *re, TrackList *tl, double now, EventLog *elog) 
             s->fall_last_observation=t->last_seen;
             quality=isfinite(b->score)&&isfinite(t->match_score)&&b->score>=.5f&&t->match_score>=.5f;
             pose=quality?fall_torso_pose(b):0;
+            if(quality)s->dbg_pose=pose;
             if(!quality || !pose) {
                 s->fall_gate=quality?3:1;s->fall_start=0;s->fall_samples=0;
                 s->upright_start=0;s->upright_samples=0;
@@ -761,6 +763,7 @@ void rules_evaluate(RulesEngine *re, TrackList *tl, double now, EventLog *elog) 
             s->upright_start=0;s->upright_samples=0;
             horizontal=is_horizontal_pose(b,re->config.fall_aspect_ratio_kp,
                 re->config.fall_aspect_ratio_nokp,re->frame_width,re->frame_height);
+            s->dbg_horizontal=horizontal;
             if(!horizontal) {s->fall_start=0;s->fall_samples=0;s->fall_gate=3;continue;}
             if(s->fall_latched) {s->fall_gate=6;continue;}
             if(s->upright_last<=0 || now-s->upright_last>30.0) {

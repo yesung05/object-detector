@@ -139,6 +139,16 @@ typedef struct {
     float  still_ax[6], still_ay[6];    /* [0]=박스 중심, [1..5]=FALL_KP_IDX 관절 */
     int    still_valid_mask;            /* 기준 자세에서 유효했던 점의 비트마스크 */
     int    still_latched;
+    /*
+     * 진단 전용(룰 판정에는 쓰이지 않음): 가장 최근 쓰러짐 평가에서 fall_gate 3 이 어느 쪽이었는지
+     * 가르기 위한 값입니다. fall_gate 3 은 "몸통 자세 판정 불가"와 "수평 아님"을 함께 가리켜서, 오프라인
+     * 평가(--fall-trace)에서 어느 조건이 얼마나 막는지 셀 수 없었습니다. 기존 코드·대시보드가 해석하는
+     * fall_gate 값을 바꾸지 않으려고 별도 필드로 둡니다.
+     * dbg_pose: fall_torso_pose 결과(0 판정 불가, 1 직립, 2 수평), -1 = 평가하지 않음.
+     * dbg_horizontal: is_horizontal_pose 결과(0/1), -1 = 평가하지 않음.
+     * 구조체 끝에 둔 이유: memset/calloc 으로만 만들어지므로 기존 코드에 영향이 없습니다.
+     */
+    int    dbg_pose, dbg_horizontal;
 } TrackRuleState;
 
 /*
