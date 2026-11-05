@@ -131,6 +131,7 @@ typedef struct {
     /* Re-ID 부활 체류 초기화(reid_dwell_keep_seconds). cfg 가 tracks_init 전에 해제되므로 여기 보관했다가
      * tracks_init 뒤에 TrackList 로 옮긴다. reid_resets_logged 는 마지막으로 로그에 낸 누적 횟수. */
     double reid_dwell_keep;unsigned long reid_resets_logged;
+    char alert_summary[400]; /* 마지막으로 로그에 낸 알림 모드 요약(바뀔 때만 다시 로그) */
     int              detect_every_obj;  /* Tier 2 실행 간격(프레임), 기본 90 */
     int              tier2_always;      /* 1=surface 활성 중에도 Tier 2 강제 실행 (개발용) */
     int64_t          obj_inference_runs;
@@ -1500,6 +1501,46 @@ static void apply_throttle_config(AppContext *app, const Config *cfg) {
     throttle_configure(&app->throttle, &tc);
 }
 
+/*
+ * 알림 모드 설정: alert_<이벤트> = on | shadow | off. 기본은 모두 on(현재 동작). 시작 시와 hot-reload 양쪽에서
+ * 호출하며, 바뀐 경우에만 startup 로그로 현재 상태를 남깁니다(그림자·꺼짐 알림이 왜 안 보이는지 로그로 알 수 있게).
+ * 이벤트 종류를 목록으로 두는 이유: Config 에 키 열거 기능이 없고, 오타 키가 조용히 무시되는 것보다 알려진 목록만
+ * 받는 편이 안전하다. 새 알림을 추가하면 이 목록에도 넣는다.
+ */
+static const char *const ALERT_TOKENS[] = {
+    "overstay", "unordered_seated", "person_fallen", "person_unaccounted", "person_unaccounted_residue",
+    "occupancy_exceeded", "person_motionless", "external_drink", "external_food", "animal_on_chair",
+    "animal_on_table", "no_cup_seated", "residue_trash", "residue_spill", "residue_unknown", "door_open",
+    "slot_item_urgent",
+};
+static void apply_alert_config(AppContext *app, const Config *cfg) {
+    char key[96], summary[400];
+    size_t i;
+    event_log_clear_alert_modes();
+    for (i = 0; i < sizeof(ALERT_TOKENS) / sizeof(ALERT_TOKENS[0]); ++i) {
+        const char *v = NULL;
+        snprintf(key, sizeof(key), "alert_%s", ALERT_TOKENS[i]);
+        if (config_get(cfg, key, &v) != 0 || !v) continue;
+        if (strcmp(v, "shadow") == 0) event_log_set_alert_mode(ALERT_TOKENS[i], ALERT_SHADOW);
+        else if (strcmp(v, "off") == 0) event_log_set_alert_mode(ALERT_TOKENS[i], ALERT_OFF);
+        else if (strcmp(v, "on") != 0) {
+            char bad[200];
+            snprintf(bad, sizeof(bad), "%s=%s 는 알 수 없는 값입니다(on|shadow|off) — on 으로 처리합니다", key, v);
+            fprintf(stderr, "%s\n", bad);  /* 시작 시에는 이벤트 로그가 아직 없어 stderr 로도 남긴다 */
+            event_log_write(&app->event_log, LOG_WARN, "startup", bad);
+        }
+    }
+    event_log_alert_summary(summary, sizeof(summary));
+    /* 이벤트 로그가 열려 있을 때만 요약을 남기고 기억한다(시작 시 호출은 로그가 열리기 전이라 건너뛰고, 로그가 열린
+     * 뒤 startup 블록이 한 번 남긴다). */
+    if (app->event_log.db && strcmp(summary, app->alert_summary) != 0) {
+        char m[480];
+        snprintf(m, sizeof(m), "alert_modes %s", summary[0] ? summary : "모두 on");
+        event_log_write(&app->event_log, LOG_INFO, "startup", m);
+        snprintf(app->alert_summary, sizeof(app->alert_summary), "%s", summary);
+    }
+}
+
 /* 쓰러짐 보강 설정. 기본값은 모두 꺼짐(rules.h 의 이유 참조). 시작 시와 hot-reload 양쪽에서 호출합니다. */
 static void apply_fall_extra_config(RulesConfig *rc, const Config *cfg) {
     rc->fall_handoff_seconds =
@@ -1641,6 +1682,7 @@ static void reload_config(AppContext *app) {
     apply_object_rule_config(&rules_cfg, &cfg);
     apply_vanish_config(&rules_cfg, &cfg);
     apply_fall_extra_config(&rules_cfg, &cfg);
+    apply_alert_config(app, &cfg);
     apply_roi_kiosk(&rules_cfg, &cfg);
     rules_update_config(&app->rules, &rules_cfg);
 
@@ -3322,6 +3364,7 @@ int main(int argc, char **argv) {
         apply_object_rule_config(&rules_cfg, &cfg);
         apply_vanish_config(&rules_cfg, &cfg);
         apply_fall_extra_config(&rules_cfg, &cfg);
+        apply_alert_config(&app, &cfg);
         apply_roi_kiosk(&rules_cfg, &cfg);
         /* 문 여닫이 설정 — door_load는 cfg 블록 밖에서 (data_dir 필요) */
         app.door.enabled                 = (int)config_long (&cfg, "door_enabled",        1,    0,    1);
@@ -3435,6 +3478,13 @@ int main(int argc, char **argv) {
      */
     {
         char msg[192];
+        {   /* 알림 모드 요약: 그림자·꺼진 알림이 점주 피드에 왜 안 보이는지 로그만으로 알 수 있게 한다 */
+            char sm[400], am[480];
+            event_log_alert_summary(sm, sizeof(sm));
+            snprintf(am, sizeof(am), "alert_modes %s", sm[0] ? sm : "모두 on");
+            event_log_write(&app.event_log, LOG_INFO, "startup", am);
+            snprintf(app.alert_summary, sizeof(app.alert_summary), "%s", sm);
+        }
         if (app.video_clock)
             event_log_write(&app.event_log, LOG_INFO, "startup",
                             "video_clock=on — 룰·트래커·문 판정 시간을 영상 시간(프레임 번호/fps)으로 계산, "

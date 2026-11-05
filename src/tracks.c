@@ -129,6 +129,9 @@ int tracks_init(TrackList *tl, size_t capacity, float iou_threshold,
     tl->max_misses       = max_misses;
     tl->limbo_seconds    = limbo_seconds;
     tl->appear_threshold = appear_threshold;
+    /* 0 으로 초기화하는 이유: 호출자가 TrackList 를 초기화 없이 선언해도(테스트 다수) 신규 트랙 최소 점수가 쓰레기 값이
+     * 되어 새 트랙이 조용히 안 만들어지는 일이 없게 한다. main.c 는 init 직후 운영 값을 다시 넣는다. */
+    tl->new_track_min_score = 0.0f;
     tl->reid_dwell_keep_seconds = 0.0;  /* 운영 값은 main.c 가 설정에서 넣는다 */
     tl->reid_dwell_resets       = 0;
     return 0;

@@ -95,13 +95,95 @@ void event_log_close(EventLog *log) {
     if (log->db)       { sqlite3_close(log->db);           log->db       = NULL; }
 }
 
+/* ── 알림 모드 표(프로세스 전역, log.h 참조) ───────────────────────────────────── */
+#define ALERT_TABLE_MAX 32
+#define ALERT_TOKEN_MAX 48
+static struct { char token[ALERT_TOKEN_MAX]; AlertMode mode; } g_alert[ALERT_TABLE_MAX];
+static int g_alert_count = 0;
+
+/* 메시지 첫 단어를 token 에 복사한다. 단어는 공백, ':' , '=' 에서 끝난다(예: "door_open: ..."). */
+static void first_token(const char *msg, char *token, size_t token_size) {
+    size_t n = 0;
+    if (msg)
+        while (msg[n] && msg[n] != ' ' && msg[n] != ':' && msg[n] != '=' && n + 1 < token_size) {
+            token[n] = msg[n];
+            ++n;
+        }
+    token[n] = '\0';
+}
+
+void event_log_set_alert_mode(const char *token, AlertMode mode) {
+    int i;
+    if (!token || !token[0]) return;
+    for (i = 0; i < g_alert_count; ++i)
+        if (strcmp(g_alert[i].token, token) == 0) {
+            if (mode == ALERT_ON) g_alert[i] = g_alert[--g_alert_count];  /* 해제: 마지막 항목으로 메운다 */
+            else g_alert[i].mode = mode;
+            return;
+        }
+    if (mode == ALERT_ON || g_alert_count >= ALERT_TABLE_MAX) return;
+    strncpy(g_alert[g_alert_count].token, token, ALERT_TOKEN_MAX - 1);
+    g_alert[g_alert_count].token[ALERT_TOKEN_MAX - 1] = '\0';
+    g_alert[g_alert_count].mode = mode;
+    ++g_alert_count;
+}
+
+void event_log_clear_alert_modes(void) { g_alert_count = 0; }
+
+int event_log_alert_summary(char *out, unsigned long out_size) {
+    static const struct { AlertMode mode; const char *label; } kinds[] = {
+        { ALERT_SHADOW, "shadow" }, { ALERT_OFF, "off" } };
+    unsigned long pos = 0;
+    int i, k, listed = 0;
+    if (!out || out_size == 0) return 0;
+    out[0] = '\0';
+    for (k = 0; k < 2; ++k) {
+        int first = 1;
+        for (i = 0; i < g_alert_count; ++i) {
+            if (g_alert[i].mode != kinds[k].mode) continue;
+            pos += (unsigned long)snprintf(out + pos, pos < out_size ? out_size - pos : 0, "%s%s%s%s",
+                                           first && pos ? " " : "", first ? kinds[k].label : "",
+                                           first ? "=" : ",", g_alert[i].token);
+            first = 0;
+            ++listed;
+            if (pos >= out_size) { out[out_size - 1] = '\0'; return listed; }
+        }
+    }
+    return listed;
+}
+
+static AlertMode alert_mode_of(const char *message) {
+    char token[ALERT_TOKEN_MAX];
+    int i;
+    if (g_alert_count == 0) return ALERT_ON;
+    first_token(message, token, sizeof(token));
+    for (i = 0; i < g_alert_count; ++i)
+        if (strcmp(g_alert[i].token, token) == 0) return g_alert[i].mode;
+    return ALERT_ON;
+}
+
 void event_log_write(EventLog *log, LogLevel level,
                      const char *module, const char *message) {
     char ts[24];
+    char shadowed[1100];
     time_t now_t;
     double now_d;
 
     if (!log || !log->db || level < log->min_level) return;
+
+    switch (alert_mode_of(message)) {
+        case ALERT_OFF:
+            return;
+        case ALERT_SHADOW:
+            /* 원문을 자르지 않도록 접미사 길이만큼 여유를 두고 복사한다. 이 버퍼는 이 호출 안에서만 쓰인다. */
+            snprintf(shadowed, sizeof(shadowed), "%.*s%s",
+                     (int)(sizeof(shadowed) - sizeof(ALERT_SHADOW_SUFFIX)), message ? message : "",
+                     ALERT_SHADOW_SUFFIX);
+            message = shadowed;
+            break;
+        default:
+            break;
+    }
 
     time(&now_t);
     now_d = (double)now_t;

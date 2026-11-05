@@ -861,6 +861,87 @@ static void test_rules_unordered_refires_after_dwell_reset(void) {
     rules_destroy(&re); tracks_destroy(&tl); event_log_close(&elog);
 }
 
+/* ── 알림 모드(on/shadow/off) ──────────────────────────────────────────────── */
+
+static int observed_shadow = 0;
+static void alert_observer(void *ctx, long long id, LogLevel level, const char *module, const char *message) {
+    (void)ctx; (void)id; (void)level; (void)module;
+    if (strstr(message, ALERT_SHADOW_SUFFIX)) observed_shadow++;
+}
+
+static void test_alert_modes_on_shadow_off(void) {
+    EventLog elog;
+    char summary[200];
+    event_log_clear_alert_modes();
+    ASSERT_INT_EQ(event_log_open(&elog, ":memory:", LOG_INFO, 0), 0);
+    elog.observer = alert_observer; elog.observer_context = NULL; observed_shadow = 0;
+
+    /* 기본(모드 없음): 그대로 기록 */
+    event_log_write(&elog, LOG_ERROR, "rules", "person_fallen track=1 hold=3.0s");
+    EXPECT_INT_EQ(count_events(&elog, "person_fallen track=1 hold=3.0s"), 1);
+    EXPECT_INT_EQ(count_events(&elog, "person_fallen track=1 hold=3.0s mode=shadow"), 0);
+
+    /* shadow: 기록하되 끝에 접미사. 원문은 그대로 앞에 남아 첫 단어 토큰을 쓰는 분석이 깨지지 않는다 */
+    event_log_set_alert_mode("person_fallen", ALERT_SHADOW);
+    event_log_write(&elog, LOG_ERROR, "rules", "person_fallen track=2 hold=3.0s");
+    EXPECT_INT_EQ(count_events(&elog, "person_fallen track=2 hold=3.0s mode=shadow"), 1);
+    EXPECT_INT_EQ(observed_shadow, 1);                /* 관찰자(리플레이 기록)도 그림자 이벤트를 받는다 */
+    event_log_write(&elog, LOG_WARN, "rules", "overstay track=3 dwell=9s");   /* 다른 이벤트는 영향 없음 */
+    EXPECT_INT_EQ(count_events(&elog, "overstay track=3 dwell=9s"), 1);
+    EXPECT_INT_EQ(count_events(&elog, "overstay track=3 dwell=9s mode=shadow"), 0);
+
+    /* off: 기록하지 않는다 */
+    event_log_set_alert_mode("overstay", ALERT_OFF);
+    event_log_write(&elog, LOG_WARN, "rules", "overstay track=4 dwell=9s");
+    EXPECT_INT_EQ(count_events(&elog, "overstay track=4"), 0);
+
+    /* 토큰은 공백뿐 아니라 ':' 에서도 끊긴다("door_open: ...") */
+    event_log_set_alert_mode("door_open", ALERT_SHADOW);
+    event_log_write(&elog, LOG_WARN, "door", "door_open: 30초 이상 개방 상태 지속");
+    EXPECT_INT_EQ(count_events(&elog, "door_open: 30초 이상 개방 상태 지속 mode=shadow"), 1);
+
+    /* 접두 일치가 아니라 토큰 전체 일치다: person_unaccounted 의 모드가 person_unaccounted_cleared 에 번지면 안 된다 */
+    event_log_set_alert_mode("person_unaccounted", ALERT_OFF);
+    event_log_write(&elog, LOG_INFO, "rules", "person_unaccounted_cleared track=5");
+    EXPECT_INT_EQ(count_events(&elog, "person_unaccounted_cleared track=5"), 1);
+
+    /* 요약 */
+    EXPECT_INT_EQ(event_log_alert_summary(summary, sizeof(summary)), 4);
+    EXPECT_TRUE(strstr(summary, "shadow=") != NULL && strstr(summary, "off=") != NULL);
+    EXPECT_TRUE(strstr(summary, "person_fallen") != NULL && strstr(summary, "overstay") != NULL);
+
+    /* 해제(ON)하면 다시 그대로 기록 */
+    event_log_set_alert_mode("person_fallen", ALERT_ON);
+    event_log_write(&elog, LOG_ERROR, "rules", "person_fallen track=6 hold=3.0s");
+    EXPECT_INT_EQ(count_events(&elog, "person_fallen track=6 hold=3.0s"), 1);
+    EXPECT_INT_EQ(count_events(&elog, "person_fallen track=6 hold=3.0s mode=shadow"), 0);
+
+    event_log_clear_alert_modes();
+    EXPECT_INT_EQ(event_log_alert_summary(summary, sizeof(summary)), 0);
+    EXPECT_INT_EQ((int)strlen(summary), 0);
+    event_log_close(&elog);
+}
+
+/* 매우 긴 메시지에서도 접미사가 잘리지 않고, 원문이 잘려 나가는 쪽을 택한다(필터가 접미사로 거르므로). */
+static void test_alert_shadow_suffix_survives_long_message(void) {
+    EventLog elog;
+    char longmsg[1400];
+    event_log_clear_alert_modes();
+    ASSERT_INT_EQ(event_log_open(&elog, ":memory:", LOG_INFO, 0), 0);
+    event_log_set_alert_mode("external_drink", ALERT_SHADOW);
+    memset(longmsg, 'x', sizeof(longmsg)); memcpy(longmsg, "external_drink ", 15); longmsg[sizeof(longmsg) - 1] = 0;
+    event_log_write(&elog, LOG_WARN, "rules", longmsg);
+    {
+        sqlite3_stmt *st = NULL; int ok = 0;
+        ASSERT_INT_EQ(sqlite3_prepare_v2(elog.db, "SELECT count(*) FROM events WHERE message LIKE '% mode=shadow'", -1, &st, NULL), SQLITE_OK);
+        if (sqlite3_step(st) == SQLITE_ROW) ok = sqlite3_column_int(st, 0);
+        sqlite3_finalize(st);
+        EXPECT_INT_EQ(ok, 1);
+    }
+    event_log_clear_alert_modes();
+    event_log_close(&elog);
+}
+
 static void test_rules_overstay_latches_once(void) {
     TrackList tl;
     RulesEngine re;
@@ -3894,6 +3975,8 @@ int main(void) {
     RUN_TEST(test_tracks_id_stability);
     RUN_TEST(test_tracks_eviction);
     RUN_TEST(test_rules_overstay_latches_once);
+    RUN_TEST(test_alert_modes_on_shadow_off);
+    RUN_TEST(test_alert_shadow_suffix_survives_long_message);
     RUN_TEST(test_reid_revive_resets_dwell_only_after_long_absence);
     RUN_TEST(test_rules_unordered_refires_after_dwell_reset);
     RUN_TEST(test_rules_limbo_revive_does_not_refire);
