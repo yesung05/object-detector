@@ -129,6 +129,8 @@ int tracks_init(TrackList *tl, size_t capacity, float iou_threshold,
     tl->max_misses       = max_misses;
     tl->limbo_seconds    = limbo_seconds;
     tl->appear_threshold = appear_threshold;
+    tl->reid_dwell_keep_seconds = 0.0;  /* 운영 값은 main.c 가 설정에서 넣는다 */
+    tl->reid_dwell_resets       = 0;
     return 0;
 }
 
@@ -353,6 +355,15 @@ void tracks_update_ex(TrackList *tl, const DetectionList *detections,
             /* 동일 인물 — 트랙 부활.
              * limbo 기간은 체류 시간에 포함하지 않으므로 dwell은 갱신하지 않습니다.
              * 다음 IoU 매칭 때부터 now - last_seen이 정상 간격으로 누적됩니다. */
+            /* 오래 떠났다 돌아온 트랙은 같은 사람이라는 보장이 없으므로 체류를 처음부터 센다(헤더 참조).
+             * last_seen 을 덮어쓰기 전에 이탈 시간을 잰다. */
+            if (tl->reid_dwell_keep_seconds > 0.0 &&
+                now - best_limbo->last_seen > tl->reid_dwell_keep_seconds) {
+                best_limbo->dwell_seconds = 0.0;
+                best_limbo->first_seen    = now;
+                best_limbo->order         = TRACK_UNORDERED;
+                tl->reid_dwell_resets++;
+            }
             best_limbo->active           = 1;
             best_limbo->misses           = 0;
             best_limbo->limbo_expired_at = 0.0;

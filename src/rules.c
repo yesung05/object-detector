@@ -830,8 +830,10 @@ void rules_evaluate(RulesEngine *re, TrackList *tl, double now, EventLog *elog) 
                          re->config.unordered_grace_seconds);
                 event_log_write(elog, LOG_WARN, "rules", msg);
             }
-        } else if (t->order != TRACK_UNORDERED) {
-            s->unordered_latched = 0; /* 이미 발화한 뒤 주문 추정/확인으로 바뀌면 해제 */
+        } else if (t->order != TRACK_UNORDERED || t->dwell_seconds <= re->config.unordered_grace_seconds) {
+            /* 이미 발화한 뒤 주문 추정/확인으로 바뀌면 해제. 체류가 유예 시간 이하로 돌아간 경우(Re-ID 부활 시
+             * 체류 초기화)도 새 방문이므로 해제한다. dwell 은 평소 줄지 않아 이 조건은 기존 동작을 바꾸지 않는다. */
+            s->unordered_latched = 0;
         }
 
         /* All fall paths share the same fresh-evidence and hold gates. */

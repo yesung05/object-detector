@@ -24,11 +24,13 @@ for %%d in ("C:\deps\onnxruntime\lib" "%ROOT%\deps\onnxruntime\lib") do (
 if defined FFMPEG_BIN set "PATH=%FFMPEG_BIN%;%PATH%"
 if defined ORT_LIB   set "PATH=%ORT_LIB%;%PATH%"
 
-rem ---- Tier 1 (pose): INT8 first, then FP32 ----
+rem ---- Tier 1 (pose): FP32 first, INT8 as fallback ----
+rem INT8 is slower than FP32 on VNNI-less CPUs such as the target i5-4200U (Haswell) and can
+rem silently zero the person score (docs/haswell-u8s8-quantization-benchmark.md), so FP32 goes first.
 set MODEL=
 for %%f in (
-    "%ROOT%\yolo11n-pose-416-int8.onnx"
     "%ROOT%\yolo11n-pose-416.onnx"
+    "%ROOT%\yolo11n-pose-416-int8.onnx"
     "%ROOT%\yolo11n-416.onnx"
     "%ROOT%\yolo11n.onnx"
 ) do (
@@ -41,11 +43,11 @@ if not defined MODEL (
 )
 echo [model] %MODEL%
 
-rem ---- Tier 2 (obj): INT8 first, then FP32 ----
+rem ---- Tier 2 (obj): FP32 first, INT8 as fallback (same reason as Tier 1) ----
 set OBJMODEL=
 for %%f in (
-    "%ROOT%\models\yolo11n_tier2_int8.onnx"
     "%ROOT%\models\yolo11n_tier2_fp32.onnx"
+    "%ROOT%\models\yolo11n_tier2_int8.onnx"
 ) do (
     if not defined OBJMODEL if exist "%%~f" set "OBJMODEL=%%~f"
 )

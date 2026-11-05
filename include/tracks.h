@@ -83,6 +83,17 @@ typedef struct {
     /* 신규 트랙 생성 최소 신뢰도. 이미 추적 중인 트랙은 detector 임계값(더 낮음)으로 유지.
      * 0이면 비활성화 (detector 임계값과 동일하게 동작). */
     float   new_track_min_score;
+    /*
+     * Re-ID 부활 시 체류 시간을 이어 갈 최대 이탈 시간(초). 이보다 오래 떠났다 돌아온 트랙은 같은 사람이라는
+     * 보장이 없어 dwell_seconds·first_seen·order 를 초기화한다. 0 이하면 초기화하지 않는다(기존 동작).
+     *
+     * 필요한 이유: 부활 판정은 색상 히스토그램 교차값 하나뿐이라(limbo 최대 30분) 어두운 옷끼리 쉽게 넘는다. 필드 6일
+     * 로그에서 한 id 의 박스가 화면 전체를 돌아다니고(매칭 21~29%) dwell 이 2~3시간까지 쌓여 초과 체류·미주문
+     * 알림이 수천 건 쌓였다. 기본값 0 은 tracks_init 이 채우고, 운영 기본(300)은 main.c 가 설정에서 넣는다.
+     * 구조체 끝에 둔 이유: tracks_init 전후의 기존 위치 초기화 코드에 영향이 없다.
+     */
+    double  reid_dwell_keep_seconds;
+    unsigned long reid_dwell_resets; /* 초기화한 누적 횟수(로그용) */
 } TrackList;
 
 int  tracks_init(TrackList *tl, size_t capacity, float iou_threshold,

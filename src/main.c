@@ -128,6 +128,9 @@ typedef struct {
     int table_mapping,table_mapping_revision;
     double table_mapping_at;
     double table_progress_log_at,table_stall_warn_at; /* 탐색 진행·정체 로그의 마지막 시각 */
+    /* Re-ID 부활 체류 초기화(reid_dwell_keep_seconds). cfg 가 tracks_init 전에 해제되므로 여기 보관했다가
+     * tracks_init 뒤에 TrackList 로 옮긴다. reid_resets_logged 는 마지막으로 로그에 낸 누적 횟수. */
+    double reid_dwell_keep;unsigned long reid_resets_logged;
     int              detect_every_obj;  /* Tier 2 실행 간격(프레임), 기본 90 */
     int              tier2_always;      /* 1=surface 활성 중에도 Tier 2 강제 실행 (개발용) */
     int64_t          obj_inference_runs;
@@ -883,6 +886,8 @@ static void apply_gate_config(AppContext *app, const Config *cfg) {
     detector_set_confidence(app->detector,app->keep_score>0?low:app->person_confidence);
     detector_set_confidence(app->obj_detector,app->object_confidence);
     app->tracks.new_track_min_score=fmaxf(app->person_confidence,app->new_person_confidence);
+    app->reid_dwell_keep=(double)config_float(cfg,"reid_dwell_keep_seconds",300.0f,0.0f,86400.0f);
+    app->tracks.reid_dwell_keep_seconds=app->reid_dwell_keep; /* hot-reload 즉시 적용. 시작 시에는 tracks_init 뒤에 다시 적용 */
     if(table!=app->table_confidence){memset(&app->table_mapper,0,sizeof(app->table_mapper));app->table_confidence=table;}
 
     app->block_gate_enabled = (int)config_long(cfg, "block_gate", 1, 0, 1);
@@ -2421,6 +2426,13 @@ static int process_frame(RgbFrame *frame, void *opaque,
                          app->keep_score > 0.0f ? &app->low_detections : NULL,
                       frame->data, frame->width, frame->height, frame->stride,
                       now);
+        if (app->tracks.reid_dwell_resets != app->reid_resets_logged) {
+            char rm[160];
+            snprintf(rm, sizeof(rm), "track_reid_dwell_reset count=%lu keep=%.0fs — 오래 떠났다 돌아온 트랙의 체류를 처음부터 셉니다",
+                     app->tracks.reid_dwell_resets, app->tracks.reid_dwell_keep_seconds);
+            event_log_write(&app->event_log, LOG_INFO, "rules", rm);
+            app->reid_resets_logged = app->tracks.reid_dwell_resets;
+        }
         /* full_luma 준비: 원본 해상도 그레이스케일.
          * luma 평면이 있으면 그대로, 없으면 RGB→Gray(BT.601) 변환합니다. */
         {
@@ -3182,7 +3194,7 @@ int main(int argc, char **argv) {
         Config pre;
         float low;
         app.person_confidence=app.object_confidence=args.detector.confidence;
-        app.new_person_confidence=.30f;app.table_confidence=.28f;
+        app.new_person_confidence=.30f;app.table_confidence=.28f;app.reid_dwell_keep=300.0;
         config_load(&pre, args.config_path, NULL, 0);
         low = config_float(&pre, "track_low_score", 0.10f, 0.0f, 0.9f);
         config_destroy(&pre);
@@ -3360,6 +3372,7 @@ int main(int argc, char **argv) {
         /* 히스테리시스: 이미 추적 중인 트랙은 detector 임계값(0.20)으로 유지,
          * 신규 트랙 생성은 0.30 이상 요구. 오탐 감소 + 추적 안정성 동시 달성. */
         app.tracks.new_track_min_score = fmaxf(app.person_confidence,app.new_person_confidence);
+        app.tracks.reid_dwell_keep_seconds = app.reid_dwell_keep;
         if (rules_init(&app.rules, 64, &rules_cfg, error, sizeof(error)) != 0) {
             fprintf(stderr, "failed to init rules engine: %s\n", error);
             goto done;

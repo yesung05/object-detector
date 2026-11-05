@@ -798,6 +798,69 @@ static void test_rules_unordered_requires_roi(void) {
     event_log_close(&elog);
 }
 
+/* ── Re-ID 부활 시 체류 초기화 ────────────────────────────────────────────── */
+
+/* 단색 프레임에 박스 하나를 만들고(히스토그램 동일 → Re-ID 가 반드시 성공), 트랙을 limbo 로 보냈다가 gone_seconds 뒤
+ * 같은 박스로 부활시킨다. 부활한 트랙의 dwell 을 돌려준다. keep: reid_dwell_keep_seconds. */
+static double reid_revive_dwell(double keep, double revive_at, int *same_id, OrderState *order_out) {
+    enum { W = 200, H = 200 };
+    static uint8_t rgb[W * H * 3];
+    TrackList tl; DetectionList det; Detection d; char error[128] = {0};
+    double dwell; int i;
+    for (i = 0; i < W * H; ++i) { rgb[i * 3] = 200; rgb[i * 3 + 1] = 50; rgb[i * 3 + 2] = 50; }
+    memset(&d, 0, sizeof(d)); d.x1 = 50; d.y1 = 50; d.x2 = 120; d.y2 = 180; d.score = 0.9f;
+    tracks_init(&tl, 16, 0.3f, 2, 1800.0, 0.45f, error, sizeof(error));
+    tl.reid_dwell_keep_seconds = keep;
+    det.items = &d; det.capacity = 1; det.count = 1;
+    for (i = 0; i <= 10; ++i) tracks_update(&tl, &det, rgb, W, H, W * 3, 100.0 + i);   /* dwell 10초 */
+    tl.items[0].order = TRACK_ORDERED;
+    det.count = 0;
+    for (i = 1; i <= 3; ++i) tracks_update(&tl, &det, rgb, W, H, W * 3, 110.0 + i);    /* 3번 놓쳐 limbo */
+    det.count = 1;
+    tracks_update(&tl, &det, rgb, W, H, W * 3, revive_at);                              /* 부활 시도 */
+    *same_id = (tl.count == 1 && tl.items[0].id == 1 && tl.items[0].active);
+    dwell = tl.items[0].dwell_seconds;
+    if (order_out) *order_out = tl.items[0].order;
+    tracks_destroy(&tl);
+    return dwell;
+}
+
+static void test_reid_revive_resets_dwell_only_after_long_absence(void) {
+    int same; OrderState ord;
+    /* 짧은 이탈(90초 < 300): 같은 사람으로 보고 체류·주문 상태를 이어 간다 */
+    EXPECT_FLOAT_NEAR((float)reid_revive_dwell(300.0, 200.0, &same, &ord), 10.0f, 1e-3f);
+    EXPECT_TRUE(same); EXPECT_INT_EQ((int)ord, (int)TRACK_ORDERED);
+    /* 긴 이탈(890초 > 300): 같은 id 로 부활하더라도 체류와 주문 상태를 처음부터 */
+    EXPECT_FLOAT_NEAR((float)reid_revive_dwell(300.0, 1000.0, &same, &ord), 0.0f, 1e-3f);
+    EXPECT_TRUE(same); EXPECT_INT_EQ((int)ord, (int)TRACK_UNORDERED);
+    /* 키 0(끔): 기존 동작 — 오래 떠나도 체류를 이어 간다 */
+    EXPECT_FLOAT_NEAR((float)reid_revive_dwell(0.0, 1000.0, &same, &ord), 10.0f, 1e-3f);
+    EXPECT_TRUE(same); EXPECT_INT_EQ((int)ord, (int)TRACK_ORDERED);
+}
+
+/* 체류가 초기화되면 이미 발화한 미주문 착석도 새 방문으로 다시 판정받아야 한다. */
+static void test_rules_unordered_refires_after_dwell_reset(void) {
+    TrackList tl; RulesEngine re; EventLog elog;
+    RulesConfig rcfg = {3600.0, 30.0, 5.0, 1.8f, 2.2f, 10, 10, 50, 50, 1};
+    char error[128] = {0};
+    event_log_open(&elog, ":memory:", LOG_INFO, 0);
+    ASSERT_INT_EQ(tracks_init(&tl, 16, 0.3f, 5, 1800.0, 0.45f, error, sizeof(error)), 0);
+    ASSERT_INT_EQ(rules_init(&re, 16, &rcfg, error, sizeof(error)), 0);
+    tl.count = 1; tl.items[0].id = 1; tl.items[0].active = 1; tl.items[0].order = TRACK_UNORDERED;
+    tl.items[0].dwell_seconds = 31.0;
+    rules_evaluate(&re, &tl, 100.0, &elog);
+    EXPECT_INT_EQ(count_events(&elog, "unordered_seated"), 1);
+    tl.items[0].dwell_seconds = 40.0;
+    rules_evaluate(&re, &tl, 101.0, &elog);
+    EXPECT_INT_EQ(count_events(&elog, "unordered_seated"), 1);  /* 같은 방문은 한 번만 */
+    tl.items[0].dwell_seconds = 0.0;                            /* Re-ID 가 체류를 초기화한 상황 */
+    rules_evaluate(&re, &tl, 102.0, &elog);
+    tl.items[0].dwell_seconds = 31.0;
+    rules_evaluate(&re, &tl, 103.0, &elog);
+    EXPECT_INT_EQ(count_events(&elog, "unordered_seated"), 2);  /* 새 방문은 다시 판정 */
+    rules_destroy(&re); tracks_destroy(&tl); event_log_close(&elog);
+}
+
 static void test_rules_overstay_latches_once(void) {
     TrackList tl;
     RulesEngine re;
@@ -3831,6 +3894,8 @@ int main(void) {
     RUN_TEST(test_tracks_id_stability);
     RUN_TEST(test_tracks_eviction);
     RUN_TEST(test_rules_overstay_latches_once);
+    RUN_TEST(test_reid_revive_resets_dwell_only_after_long_absence);
+    RUN_TEST(test_rules_unordered_refires_after_dwell_reset);
     RUN_TEST(test_rules_limbo_revive_does_not_refire);
     RUN_TEST(test_rules_limbo_expiry_releases_state);
     RUN_TEST(test_rules_unordered_requires_roi);
