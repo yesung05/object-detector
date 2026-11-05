@@ -2397,7 +2397,7 @@ async function loadSettings() {
     { const pinEl = document.getElementById("cfg-access_pin"); if (pinEl) pinEl.value = ""; }
     /* Defaults must also reset unsaved sliders when these keys are not yet stored. */
     if(cfg.log_max_total_mb===undefined)setCfgVal("log_max_total_mb",10240);
-    const confidenceDefaults={person_confidence:.20,object_confidence:.20,new_person_confidence:.30,table_confidence:.55};
+    const confidenceDefaults={person_confidence:.20,object_confidence:.20,new_person_confidence:.30,table_confidence:.28};
     try {
       const live=await fetch(`http://${location.hostname}:${getStreamPort()}/status`);
       if(live.ok){const status=await live.json();if(status.thresholds){confidenceDefaults.person_confidence=status.thresholds.person;confidenceDefaults.object_confidence=status.thresholds.object;}}
@@ -2693,7 +2693,7 @@ async function pollStatus() {
     document.getElementById("probable-orders").textContent=st.probable_orders ?? 0;
     document.getElementById("tier2-timing").textContent=st.tier2 ? `Tier 2 평균 ${st.tier2.mean_ms.toFixed(1)} ms/회 · ${st.tier2.runs}회 실행` : "Tier 2 실행 시간 측정 중";
     const tableState=document.getElementById('settings-table-state');
-    if(tableState)tableState.textContent=st.table_mapping===1?'테이블 위치를 자동으로 찾는 중입니다.':st.table_mapping===2?'자동 탐색 모델을 사용할 수 없습니다. 수동 수정에서 영역을 지정할 수 있습니다.':'자동 탐색 대기 또는 완료 · 영역 확인에서 등록 상태를 확인하세요.';
+    if(tableState)tableState.textContent=st.table_mapping===1?((p)=>'테이블 위치를 자동으로 찾는 중입니다.'+(p?` · ${Math.round(p.elapsed)}초 경과 · 식탁 검출 ${p.seen}회(최고 점수 ${p.max_score.toFixed(2)} / 기준 ${st.thresholds.table.toFixed(2)}) · 후보 ${p.candidates}개(최대 ${p.best_hits}/5회 관측)`+(p.seen&&p.max_score<st.thresholds.table?' · 최고 점수가 기준보다 낮아 등록되지 않습니다':''):''))(st.table_progress):st.table_mapping===2?'자동 탐색 모델을 사용할 수 없습니다. 수동 수정에서 영역을 지정할 수 있습니다.':'자동 탐색 대기 또는 완료 · 영역 확인에서 등록 상태를 확인하세요.';
     const calibration=st.calibration||{};
     const calibrationState=document.getElementById('settings-calibration-state');
     if(calibrationState)calibrationState.textContent=calibration.active ? `보정 중 · ${Math.floor((calibration.seconds||0)/60)}분 / ${Math.round((calibration.total||600)/60)}분` : `저장된 배경 보정 영역 ${calibration.regions||0}개 · 장소가 바뀌면 다시 학습하세요.`;

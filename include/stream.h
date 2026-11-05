@@ -45,6 +45,9 @@ typedef struct {
     double tier2_ms;
     long tier2_runs;
     int table_mapping,calibration_active,calibration_regions;
+    /* 테이블 자동 탐색 진행(table_mapping==1 일 때 의미 있음). main.c 가 매 갱신마다 채운다. */
+    double table_elapsed;float table_max_score;
+    int table_seen,table_below,table_candidates,table_best_hits;
     double calibration_seconds,calibration_total;
     int    door_band_valid;                   /* -1 미평가, 0 무효(상인방 의심), 1 유효 */
     int    door_band_active;                  /* 1=이번 프레임을 상단 밴드로 판정 중 */

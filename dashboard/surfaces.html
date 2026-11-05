@@ -135,7 +135,7 @@ async function status(){
 }
 async function mappingStatus(){try{
   const s=await request(stream()+'/status');
-  $('table-mapping-status').textContent=s.table_mapping===2?'자동 탐색 대기 · 테이블 인식 모델이 연결되지 않았습니다.':s.table_mapping===1?'테이블 자동 탐색 중 · 10초 이상 안정적으로 보이는 위치를 등록합니다.':config?.surfaces.length?'등록된 테이블 위치를 확인하거나 수동으로 수정할 수 있습니다.':'수동 설정 대기 · 자동으로 다시 찾기를 선택할 수도 있습니다.';
+  $('table-mapping-status').textContent=s.table_mapping===2?'자동 탐색 대기 · 테이블 인식 모델이 연결되지 않았습니다.':s.table_mapping===1?((p)=>'테이블 위치를 자동으로 찾는 중입니다.'+(p?` · ${Math.round(p.elapsed)}초 경과 · 식탁 검출 ${p.seen}회(최고 점수 ${p.max_score.toFixed(2)} / 기준 ${s.thresholds.table.toFixed(2)}) · 후보 ${p.candidates}개(최대 ${p.best_hits}/5회 관측)`+(p.seen&&p.max_score<s.thresholds.table?' · 최고 점수가 기준보다 낮아 등록되지 않습니다':''):''))(s.table_progress)+' · 10초 이상 안정적으로 보이는 위치를 등록합니다.':config?.surfaces.length?'등록된 테이블 위치를 확인하거나 수동으로 수정할 수 있습니다.':'수동 설정 대기 · 자동으로 다시 찾기를 선택할 수도 있습니다.';
   const c=s.calibration;
   if(c)$('calibration-status').textContent=c.active?`배경 안정화 중 · ${Math.floor(c.seconds/60)} / ${Math.round(c.total/60)}분`:`배경 안정화 대기 또는 저장 결과 적용 · 제외 구역 ${c.regions}개`;
   /* Refresh auto-generated geometry only while the local editor is pristine. */

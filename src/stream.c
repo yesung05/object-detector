@@ -631,7 +631,9 @@ static DWORD WINAPI client_thread(LPVOID arg) {
             "\"recording\":{\"active\":%d,\"full\":%d,\"frames\":%lld,\"errors\":%lld,\"bytes\":%lld,\"last_write_ms\":%.3f},"
             "\"thresholds\":{\"person\":%.2f,\"object\":%.2f,\"new_person\":%.2f,\"table\":%.2f},"
             "\"probable_orders\":%d,\"tier2\":{\"runs\":%ld,\"mean_ms\":%.2f},"
-            "\"table_mapping\":%d,\"calibration\":{\"active\":%d,\"seconds\":%.1f,\"total\":%.1f,\"regions\":%d}}",
+            "\"table_mapping\":%d,"
+            "\"table_progress\":{\"elapsed\":%.0f,\"seen\":%d,\"below\":%d,\"max_score\":%.3f,\"candidates\":%d,\"best_hits\":%d},"
+            "\"calibration\":{\"active\":%d,\"seconds\":%.1f,\"total\":%.1f,\"regions\":%d}}",
             st.door_enabled, st.door_state,
             st.door_state == 1 ? "open" : st.door_state == 0 ? "closed" : "unknown",
             st.door_auto_phase, st.door_auto_stalled, st.door_roi_set,
@@ -644,7 +646,8 @@ static DWORD WINAPI client_thread(LPVOID arg) {
             st.replay_active,st.replay_full,st.replay_frames,st.replay_errors,st.replay_bytes,st.replay_write_ms,
             st.person_confidence,st.object_confidence,st.new_person_confidence,st.table_confidence,
             st.probable_orders,st.tier2_runs,st.tier2_ms,
-            st.table_mapping,st.calibration_active,st.calibration_seconds,st.calibration_total,st.calibration_regions);
+            st.table_mapping,st.table_elapsed,st.table_seen,st.table_below,(double)st.table_max_score,
+            st.table_candidates,st.table_best_hits,st.calibration_active,st.calibration_seconds,st.calibration_total,st.calibration_regions);
         send_json(s, 200, body);
 
     } else if (strcmp(url, "/privacy/state") == 0) {

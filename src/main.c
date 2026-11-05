@@ -127,6 +127,7 @@ typedef struct {
     TableMapper table_mapper;
     int table_mapping,table_mapping_revision;
     double table_mapping_at;
+    double table_progress_log_at,table_stall_warn_at; /* 탐색 진행·정체 로그의 마지막 시각 */
     int              detect_every_obj;  /* Tier 2 실행 간격(프레임), 기본 90 */
     int              tier2_always;      /* 1=surface 활성 중에도 Tier 2 강제 실행 (개발용) */
     int64_t          obj_inference_runs;
@@ -871,7 +872,10 @@ static void rebuild_ignore_roi(AppContext *app) {
 
 static void apply_gate_config(AppContext *app, const Config *cfg) {
     float low=config_float(cfg,"track_low_score",.10f,0,.9f);
-    float table=config_float(cfg,"table_confidence",.55f,.01f,.99f);
+    /* 기본 0.28: 실제 카페(필드 6일)의 식탁 검출 점수는 중앙값 0.28·최대 0.40 이라 COCO 검증 기준의 0.55 로는
+     * 자동 등록이 한 번도 되지 않았다. 0.25~0.30 에서는 위치가 안정된 군집이 확인됐다. 오등록(선반·의자)은
+     * 등록 조건(5회 이상·10초 이상·겹침 없음)과 사용자 수정/잠금으로 막는다. */
+    float table=config_float(cfg,"table_confidence",.28f,.01f,.99f);
     app->person_confidence=config_float(cfg,"person_confidence",app->person_confidence,.01f,.99f);
     app->object_confidence=config_float(cfg,"object_confidence",app->object_confidence,.01f,.99f);
     app->new_person_confidence=config_float(cfg,"new_person_confidence",.30f,.01f,.99f);
@@ -1758,6 +1762,24 @@ static void table_mapping_step(AppContext *app,RgbFrame *frame,double now) {
     if(detector_run(app->obj_detector,frame->data,frame->width,frame->height,frame->stride,&app->surface_detections,err,sizeof(err)))return;
     record_tier2_run(app);
     table_mapper_update(&app->table_mapper,&app->surface_detections,frame->width,frame->height,now,app->table_confidence);
+    {   /* 진행 로그: 60초마다. 정체(30분 넘게 등록 없음)는 원인 힌트와 함께 1시간마다 WARN. */
+        double elapsed=now-app->table_mapper.started;int cand,best;char pm[360];
+        table_mapper_progress(&app->table_mapper,now,&cand,&best);
+        if(now-app->table_progress_log_at>=60){
+            app->table_progress_log_at=now;
+            snprintf(pm,sizeof(pm),"table_mapping progress elapsed=%.0fs seen=%d below_threshold=%d max_score=%.2f threshold=%.2f candidates=%d best_hits=%d/5",
+                     elapsed,app->table_mapper.seen,app->table_mapper.below,app->table_mapper.max_score,app->table_confidence,cand,best);
+            event_log_write(&app->event_log,LOG_INFO,"surface",pm);
+        }
+        if(elapsed>=1800&&now-app->table_stall_warn_at>=3600){
+            app->table_stall_warn_at=now;
+            snprintf(pm,sizeof(pm),"table_mapping_stalled elapsed=%.0fs — %s",elapsed,
+                     app->table_mapper.seen==0?"식탁 검출이 한 번도 없음(카메라 화각·조명·모델 확인, 또는 수동 지정)":
+                     app->table_mapper.max_score<app->table_confidence?"식탁 최고 점수가 기준 미만(table_confidence 를 낮추거나 수동 지정)":
+                     "위치가 안정되지 않음(테이블이 가려지거나 박스가 흔들림, 수동 지정 권장)");
+            event_log_write(&app->event_log,LOG_WARN,"surface",pm);
+        }
+    }
     pos=snprintf(json,sizeof(json),"{\"schema_version\":1,\"revision\":%d,\"enabled\":true,\"source\":\"auto\",\"camera_id\":\"%s\",\"geometry_revision\":%d,\"width\":%d,\"height\":%d,\"surfaces\":[",old.revision+1,old.camera_id,old.geometry_revision,frame->width,frame->height);
     for(i=0;i<16;i++) {
         TableCandidate *c=&app->table_mapper.items[i];int overlaps=0;
@@ -2824,6 +2846,9 @@ static int process_frame(RgbFrame *frame, void *opaque,
         st.tier2_runs=(long)app->obj_inference_runs;
         st.tier2_ms=st.tier2_runs ? 1000.0*(app->obj_detector_stats.preprocess_seconds+app->obj_detector_stats.inference_seconds+app->obj_detector_stats.postprocess_seconds)/st.tier2_runs : 0;
         st.table_mapping=app->table_mapping?(app->obj_detector?1:2):0;
+        st.table_elapsed=app->table_mapper.started>0?now-app->table_mapper.started:0;
+        st.table_max_score=app->table_mapper.max_score;st.table_seen=app->table_mapper.seen;st.table_below=app->table_mapper.below;
+        table_mapper_progress(&app->table_mapper,now,&st.table_candidates,&st.table_best_hits);
         st.calibration_active=calib_active(&app->calib);
         st.calibration_seconds=st.calibration_active?calib_clock(app,frame,now)-app->calib.started:0;
         st.calibration_total=app->calib_opt.duration_seconds;
@@ -3157,7 +3182,7 @@ int main(int argc, char **argv) {
         Config pre;
         float low;
         app.person_confidence=app.object_confidence=args.detector.confidence;
-        app.new_person_confidence=.30f;app.table_confidence=.55f;
+        app.new_person_confidence=.30f;app.table_confidence=.28f;
         config_load(&pre, args.config_path, NULL, 0);
         low = config_float(&pre, "track_low_score", 0.10f, 0.0f, 0.9f);
         config_destroy(&pre);
