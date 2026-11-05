@@ -5,7 +5,7 @@
 성능이 부풀려진다. 장면 키(상점|날짜|시:분)는 분할 사이에서 겹치면 안 된다(겹치면 종료 코드 1).
 매장은 7곳뿐이라 겹치는 것이 정상이지만, 2차 AI 학습은 매장 단위 hold-out 으로 한 번 더 검증해야 하므로 겹침 정도를 표로 낸다.
 
-사용: python -I scripts/check_split_leak.py E:\hunik-anomaly\anomaly_index.csv
+사용: python -I scripts/check_split_leak.py E:/hunik-anomaly/anomaly_index.csv
 """
 import csv
 import sys
