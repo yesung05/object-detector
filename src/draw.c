@@ -80,6 +80,11 @@ static const uint8_t *glyph(char c) {
     static const uint8_t h_g[7] = {17, 17, 17, 31, 17, 17, 17};  /* H — CHAIR */
     static const uint8_t b_g[7] = {30, 17, 17, 30, 17, 17, 30};  /* B — TABLE */
     static const uint8_t k_g[7] = {17, 18, 20, 24, 20, 18, 17};  /* K — DRINK */
+    /* 화면 레이블에 실제로 쓰이는데 빠져 있던 글자: "MAYBE ORDER"(Y)가 "MA BE ORDER"로 보이던 버그, "OBJ"(J), "SAVE FAILED"·"HEAVY"(V, Y).
+       글리프가 없으면 blank 로 그려져 글자가 조용히 사라지므로, 새 레이블을 만들 때는 이 표에 있는 글자인지 확인한다. */
+    static const uint8_t y_g[7] = {17, 17, 10, 4, 4, 4, 4};      /* Y — MAYBE, HEAVY */
+    static const uint8_t v_g[7] = {17, 17, 17, 17, 17, 10, 4};   /* V — SAVE, HEAVY */
+    static const uint8_t j_g[7] = {7, 2, 2, 2, 2, 18, 12};       /* J — OBJ */
     static const uint8_t g_g[7] = {14, 17, 16, 23, 17, 17, 14};  /* G — DOG */
     static const uint8_t digits[10][7] = {
         {14, 17, 19, 21, 25, 17, 14},
@@ -117,8 +122,19 @@ static const uint8_t *glyph(char c) {
         case 'H': return h_g;
         case 'B': return b_g;
         case 'K': return k_g;
+        case 'Y': return y_g;
+        case 'V': return v_g;
+        case 'J': return j_g;
         default: return blank;
     }
+}
+
+/* 글자에 글리프가 정의되어 있는지(공백 제외). 없는 글자는 조용히 빈칸으로 그려져 "MA BE ORDER" 같은 버그가 되므로,
+   레이블에 쓰는 글자 집합을 테스트에서 검증하기 위한 도우미다. */
+int draw_glyph_defined(char c) {
+    const uint8_t *rows = glyph(c);
+    for (int i = 0; i < 7; ++i) if (rows[i]) return 1;
+    return 0;
 }
 
 /* 5x7 글자를 scale배 확대해서 흰색 픽셀로 하나씩 그립니다. */

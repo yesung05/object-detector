@@ -174,4 +174,7 @@ void tracks_update_heads(TrackList *tl, const uint8_t *luma,
 void draw_tracks(uint8_t *rgb, int width, int height, int stride,
                  const TrackList *tracks);
 
+/* 화면 레이블 글자(공백 제외)에 5x7 글리프가 있으면 1. 레이블 문구를 바꿀 때 글자 누락을 테스트로 잡는다. */
+int draw_glyph_defined(char c);
+
 #endif /* TRACKS_H */

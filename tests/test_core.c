@@ -339,6 +339,16 @@ static void test_draw_partial_box(void) {
     free(memory);
 }
 
+static void test_draw_label_glyphs_exist(void) {
+    /* 화면에 실제로 그려지는 레이블 문구(draw.c, main.c, throttle.c)의 글자가 모두 글리프를 가지는지.
+       예전에는 Y 가 없어 "MAYBE ORDER" 가 "MA BE ORDER" 로 보였다. */
+    const char *labels[] = {"MAYBE ORDER", "ORDERED", "PERSON", "MISS", "OBJ", "CAT", "DOG", "CUP", "FOOD",
+                            "DRINK", "TABLE", "CHAIR", "ANIMAL", "SAVE FAILED", "HEAVY", "INF", "CAM", "CPU"};
+    for (size_t i = 0; i < sizeof(labels) / sizeof(labels[0]); ++i)
+        for (const char *c = labels[i]; *c; ++c)
+            if (*c != ' ') EXPECT_TRUE(draw_glyph_defined(*c));
+}
+
 static void test_draw_empty_detections(void) {
     enum { WIDTH = 8, HEIGHT = 8 };
     uint8_t buffer[WIDTH * HEIGHT * 3];
@@ -3959,6 +3969,7 @@ int main(void) {
     RUN_TEST(test_nms_two_nonoverlapping_boxes);
     RUN_TEST(test_draw_partial_box);
     RUN_TEST(test_draw_empty_detections);
+    RUN_TEST(test_draw_label_glyphs_exist);
     RUN_TEST(test_tracker_invalid_create);
     RUN_TEST(test_tracker_null_args);
     RUN_TEST(test_tracker_stationary);
