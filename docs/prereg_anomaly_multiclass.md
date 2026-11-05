@@ -1,0 +1,15 @@
+# 이상행동 확장 탐지 — 사전 등록 (결과를 보기 전에 고정, 2026-11-06)
+
+목적: AI-Hub 「실내(편의점, 매장) 사람 이상행동」의 폭행(13)·흡연(10)·절도(12)·방화(09)·유기(11)을 1차 룰로 걸러낼 수 있는지, 못 걸러내면 2차 소형 AI가 필요한지를 **측정 후에 판단**한다. 기물 파손(08)은 이미 no-go(`anomaly-dataset-improvements-2026-11-05.md` 7절)라 한 번만 재확인한다. 이 문서는 어떤 측정 결과도 보기 전에 작성·커밋한다. 이후 기준을 바꾸면 그 사실과 이유를 아래 "변경 이력"에 남긴다.
+
+## 고정 사항
+- **평가 세트**: dev(탐색·조기 중단 판단) → pool(확정). **test는 최종 보고 직전에 사전 고정한 설정 1개로 1회만**. 장면당 1클립. 분할 누수 검사 `scripts/check_split_leak.py` 통과(장면 겹침 0) 확인 완료.
+- **모델·입력**: `models/yolo11n-pose-416x224.onnx` FP32 CPU, 기존 추론 캐시(`E:\hunik-anomaly\_work\cache_{dev,pool}_416x224`, 클래스당 dev 약 39, pool 60클립)를 재생. 캐시가 있는 클립만 쓴다(HDD 재추론 방지). 3fps 연출 영상이라 절대 수치는 현장 값이 아니다.
+- **후보 특징(고정 9개)**: `scripts/measure_pair_features.py`의 `n_persons, pair_close, pair_iou, pair_approach, limb_speed, pair_limb, fight_score, hand_mouth, hand_mouth_sust` + 기존 `measure_anomaly_filter_auc.py`의 `diff_global, diff_person, wrist_speed, motion_combo`. 임계값 후보는 정상 프레임 95분위 하나뿐(자유 파라미터 없음).
+- **1차 룰 Go 기준(클래스별)**: 같은 특징이 dev와 pool 양쪽에서 `clip_tpr_at_5pct ≥ 0.90`(정상 프레임 95% 스킵 + 이벤트 구간 클립 90% 트리거). 특징은 **dev에서 TPR이 가장 높은 하나**를 고르고 pool에서는 그 특징만 본다(pool에서 다시 고르지 않는다).
+- **조기 중단**: dev에서 어떤 특징의 `auc_vs_all_normal`도 0.75 미만이면 그 클래스는 2차 AI 없이 종료하고 no-go로 기록한다.
+- **2차 AI 착수 조건**: 1차 특징이 Go 기준에는 못 미치지만 AUC ≥ 0.75(의심 구간을 좁힐 신호는 있음)인 클래스에 한해. 2차 AI 목표(재현율·FA/h)는 학습을 시작하기 전에 이 문서에 추가 커밋한다.
+- **보고에 반드시 적을 한계**: 음성 시간이 짧아 "카페 규모 오탐률"은 미측정(rule of three 기준 약 72카메라시간 필요), 3fps, 배우 1~2명·매장 7곳, i5-4200U 지연 미측정, AI-Hub 약관 미확인(약관 확인 전 이 데이터로 학습한 모델은 배포하지 않는다).
+
+## 변경 이력
+- 2026-11-06 최초 작성.
