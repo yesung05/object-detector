@@ -959,9 +959,57 @@ static AVFormatContext *new_input_context(MediaInput *in, const MediaOptions *op
  * 실패·중단 시 in 은 닫힌 상태입니다.
  * -2 를 따로 두는 이유: 데이터가 아예 안 오는 상태를 일반 실패와 구분해 로그에 남깁니다.
  */
+/*
+ * Windows 의 argv 는 시스템 코드 페이지(한국어 Windows 는 CP949)로 오는데 FFmpeg 은 경로를 UTF-8 로 기대한다. 그래서
+ * 비ASCII 경로(예: 원천데이터/07.전도/클립.mp4)나 한글 카메라 이름이 avformat_open_input 에서 Invalid argument 로
+ * 실패했다(실측). FFmpeg 으로 넘기는 이 지점에서만 변환한다. main.c 의 argv 전체를 UTF-8 로 바꾸면 이후 fopen 으로
+ * 여는 설정·로그 경로가 깨지므로(fopen 은 시스템 코드 페이지를 쓴다) 변환 범위를 여기로 한정한다.
+ */
+static int open_input_utf8(MediaInput *in, const char *input_path,
+                           const MediaOptions *options, const char *pin_size,
+                           char *error, size_t error_size);
+#ifdef _WIN32
+/* 반환: 변환한 UTF-8 문자열(호출자 소유, free 로 해제) 또는 NULL(순수 ASCII 이거나 변환 실패 - 원본을 그대로 쓴다). */
+static char *path_to_utf8_alloc(const char *s) {
+    const unsigned char *p;
+    int wlen, ulen;
+    wchar_t *w;   /* 이 함수 소유, 아래에서 free */
+    char *u = NULL;
+    for (p = (const unsigned char *)s; *p; ++p)
+        if (*p >= 0x80) break;
+    if (!*p) return NULL;
+    wlen = MultiByteToWideChar(CP_ACP, MB_ERR_INVALID_CHARS, s, -1, NULL, 0);
+    if (wlen <= 0) return NULL;
+    w = (wchar_t *)malloc((size_t)wlen * sizeof(*w));
+    if (!w) return NULL;
+    if (MultiByteToWideChar(CP_ACP, 0, s, -1, w, wlen) > 0) {
+        ulen = WideCharToMultiByte(CP_UTF8, 0, w, -1, NULL, 0, NULL, NULL);
+        if (ulen > 0 && (u = (char *)malloc((size_t)ulen)) != NULL &&
+            WideCharToMultiByte(CP_UTF8, 0, w, -1, u, ulen, NULL, NULL) <= 0) {
+            free(u);
+            u = NULL;
+        }
+    }
+    free(w);
+    return u;
+}
+#endif
 static int open_input(MediaInput *in, const char *input_path,
                       const MediaOptions *options, const char *pin_size,
                       char *error, size_t error_size) {
+#ifdef _WIN32
+    char *utf8 = input_path ? path_to_utf8_alloc(input_path) : NULL;  /* 이 함수 소유 */
+    int r = open_input_utf8(in, utf8 ? utf8 : input_path, options, pin_size, error, error_size);
+    free(utf8);  /* open_input_utf8 은 포인터를 보관하지 않는다(avformat_open_input 이 내부에 복사) */
+    return r;
+#else
+    return open_input_utf8(in, input_path, options, pin_size, error, error_size);
+#endif
+}
+
+static int open_input_utf8(MediaInput *in, const char *input_path,
+                           const MediaOptions *options, const char *pin_size,
+                           char *error, size_t error_size) {
     const AVInputFormat *input_format = NULL;
     AVDictionary *input_options = NULL;  /* open_input 소유 — done 에서 av_dict_free */
     const AVCodec *codec;
