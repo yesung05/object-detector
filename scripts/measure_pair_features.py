@@ -227,29 +227,39 @@ def main():
                 norm_b += v
         norm = np.array(norm_a + norm_b)
         thr = float(np.percentile(norm, 95)) if len(norm) else None
-        hit = tot = 0
-        for c in clips:
-            if not c["pos"]:
-                continue
-            tot += 1
-            v = [f[k] for f in c["feats"]]
-            ok = False
-            for s, e in c["gt"]:
-                seg = v[s:(s if e is None else e) + 1]
-                if any(seg[i] > thr and seg[i + 1] > thr for i in range(len(seg) - 1)):
-                    ok = True
-            hit += ok
+        # 클립 내부 정상 구간만으로 정한 임계값(엄격 판정): 다른 클래스 클립과 "사람 수가 다르다"는 사실만으로
+        # 분리되는 착시(폭행 클립은 거의 항상 2인 이상)를 걸러낸다. Go 는 두 판정을 모두 통과해야 한다.
+        thr_in = float(np.percentile(np.array(norm_a), 95)) if len(norm_a) else None
+
+        def clip_tpr(th):
+            hit = tot = 0
+            for c in clips:
+                if not c["pos"] or th is None:
+                    continue
+                tot += 1
+                v = [f[k] for f in c["feats"]]
+                ok = False
+                for s, e in c["gt"]:
+                    seg = v[s:(s if e is None else e) + 1]
+                    if any(seg[i] > th and seg[i + 1] > th for i in range(len(seg) - 1)):
+                        ok = True
+                hit += ok
+            return round(hit / tot, 4) if tot else None
+        tpr_all, tpr_in = clip_tpr(thr), clip_tpr(thr_in)
         result["features"][k] = {
             "auc_vs_normal_in_clip": base.auc(np.array(ev), np.array(norm_a)),
             "auc_vs_other_class_clips": base.auc(np.array(ev), np.array(norm_b)),
             "auc_vs_all_normal": base.auc(np.array(ev), norm),
-            "threshold_p95_normal": thr, "clip_tpr_at_5pct": round(hit / tot, 4) if tot else None,
+            "threshold_p95_normal": thr, "clip_tpr_at_5pct": tpr_all,
+            "threshold_p95_in_clip_normal": thr_in, "clip_tpr_in_clip_normal": tpr_in,
+            "strict_tpr": min(tpr_all or 0, tpr_in or 0),
             "event_frames": len(ev), "normal_frames": int(len(norm))}
-    best = max(result["features"].items(), key=lambda kv: (kv[1]["clip_tpr_at_5pct"] or 0, kv[1]["auc_vs_all_normal"] or 0))
+    best = max(result["features"].items(), key=lambda kv: (kv[1]["strict_tpr"], kv[1]["auc_vs_normal_in_clip"] or 0))
     bauc = max((v["auc_vs_all_normal"] or 0) for v in result["features"].values())
-    result["verdict"] = {"criterion": "clip_tpr_at_5pct >= 0.90 (정상 95% 스킵)", "best_feature": best[0],
-                         "best_tpr": best[1]["clip_tpr_at_5pct"], "best_auc_any_feature": round(bauc, 4),
-                         "go": bool((best[1]["clip_tpr_at_5pct"] or 0) >= 0.90),
+    result["verdict"] = {"criterion": "clip_tpr_at_5pct >= 0.90 그리고 clip_tpr_in_clip_normal >= 0.90", "best_feature": best[0],
+                         "best_tpr": best[1]["clip_tpr_at_5pct"], "best_strict_tpr": best[1]["strict_tpr"],
+                         "best_auc_any_feature": round(bauc, 4),
+                         "go": bool(best[1]["strict_tpr"] >= 0.90),
                          "early_stop_auc_lt_0.75": bool(bauc < 0.75)}
     (out / f"pair_{a.pos_class}_{a.split}.json").write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
     sys.stdout.reconfigure(encoding="utf-8")
