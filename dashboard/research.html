@@ -3,22 +3,22 @@
 <title>무인 매장 환경·위생 감시</title>
 <style>
 :root{color-scheme:light;--ink:#193249;--muted:#607284;--line:#dce4ec;--green:#167448;--orange:#a34709}*{box-sizing:border-box}body{margin:0;background:#f2f5f9;color:var(--ink);font:15px/1.6 system-ui,sans-serif}main{max-width:1240px;margin:auto;padding:28px}h1{font-size:28px;margin:0}h2{font-size:18px;margin:0 0 12px}.subtitle,small{color:var(--muted)}header{margin-bottom:20px}.toolbar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;background:white;border:0;border-radius:0;padding:12px;margin-bottom:18px}button,input{font:inherit;padding:6px 10px;border:0;border-radius:0;background:white;color:var(--ink)}button{cursor:pointer}button:disabled{opacity:.45;cursor:default}input[type=number]{width:85px}label{display:inline-flex;gap:6px;align-items:center}#health{padding:12px 16px;border-radius:0;background:#e4edf6;margin:12px 0}#message{color:var(--orange)}.metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:18px 0}.metric,.panel,.card{background:white;border:0;border-radius:0;padding:18px}.metric strong{font-size:30px;display:block}.metric span{color:var(--muted);font-size:13px}.layout{display:grid;grid-template-columns:1fr;gap:18px}.layout.with-video{grid-template-columns:1.3fr 1fr}#cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px}.card h3{margin:0;font-size:16px}.verdict{font-size:23px;font-weight:750;margin:10px 0 6px}.card[data-kind=ok] .verdict{color:var(--green)}.card[data-kind=alert] .verdict{color:var(--orange)}.reason{font-size:13px;color:var(--muted);margin:0}canvas{display:block;width:100%;height:auto;background:#e7edf3;border-radius:0}.flow{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:18px 0}.flow span{border:0;padding:8px 12px;background:white;border-radius:0}.notes{margin-top:18px;font-size:12px;color:var(--muted)}[hidden]{display:none!important}body.presentation .toolbar{display:none}body.presentation main{max-width:1500px}#resume{display:none}body.presentation #resume{display:block;position:fixed;right:10px;bottom:10px}@media(max-width:800px){.metrics{grid-template-columns:repeat(2,1fr)}.layout.with-video{grid-template-columns:1fr}main{padding:16px}}@media print{body{background:white}main{padding:0;max-width:none}.toolbar,#resume,#message{display:none!important}.card,.metric{break-inside:avoid}h1{font-size:24px}.notes{color:#333}}
-</style></head><body><main>
-<header><h1>무인 매장 환경·위생 감시</h1><div class="subtitle">표면 변화와 이용 상태를 고려한 청소 필요 상황 확인</div></header>
+</style><link rel="stylesheet" href="/assets/theme.css"></head><body><main>
+<header><h1>무인 매장 환경·위생 감시</h1></header>
 <div class="toolbar">
 <label>영상 포트 <input id="port" type="number" min="1" max="65535" value="8081"></label><button id="connect">연결 새로고침</button>
 <label><input id="show-video" type="checkbox">카메라 표시</label><button id="freeze">화면 고정</button><button id="present">발표 화면</button><button id="png" disabled>그림 PNG 저장</button><button id="print">인쇄 / PDF</button><button id="export" disabled>관측 수치 JSON</button>
 </div>
-<div id="health" role="status">감지기 연결 확인 중...</div><div id="message" role="status"></div>
+<div id="health" role="status"></div><div id="message" role="status"></div>
 <div class="metrics">
 <div class="metric"><strong id="areas">—</strong><span>감시 영역 수</span></div>
 <div class="metric"><strong id="alerts">—</strong><span>확인이 필요한 영역</span></div>
 <div class="metric"><strong id="requests">—</strong><span>AI 검사 요청 · 실행 누적</span></div>
 <div class="metric"><strong id="reuses">—</strong><span>결과 재사용 관측 · 실행 누적</span></div>
 </div>
-<div id="layout" class="layout"><section id="video-panel" class="panel" hidden><h2>관측 화면</h2><canvas id="video" width="1280" height="720"></canvas><small id="video-time">영상을 요청하는 중입니다.</small></section><section><h2>장소별 상태</h2><div id="cards"></div></section></div>
-<div class="flow" aria-label="처리 구조"><span>표면 영역</span> → <span>기준 모습 비교</span> → <span>사람·가림 확인</span> → <span>선택적 AI 검사</span> → <span>관리자 확인 알림</span></div>
-<div class="notes">‘이상 없음’은 유효한 관측에서 청소가 필요한 변화가 감지되지 않았다는 뜻입니다. 오염 종류·위생 안전성을 확정하지 않습니다.<br>검사 요청 수는 실제 성공한 추론 수가 아니며, 재사용 관측 수는 절감한 추론 수가 아닙니다. 연결 실패·미지원 수치는 ‘—’로 표시합니다.<br><span id="stamp">아직 수신한 관측이 없습니다.</span></div>
+<div id="layout" class="layout"><section id="video-panel" class="panel" hidden><h2>관측 화면</h2><canvas id="video" width="1280" height="720"></canvas><small id="video-time"></small></section><section><h2>장소별 상태</h2><div id="cards"></div></section></div>
+
+<div class="notes"><span id="stamp"></span></div>
 </main><button id="resume">일반 화면으로</button>
 <script>
 'use strict';

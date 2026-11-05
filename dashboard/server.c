@@ -307,6 +307,38 @@ static void serve_page(SOCKET s, const char *name) {
     free(buf);
 }
 
+/* GET /assets/<이름> → dashboard\assets\... (폰트·공용 CSS)
+ *
+ * 왜 허용 목록(고정 표)인가: 요청 경로를 파일 경로에 이어 붙이면 "..\\" 등으로 데이터 루트 밖(로그 DB·설정)을
+ * 읽게 된다. 이름을 표에서 찾아 고정 경로만 열면 경로 검증 버그가 생길 여지가 없다.
+ * 폰트를 외부 CDN이 아니라 로컬로 서빙하는 이유: 매장 PC는 인터넷이 없을 수 있고, 영상 외 어떤 요청도
+ * 외부로 나가지 않아야 한다는 프로젝트 원칙(외부 요청 0) 때문이다. */
+static void serve_asset(SOCKET s, const char *name) {
+    static const struct { const char *name, *rel, *ctype; } K[] = {
+        {"theme.css", "theme.css", "text/css; charset=utf-8"},
+        {"PretendardVariable.woff2", "fonts\\PretendardVariable.woff2", "font/woff2"},
+    };
+    size_t i;
+    for (i = 0; i < sizeof(K) / sizeof(K[0]); i++) {
+        if (strcmp(name, K[i].name) != 0) continue;
+        char path[MAX_PATH];
+        snprintf(path, sizeof(path), "%s\\dashboard\\assets\\%s", g_root, K[i].rel);
+        HANDLE h = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+        if (h == INVALID_HANDLE_VALUE) break;
+        DWORD size = GetFileSize(h, NULL), got = 0;
+        char *buf = (char *)malloc(size ? size : 1); /* 이 함수 소유 — 아래에서 free() */
+        if (!buf) { CloseHandle(h); break; }
+        ReadFile(h, buf, size, &got, NULL);
+        CloseHandle(h);
+        send_header(s, 200, K[i].ctype, (int64_t)got);
+        send_all(s, buf, (int)got);
+        free(buf);
+        return;
+    }
+    send_header(s, 404, "text/plain", 3);
+    send(s, "404", 3, 0);
+}
+
 /*
  * 로그 파일 목록 정렬 — 수정 시각 내림차순.
  *
@@ -945,6 +977,8 @@ static DWORD WINAPI client_thread(LPVOID arg) {
     if (strcmp(method, "GET") == 0) {
         if (strcmp(path, "/") == 0 || strcmp(path, "/index.html") == 0) {
             serve_page(s,"index.html");
+        } else if (strncmp(path,"/assets/",8)==0) {
+            serve_asset(s,path+8);
         } else if (strcmp(path,"/replay")==0) {
             serve_page(s,"replay.html");
         } else if (strcmp(path,"/api/replay/events")==0 || strcmp(path,"/api/replay/frames")==0) {

@@ -1,0 +1,181 @@
+/* 대시보드 공용 테마 — Apple 스타일 (Pretendard, 단층 카드, 헤어라인, 시스템 색)
+ *
+ * 왜 기존 <style> 뒤에 덮어쓰는가: JS가 클래스 이름(.active, [data-state] 등)을 토글하므로 이름을 바꾸면 화면이 깨진다.
+ * 이름은 그대로 두고 값만 새로 정해 기존 뉴모피즘(.neu-*, --sh-light/--sh-dark)을 대체한다.
+ * 폰트는 로컬(/assets/fonts)에서 받는다: 매장 PC는 인터넷이 없을 수 있고 외부 요청은 0이어야 한다. */
+
+@font-face {
+  font-family: 'Pretendard Variable';
+  font-weight: 45 920;
+  font-style: normal;
+  font-display: swap;
+  src: local('Pretendard Variable'), url('/assets/PretendardVariable.woff2') format('woff2-variations');
+}
+
+:root {
+  --bg: #f5f5f7;
+  --surface: #ffffff;
+  --fill: #f2f2f7;               /* 입력·세그먼트 바탕 */
+  --text: #1d1d1f;
+  --muted: #6e6e73;
+  --hair: rgba(60, 60, 67, .16);  /* 헤어라인 */
+  --border: var(--hair);
+  --green: #34c759;
+  --yellow: #ffcc00;
+  --orange: #ff9500;
+  --red: #ff3b30;
+  --accent: #007aff;
+  --accent-glow: transparent;
+  --sh-light: transparent;
+  --sh-dark: rgba(0, 0, 0, .10);
+  --card-shadow: 0 1px 2px rgba(0, 0, 0, .04), 0 4px 16px rgba(0, 0, 0, .05);
+  --radius: 16px;
+  --font: 'Pretendard Variable', Pretendard, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Malgun Gothic', sans-serif;
+}
+[data-theme="dark"] {
+  --bg: #000000;
+  --surface: #1c1c1e;
+  --fill: #2c2c2e;
+  --text: #f5f5f7;
+  --muted: #98989f;
+  --hair: rgba(84, 84, 88, .55);
+  --green: #30d158;
+  --yellow: #ffd60a;
+  --orange: #ff9f0a;
+  --red: #ff453a;
+  --accent: #0a84ff;
+  --sh-dark: rgba(0, 0, 0, .5);
+  --card-shadow: none;
+}
+
+html, body { background: var(--bg); }
+body, button, input, select, textarea, .neu-btn, .setting-input, .mode-btn,
+select.neu-select, .neu-input {
+  font-family: var(--font);
+  letter-spacing: -.01em;
+}
+body { font-size: 15px; -webkit-font-smoothing: antialiased; }
+.stat-value, .alert-ts, .event-ts, .chip-count, .time-setting-val, .preset-time-val, .setting-value-display {
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── 헤더: 반투명 + 블러 ── */
+header {
+  background: color-mix(in srgb, var(--bg) 72%, transparent);
+  -webkit-backdrop-filter: saturate(180%) blur(20px);
+  backdrop-filter: saturate(180%) blur(20px);
+  box-shadow: none;
+  border-bottom: 1px solid var(--hair);
+}
+
+/* ── 카드(떠 있는 면) ── */
+.neu-raised, .status-card, .stat-card, .surface-summary, .status-chip, details.neu-accordion,
+.log-toolbar, .alerts-section, .preset-check-item, .settings-wrap, .surface-main-card, .preset-card {
+  background: var(--surface);
+  border: 1px solid var(--hair);
+  border-radius: var(--radius);
+  box-shadow: var(--card-shadow);
+}
+[data-theme="dark"] .neu-raised, [data-theme="dark"] .status-card, [data-theme="dark"] .stat-card,
+[data-theme="dark"] .status-chip, [data-theme="dark"] details.neu-accordion { border-color: transparent; }
+.camera-panel { border-radius: var(--radius); box-shadow: var(--card-shadow); }
+
+/* 상태 카드: 배지 색만으로 상태 표시 (테두리 색 + 값 색) */
+.status-card[data-state="warn"], .status-chip[data-state="warn"]   { border-color: var(--orange); box-shadow: var(--card-shadow); }
+.status-card[data-state="danger"], .status-chip[data-state="danger"] { border-color: var(--red); box-shadow: var(--card-shadow); }
+
+/* ── 눌린 면 → 연한 채움 ── */
+.neu-inset, #event-list, .adv-tab-bar, .auto-progress, .chip-count, .door-pill, .door-preview-img,
+.door-preview-placeholder, .mode-toggle, .preset-btn-group, .preset-desc, .settings-mode-bar,
+.step-label em, .time-setting, select.neu-select, select, .setting-input, .neu-input {
+  background: var(--fill);
+  box-shadow: none;
+  border: 0;
+}
+.weekday-row label:has(input:checked) { background: var(--accent); color: #fff; box-shadow: none; }
+
+/* ── 버튼: 채움 / 틴트 / 고스트 ── */
+.neu-btn, .theme-btn, .preset-btn, .smode-btn, .weekday-row label {
+  background: var(--fill);
+  color: var(--accent);
+  border: 0;
+  box-shadow: none;
+  border-radius: 10px;
+  font-weight: 600;
+  transition: background .2s, opacity .2s, transform .1s;
+}
+.neu-btn:hover { background: color-mix(in srgb, var(--accent) 12%, var(--fill)); color: var(--accent); }
+.neu-btn:active, .neu-btn.pressed { transform: scale(.97); box-shadow: none; }
+.neu-btn.primary, .neu-btn.primary:hover { background: var(--accent); color: #fff; box-shadow: none; }
+.neu-btn.primary:hover { opacity: .88; }
+.theme-btn { color: var(--text); width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center; padding: 0; }
+.theme-btn:active { box-shadow: none; }
+
+/* ── 세그먼트(간단/고급, 탭, 프리셋) ── */
+.mode-toggle, .adv-tab-bar, .preset-btn-group, .settings-mode-bar { padding: 2px; border-radius: 10px; gap: 2px; }
+.mode-btn, .adv-tab, .preset-btn, .smode-btn { border-radius: 8px; color: var(--muted); background: transparent; }
+.mode-btn.active, .adv-tab.active, .preset-btn.active, .smode-btn.active {
+  background: var(--surface); color: var(--text);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, .15);
+}
+[data-theme="dark"] .mode-btn.active, [data-theme="dark"] .adv-tab.active,
+[data-theme="dark"] .preset-btn.active, [data-theme="dark"] .smode-btn.active { background: #636366; }
+
+/* ── 입력 ── */
+.setting-input, .neu-input, select { border-radius: 10px; padding: 8px 12px; font-size: 14px; }
+.setting-input:focus, .neu-input:focus, select:focus { box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 35%, transparent); }
+input[type="range"].setting-input { background: var(--hair); height: 4px; }
+input[type="range"].setting-input::-webkit-slider-thumb {
+  background: #fff; width: 22px; height: 22px; box-shadow: 0 1px 4px rgba(0, 0, 0, .35); border: 0;
+}
+
+/* ── iOS 토글 ── */
+.toggle { width: 51px; height: 31px; }
+.toggle-slider { background: var(--hair); box-shadow: none; border-radius: 31px; }
+.toggle-slider::before { width: 27px; height: 27px; left: 2px; top: 2px; background: #fff; box-shadow: 0 2px 4px rgba(0, 0, 0, .3); }
+.toggle input:checked + .toggle-slider { background: var(--green); }
+.toggle input:checked + .toggle-slider::before { transform: translateX(20px); background: #fff; box-shadow: 0 2px 4px rgba(0, 0, 0, .3); }
+
+/* ── 상태 점·배지 ── */
+.cam-dot, .cam-dot.warn, .cam-dot.error { box-shadow: none; }
+.door-pill { border-radius: 999px; font-weight: 600; }
+.badge-count, .tab-badge { border-radius: 999px; font-weight: 600; font-variant-numeric: tabular-nums; }
+
+/* ── 설정 그룹: 리스트 행 + 쉐브론 ── */
+details.setup-group > summary, details.neu-accordion > summary { list-style: none; cursor: pointer; font-weight: 600; }
+details.setup-group > summary::-webkit-details-marker, details.neu-accordion > summary::-webkit-details-marker { display: none; }
+details.setup-group > summary::after, details.neu-accordion > summary::after {
+  content: ''; float: right; width: 8px; height: 8px; margin-top: 6px;
+  border-right: 2px solid var(--muted); border-bottom: 2px solid var(--muted);
+  transform: rotate(-45deg); transition: transform .2s;
+}
+details.setup-group[open] > summary::after, details.neu-accordion[open] > summary::after { transform: rotate(45deg); }
+.setting-row { border-bottom: 1px solid var(--hair); }
+.setting-row:last-child { border-bottom: 0; }
+
+/* ── 저장 바 ── */
+.save-bar, #adv-settings .save-bar {
+  box-shadow: none; border-top: 1px solid var(--hair);
+  background: color-mix(in srgb, var(--bg) 80%, transparent);
+  -webkit-backdrop-filter: saturate(180%) blur(20px); backdrop-filter: saturate(180%) blur(20px);
+}
+
+/* ── 스켈레톤(로딩 문구 대신) ── */
+.skeleton {
+  border-radius: 8px; min-height: 1em; min-width: 3em;
+  background: linear-gradient(90deg, var(--fill) 25%, var(--hair) 50%, var(--fill) 75%);
+  background-size: 200% 100%; animation: sk 1.2s linear infinite;
+}
+@keyframes sk { to { background-position: -200% 0; } }
+
+/* ── 아이콘: 이모지 대신 SVG ── */
+svg.i { width: 1em; height: 1em; stroke: currentColor; fill: none; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; vertical-align: -.125em; }
+.card-icon svg.i { width: 28px; height: 28px; color: var(--accent); }
+.status-card[data-state="warn"] .card-icon svg.i { color: var(--orange); }
+.status-card[data-state="danger"] .card-icon svg.i { color: var(--red); }
+.status-card[data-state="ok"] .card-icon svg.i { color: var(--green); }
+
+::-webkit-scrollbar-thumb { background: var(--hair); }
+
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
+@media (max-width: 768px) { header { padding: 0 12px; } .mode-panel { padding: 12px 10px 24px; } }

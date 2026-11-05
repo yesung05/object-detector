@@ -18,9 +18,6 @@
 })();
 </script>
 <title>unmanned_detector · 0.1.0-alpha.4</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700&display=swap" rel="stylesheet">
 <style>
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -70,7 +67,7 @@
 .neu-btn {
   background: var(--bg);
   color: var(--text);
-  font-family: 'Noto Sans KR', sans-serif;
+  font-family: var(--font);
   font-size: 13px;
   font-weight: 500;
   border: none;
@@ -98,7 +95,7 @@
 .setting-input {
   background: var(--bg);
   color: var(--text);
-  font-family: 'Noto Sans KR', sans-serif;
+  font-family: var(--font);
   font-size: 13px;
   border: none;
   border-radius: 8px;
@@ -125,7 +122,7 @@ input[type="range"].setting-input::-webkit-slider-thumb {
 select.neu-select, select {
   background: var(--bg);
   color: var(--text);
-  font-family: 'Noto Sans KR', sans-serif;
+  font-family: var(--font);
   font-size: 12px;
   border: none;
   border-radius: 8px;
@@ -163,7 +160,7 @@ select.neu-select, select {
 body {
   background: var(--bg);
   color: var(--text);
-  font-family: 'Noto Sans KR', sans-serif;
+  font-family: var(--font);
   font-size: 14px;
   min-height: 100vh;
   transition: background .3s, color .3s;
@@ -224,7 +221,7 @@ header {
 }
 .mode-btn {
   background: transparent; border: none; color: var(--muted);
-  font-family: 'Noto Sans KR', sans-serif;
+  font-family: var(--font);
   font-size: 12px; font-weight: 700;
   padding: 6px 14px; cursor: pointer;
   transition: color .15s, background .15s;
@@ -258,7 +255,7 @@ header {
 }
 .cam-reconnect {
   background: rgba(255,255,255,.1); border: 1px solid rgba(255,255,255,.2);
-  color: #ccc; font-size: 12px; font-family: 'Noto Sans KR', sans-serif;
+  color: #ccc; font-size: 12px; font-family: var(--font);
   padding: 5px 14px; border-radius: 8px; cursor: pointer;
 }
 .cam-reconnect:hover { background: rgba(255,255,255,.2); }
@@ -372,7 +369,7 @@ header {
 }
 .adv-tab {
   flex: 1; background: transparent; border: none;
-  font-family: 'Noto Sans KR', sans-serif;
+  font-family: var(--font);
   font-size: 13px; font-weight: 700; color: var(--muted);
   padding: 9px 0; border-radius: 9px; cursor: pointer;
   transition: background .2s, color .2s, box-shadow .2s;
@@ -598,7 +595,7 @@ details.neu-accordion[open] > summary { color: var(--accent); }
 }
 .smode-btn {
   flex: 1; background: transparent; border: none;
-  font-family: 'Noto Sans KR', sans-serif;
+  font-family: var(--font);
   font-size: 12px; font-weight: 700; color: var(--muted);
   padding: 7px 0; border-radius: 8px; cursor: pointer;
   transition: background .2s, color .2s;
@@ -624,7 +621,7 @@ details.neu-accordion[open] > summary { color: var(--accent); }
 }
 .preset-btn {
   flex: 1; background: transparent; border: none;
-  font-family: 'Noto Sans KR', sans-serif;
+  font-family: var(--font);
   font-size: 11px; font-weight: 600; color: var(--muted);
   padding: 9px 4px; cursor: pointer;
   transition: background .15s, color .15s;
@@ -759,7 +756,7 @@ details.fallback-block > summary:hover { color: var(--accent); }
 .privacy-banner.show { display: flex; }
 .privacy-banner .pb-btn {
   background: var(--accent); color: #fff; border: none; border-radius: 7px;
-  font-family: 'Noto Sans KR', sans-serif; font-size: 11px; font-weight: 700;
+  font-family: var(--font); font-size: 11px; font-weight: 700;
   padding: 4px 9px; cursor: pointer;
 }
 .privacy-banner .pb-btn.ghost { background: rgba(255,255,255,.15); }
@@ -899,8 +896,10 @@ details.dev-accordion[open] > summary { color: var(--red) !important; }
 .manual-options>summary{padding:10px 0;cursor:pointer;font-size:13px;color:var(--muted)}
 @media(max-width:600px){.setup-nav .neu-btn{flex:1 1 40%}.setup-actions>*{flex:1 1 auto;text-align:center;justify-content:center}.setup-group-body{padding:0 8px 8px}}
 </style>
+<link rel="stylesheet" href="/assets/theme.css">
 </head>
 <body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs><symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></symbol><symbol id="i-moon" viewBox="0 0 24 24"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></symbol><symbol id="i-camera" viewBox="0 0 24 24"><path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/></symbol><symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></symbol><symbol id="i-door" viewBox="0 0 24 24"><path d="M6 21V3h12v18M4 21h16"/><circle cx="14.5" cy="12" r=".8"/></symbol><symbol id="i-alert" viewBox="0 0 24 24"><path d="M12 3 2.5 20h19z"/><path d="M12 9v5M12 17v.01"/></symbol><symbol id="i-chair" viewBox="0 0 24 24"><path d="M7 3h10v8H7zM5 11h14M7 11v10M17 11v10"/></symbol><symbol id="i-sparkle" viewBox="0 0 24 24"><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z"/></symbol><symbol id="i-speaker" viewBox="0 0 24 24"><path d="M4 9h4l5-4v14l-5-4H4zM16 9a4 4 0 0 1 0 6"/></symbol><symbol id="i-chart" viewBox="0 0 24 24"><path d="M5 20V10M12 20V4M19 20v-7"/></symbol><symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2"/><circle cx="8" cy="17" r="2"/></symbol><symbol id="i-list" viewBox="0 0 24 24"><path d="M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01"/></symbol><symbol id="i-paw" viewBox="0 0 24 24"><circle cx="7" cy="10" r="1.6"/><circle cx="11" cy="6.5" r="1.6"/><circle cx="15" cy="6.5" r="1.6"/><circle cx="19" cy="10" r="1.6"/><path d="M12 12c-3 0-5 3-5 5 0 2 2 2 5 1 3 1 5 1 5-1 0-2-2-5-5-5z"/></symbol><symbol id="i-food" viewBox="0 0 24 24"><path d="M5 11a7 7 0 0 1 14 0zM4 15h16M6 19h12"/></symbol><symbol id="i-cup" viewBox="0 0 24 24"><path d="M6 4h12l-1.5 16h-9zM7 9h10"/></symbol><symbol id="i-tool" viewBox="0 0 24 24"><path d="M14 6a4 4 0 0 0-5 5l-6 6 4 4 6-6a4 4 0 0 0 5-5l-3 3-2-2z"/></symbol><symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="13" r="8"/><path d="M12 9v4l2.5 2M9 3h6"/></symbol></defs></svg>
 
 <!-- ══ 헤더 ══════════════════════════════════════════════════════════════════ -->
 <header>
@@ -917,10 +916,10 @@ details.dev-accordion[open] > summary { color: var(--red) !important; }
   <div class="header-right">
     <div class="cam-badge">
       <div class="cam-dot" id="cam-dot"></div>
-      <span id="cam-label">카메라 확인 중</span>
+      <span id="cam-label"></span>
     </div>
     <div class="header-sep"></div>
-    <button class="theme-btn" id="theme-btn" onclick="toggleTheme()" title="테마 전환">☀</button>
+    <button class="theme-btn" id="theme-btn" onclick="toggleTheme()" title="테마 전환"><svg class="i"><use href="#i-sun"/></svg></button>
     <div class="mode-toggle">
       <button class="mode-btn active" id="btn-easy" onclick="setMode('easy')">간단</button>
       <button class="mode-btn" id="btn-advanced" onclick="setMode('advanced')">고급</button>
@@ -935,7 +934,7 @@ details.dev-accordion[open] > summary { color: var(--red) !important; }
   <div class="easy-stream" id="easy-stream-slot">
     <div class="camera-panel" id="stream-container">
       <div class="camera-offline" id="cam-offline">
-        <span style="font-size:36px">📷</span>
+        <span style="font-size:36px"><svg class="i"><use href="#i-camera"/></svg></span>
         <span>detector 미실행 또는 스트림 포트 미설정</span>
         <button class="cam-reconnect" onclick="connectStream()">재연결</button>
       </div>
@@ -943,7 +942,7 @@ details.dev-accordion[open] > summary { color: var(--red) !important; }
            onerror="if(window.onStreamError)onStreamError()" onload="if(window.onStreamLoad)onStreamLoad()">
       <!-- 개인정보 보호 모드 배너 — /status 폴링으로 갱신. 카메라 패널과 함께 easy/adv 슬롯을 이동 -->
       <div class="privacy-banner" id="privacy-banner">
-        <span>🔒 보호 모드 — 감지 결과만 표시</span>
+        <span><svg class="i"><use href="#i-lock"/></svg> 보호 모드 — 감지 결과만 표시</span>
         <span class="pb-remain" id="privacy-remain"></span>
         <button class="pb-btn" id="privacy-unlock-btn" onclick="privacyUnlock(300)">설정용 임시 해제</button>
         <button class="pb-btn ghost" id="privacy-lock-btn" onclick="privacyLock()" style="display:none">다시 잠금</button>
@@ -957,32 +956,32 @@ details.dev-accordion[open] > summary { color: var(--red) !important; }
   <!-- 상태 카드 (auto-fill — 감지 항목 추가 시 자동 확장) -->
   <div class="status-grid">
     <div class="status-card" id="card-overstay" data-state="normal">
-      <div class="card-icon">⏱️</div>
+      <div class="card-icon"><svg class="i"><use href="#i-clock"/></svg></div>
       <div class="card-name">장기 체류</div>
       <div class="card-status-text" id="cs-overstay">이상 없음</div>
     </div>
     <div class="status-card" id="card-unordered" data-state="normal">
-      <div class="card-icon">🪑</div>
+      <div class="card-icon"><svg class="i"><use href="#i-chair"/></svg></div>
       <div class="card-name">미주문 착석</div>
       <div class="card-status-text" id="cs-unordered">이상 없음</div>
     </div>
     <div class="status-card" id="card-fallen" data-state="normal">
-      <div class="card-icon">🚨</div>
+      <div class="card-icon"><svg class="i"><use href="#i-alert"/></svg></div>
       <div class="card-name">응급 상황</div>
       <div class="card-status-text" id="cs-fallen">이상 없음</div>
     </div>
     <div class="status-card" id="card-door" data-state="normal">
-      <div class="card-icon">🚪</div>
+      <div class="card-icon"><svg class="i"><use href="#i-door"/></svg></div>
       <div class="card-name">출입문</div>
-      <div class="card-status-text" id="cs-door">확인 중</div>
+      <div class="card-status-text" id="cs-door"></div>
     </div>
     <div class="status-card" id="card-residue" data-state="normal">
-      <div class="card-icon">🧹</div>
+      <div class="card-icon"><svg class="i"><use href="#i-sparkle"/></svg></div>
       <div class="card-name">잔류물</div>
       <div class="card-status-text" id="cs-residue">이상 없음</div>
     </div>
     <div class="status-card" id="card-camera-easy" data-state="normal">
-      <div class="card-icon">📷</div>
+      <div class="card-icon"><svg class="i"><use href="#i-camera"/></svg></div>
       <div class="card-name">카메라</div>
       <div class="card-status-text" id="cs-camera">정상</div>
     </div>
@@ -999,7 +998,7 @@ details.dev-accordion[open] > summary { color: var(--red) !important; }
     </div>
   </div>
 
-  <a class="neu-btn" href="/announce" style="display:flex;justify-content:center;align-items:center;margin-top:12px;text-decoration:none">🔊 매장 음성 안내</a>
+  <a class="neu-btn" href="/announce" style="display:flex;justify-content:center;align-items:center;margin-top:12px;text-decoration:none"><svg class="i"><use href="#i-speaker"/></svg> 매장 음성 안내</a>
 
   </div><!-- /easy-side -->
 </div>
@@ -1016,32 +1015,32 @@ details.dev-accordion[open] > summary { color: var(--red) !important; }
     <!-- 상태 칩 그리드 (항목 추가 시 auto-fill로 자동 확장) -->
     <div class="adv-chips-grid" id="adv-chips">
       <div class="status-chip" id="chip-overstay" data-state="normal">
-        <span class="chip-icon">⏱️</span>
+        <span class="chip-icon"><svg class="i"><use href="#i-clock"/></svg></span>
         <span class="chip-name">장기 체류</span>
         <span class="chip-count" id="chip-cnt-overstay">0</span>
       </div>
       <div class="status-chip" id="chip-unordered" data-state="normal">
-        <span class="chip-icon">🪑</span>
+        <span class="chip-icon"><svg class="i"><use href="#i-chair"/></svg></span>
         <span class="chip-name">미주문</span>
         <span class="chip-count" id="chip-cnt-unordered">0</span>
       </div>
       <div class="status-chip" id="chip-fallen" data-state="normal">
-        <span class="chip-icon">🚨</span>
+        <span class="chip-icon"><svg class="i"><use href="#i-alert"/></svg></span>
         <span class="chip-name">응급</span>
         <span class="chip-count" id="chip-cnt-fallen">0</span>
       </div>
       <div class="status-chip" id="chip-door" data-state="normal">
-        <span class="chip-icon">🚪</span>
+        <span class="chip-icon"><svg class="i"><use href="#i-door"/></svg></span>
         <span class="chip-name">출입문</span>
         <span class="chip-count" id="chip-cnt-door">0</span>
       </div>
       <div class="status-chip" id="chip-residue" data-state="normal">
-        <span class="chip-icon">🧹</span>
+        <span class="chip-icon"><svg class="i"><use href="#i-sparkle"/></svg></span>
         <span class="chip-name">잔류물</span>
         <span class="chip-count" id="chip-cnt-residue">0</span>
       </div>
       <div class="status-chip" id="chip-camera" data-state="normal">
-        <span class="chip-icon">📷</span>
+        <span class="chip-icon"><svg class="i"><use href="#i-camera"/></svg></span>
         <span class="chip-name">카메라</span>
         <span class="chip-count" id="chip-cnt-camera">0</span>
       </div>
@@ -1054,20 +1053,20 @@ details.dev-accordion[open] > summary { color: var(--red) !important; }
     <!-- 탭 바 -->
     <div class="adv-tab-bar">
       <button class="adv-tab active" id="atab-monitor" onclick="switchAdvTab('monitor')">
-        📊 현황
+        <svg class="i"><use href="#i-chart"/></svg> 현황
       </button>
       <button class="adv-tab" id="atab-settings" onclick="switchAdvTab('settings')">
-        ⚙️ 설정
+        <svg class="i"><use href="#i-sliders"/></svg> 설정
       </button>
       <button class="adv-tab" id="atab-logs" onclick="switchAdvTab('logs')">
-        📋 로그 <span class="tab-badge" id="log-new-badge" style="display:none">0</span>
+        <svg class="i"><use href="#i-list"/></svg> 로그 <span class="tab-badge" id="log-new-badge" style="display:none">0</span>
       </button>
     </div>
 
     <!-- ── 현황 탭 ── -->
     <div class="adv-panel active" id="adv-monitor">
-      <p class="setting-desc">아마 주문 <strong id="probable-orders">0</strong>명 · 가까이 30초간 상체를 세운 상태를 관측한 추정입니다. 결제 확인은 아니며 미주문 경고는 유지됩니다.</p>
-      <p class="setting-desc" id="tier2-timing">Tier 2 실행 시간 측정 중</p>
+      <p class="setting-desc">추정 주문 <strong id="probable-orders">0</strong></p>
+      <p class="setting-desc" id="tier2-timing"></p>
       <div class="stats-row">
         <div class="stat-card">
           <div><div class="stat-label">체류 초과</div><div class="stat-sublabel">overstay</div></div>
@@ -1098,7 +1097,7 @@ details.dev-accordion[open] > summary { color: var(--red) !important; }
         <div class="stat-card" style="grid-column:span 2">
           <div>
             <div class="stat-label">문 현재 상태</div>
-            <div id="door-state-badge" class="door-pill unknown" style="margin-top:4px">— 확인 중</div>
+            <div id="door-state-badge" class="door-pill unknown" style="margin-top:4px">—</div>
             <button class="neu-btn sm" type="button" onclick="showDoorLocation()">문 위치 확인</button>
           </div>
           <div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px">
@@ -1119,7 +1118,7 @@ details.dev-accordion[open] > summary { color: var(--red) !important; }
           <a href="#settings-place" onclick="openSettingsGroup('place')">감시 장소 설정</a>
           <button class="neu-btn sm" type="button" onclick="resetLocationSetup()">장소 변경 초기화</button>
         </h2>
-        <div id="surface-main-health" role="status">감지기 연결 확인 중...</div>
+        <div id="surface-main-health" role="status"></div>
         <div id="surface-main-message" role="status"></div>
         <div id="surface-main-cards"></div>
       </div>
@@ -1139,11 +1138,9 @@ details.dev-accordion[open] > summary { color: var(--red) !important; }
 
     <!-- ─ 간단 설정 ─ -->
     <div id="simple-settings" class="simple-settings">
-<p class="settings-guide">먼저 감시 장소와 자동 학습 상태를 확인하세요. 값 변경 후 아래의 ‘설정 저장’을 누르면 적용됩니다.</p>
-<nav class="setup-nav" aria-label="설정 분류"><button type="button" class="neu-btn" onclick="openSettingsGroup('place')">감시 장소</button><button type="button" class="neu-btn" onclick="openSettingsGroup('alerts')">알림 조건</button><button type="button" class="neu-btn" onclick="openSettingsGroup('privacy')">영상·개인정보</button><button type="button" class="neu-btn" onclick="openSettingsGroup('automation')">자동 관리</button></nav><details class="setup-group" id="settings-place" open><summary><strong>감시 장소</strong><span>문·테이블 위치와 자동 학습</span></summary><div class="setup-group-body"><div class="preset-card neu-raised">
+<nav class="setup-nav" aria-label="설정 분류"><button type="button" class="neu-btn" onclick="openSettingsGroup('place')">감시 장소</button><button type="button" class="neu-btn" onclick="openSettingsGroup('alerts')">알림 조건</button><button type="button" class="neu-btn" onclick="openSettingsGroup('privacy')">영상·개인정보</button><button type="button" class="neu-btn" onclick="openSettingsGroup('automation')">자동 관리</button></nav><details class="setup-group" id="settings-place" open><summary><strong>감시 장소</strong></summary><div class="setup-group-body"><div class="preset-card neu-raised">
         <div>
-          <div class="preset-title">🚪 출입문 감지</div>
-          <div class="preset-subtitle">사람의 출입 위치를 찾고, 통과 전후 문 상단의 변화로 기준을 자동 학습합니다</div>
+          <div class="preset-title"><svg class="i"><use href="#i-door"/></svg> 출입문 감지</div>
         </div>
         <div class="preset-door-row">
           <span class="preset-door-label">감지 활성화</span>
@@ -1155,12 +1152,12 @@ details.dev-accordion[open] > summary { color: var(--red) !important; }
 
         <div class="setup-actions"><button class="neu-btn" type="button" onclick="showDoorLocation()">문 위치·학습 확인</button></div>
         <details class="manual-options" id="door-manual-options"><summary>위치가 다를 때 · 수동 보정</summary>
-          <p class="preset-subtitle">자동 위치가 실제 문과 다를 때만 수정하세요.</p><div id="roi-slot-simple"></div>
+<div id="roi-slot-simple"></div>
         </details>
         <!-- ② 기준 사진 — 자동 -->
         <div>
           <div class="step-label">기준 이미지 자동 학습</div>
-          <div class="preset-desc" id="pdoor-auto">확인 중...</div>
+          <div class="preset-desc" id="pdoor-auto"></div>
         </div>
 
         <div>
@@ -1172,18 +1169,14 @@ details.dev-accordion[open] > summary { color: var(--red) !important; }
             <span class="preset-time-val" id="pdoor-val">30</span>
             <span class="preset-time-unit">초</span>
           </div>
-          <div class="preset-desc" id="pdesc-door" style="margin-top:8px">30초 이상 열리면 알림</div>
         </div>
       </div><div class="preset-card neu-raised"><div class="preset-title">테이블</div>
-<p class="preset-subtitle">자동으로 찾은 위치를 확인하고, 필요한 경우에만 수정하세요.</p>
-<p class="preset-desc" id="settings-table-state" role="status">자동 탐색 상태 확인 중…</p>
+<p class="preset-desc" id="settings-table-state" role="status"></p>
 <div class="setup-actions"><a class="neu-btn" href="/surfaces?view=1">영역·감지 상태 확인</a><a class="neu-btn" href="/surfaces">다시 찾기·수동 수정</a></div></div>
 <div class="preset-card neu-raised"><div class="preset-title">배경 움직임 보정</div>
-<p class="preset-subtitle">최초 실행 또는 장소 초기화 후 10분간 반복되는 배경 움직임을 학습합니다. 문·테이블 위치 학습과는 별개입니다.</p>
-<p class="preset-desc" id="settings-calibration-state" role="status">보정 상태 확인 중…</p></div><div class="preset-card neu-raised"><div class="preset-title">장소 변경</div><p class="preset-subtitle">학교와 집처럼 카메라를 다른 장소로 옮겼을 때 사용하세요. 문·테이블 위치와 장소별 기준을 지우고 자동 학습을 다시 시작합니다.</p><div class="setup-actions"><button class="neu-btn" type="button" onclick="resetLocationSetup()">장소 초기화·다시 학습</button></div></div></div></details><details class="setup-group" id="settings-alerts"><summary><strong>알림 조건</strong><span>체류 시간·청결·카메라 이상</span></summary><div class="setup-group-body"><div class="preset-card neu-raised"><div class="preset-title">감지 신뢰도 기준</div><p class="preset-subtitle">높이면 오탐이 줄지만 작거나 가려진 대상은 놓칠 수 있습니다. 낮추면 더 많이 감지합니다. 이 수치는 모델 점수이며 실제 정확도 비율은 아닙니다.</p><div class="time-setting"><label class="time-setting-head" for="cfg-person_confidence"><span>사람 감지</span><output id="confidence-person_confidence">20%</output></label><input class="setting-input" type="range" id="cfg-person_confidence" min="0.01" max="0.99" step="0.01" value="0.2" oninput="renderConfidenceSettings()" style="width:100%"><p class="preset-subtitle">높이면 사람으로 잘못 잡히는 물체를 줄일 수 있습니다.</p></div><div class="time-setting"><label class="time-setting-head" for="cfg-object_confidence"><span>물체 감지</span><output id="confidence-object_confidence">20%</output></label><input class="setting-input" type="range" id="cfg-object_confidence" min="0.01" max="0.99" step="0.01" value="0.2" oninput="renderConfidenceSettings()" style="width:100%"><p class="preset-subtitle">동물·음식·컵·가구 등 물체 감지 전체에 적용합니다.</p></div><details class="manual-options"><summary>추가 기준 · 새 사람과 테이블 등록</summary><div class="time-setting"><label class="time-setting-head" for="cfg-new_person_confidence"><span>새 사람 등록</span><output id="confidence-new_person_confidence">30%</output></label><input class="setting-input" type="range" id="cfg-new_person_confidence" min="0.01" max="0.99" step="0.01" value="0.3" oninput="renderConfidenceSettings()" style="width:100%"><p class="preset-subtitle">처음 나타난 대상을 새 사람으로 등록하는 기준입니다. 사람 감지 기준보다 낮게 설정해도 사람 감지 기준이 우선합니다.</p></div><div class="time-setting"><label class="time-setting-head" for="cfg-table_confidence"><span>테이블 자동 위치</span><output id="confidence-table_confidence">55%</output></label><input class="setting-input" type="range" id="cfg-table_confidence" min="0.01" max="0.99" step="0.01" value="0.55" oninput="renderConfidenceSettings()" style="width:100%"><p class="preset-subtitle">테이블 위치를 자동 등록하는 기준입니다. 물체 감지 기준이 더 높으면 그 값을 사용합니다.</p></div></details><p class="preset-desc" id="confidence-effective">현재 적용값 확인 중…</p></div><div class="preset-card neu-raised">
+<p class="preset-desc" id="settings-calibration-state" role="status"></p></div><div class="preset-card neu-raised"><div class="preset-title">장소 변경</div><div class="setup-actions"><button class="neu-btn" type="button" onclick="resetLocationSetup()">장소 초기화·다시 학습</button></div></div></div></details><details class="setup-group" id="settings-alerts"><summary><strong>알림 조건</strong></summary><div class="setup-group-body"><div class="preset-card neu-raised"><div class="preset-title">감지 신뢰도 기준</div><div class="time-setting"><label class="time-setting-head" for="cfg-person_confidence"><span>사람 감지</span><output id="confidence-person_confidence">20%</output></label><input class="setting-input" type="range" id="cfg-person_confidence" min="0.01" max="0.99" step="0.01" value="0.2" oninput="renderConfidenceSettings()" style="width:100%"></div><div class="time-setting"><label class="time-setting-head" for="cfg-object_confidence"><span>물체 감지</span><output id="confidence-object_confidence">20%</output></label><input class="setting-input" type="range" id="cfg-object_confidence" min="0.01" max="0.99" step="0.01" value="0.2" oninput="renderConfidenceSettings()" style="width:100%"></div><details class="manual-options"><summary>추가 기준 · 새 사람과 테이블 등록</summary><div class="time-setting"><label class="time-setting-head" for="cfg-new_person_confidence"><span>새 사람 등록</span><output id="confidence-new_person_confidence">30%</output></label><input class="setting-input" type="range" id="cfg-new_person_confidence" min="0.01" max="0.99" step="0.01" value="0.3" oninput="renderConfidenceSettings()" style="width:100%"></div><div class="time-setting"><label class="time-setting-head" for="cfg-table_confidence"><span>테이블 자동 위치</span><output id="confidence-table_confidence">55%</output></label><input class="setting-input" type="range" id="cfg-table_confidence" min="0.01" max="0.99" step="0.01" value="0.55" oninput="renderConfidenceSettings()" style="width:100%"></div></details><p class="preset-desc" id="confidence-effective">현재 적용값 확인 중…</p></div><div class="preset-card neu-raised">
         <div>
           <div class="preset-title">체류·착석 관리</div>
-          <div class="preset-subtitle">프리셋으로 한 번에 맞추거나, 아래 슬라이더로 매장에 맞게 조절하세요</div>
         </div>
         <div class="preset-btn-group" id="pbtn-dwell">
           <button class="preset-btn" onclick="applyPreset('dwell',0)">매우 관대</button>
@@ -1231,11 +1224,9 @@ details.dev-accordion[open] > summary { color: var(--red) !important; }
           </div>
         </div>
 
-        <div class="preset-desc" id="pdesc-dwell">로딩 중...</div>
       </div><div class="preset-card neu-raised">
         <div>
           <div class="preset-title">잔류물·청결 감지</div>
-          <div class="preset-subtitle">바닥 흘림·방치 쓰레기 감지 민감도 — 높을수록 작은 변화도 감지</div>
         </div>
         <div class="preset-btn-group" id="pbtn-residue">
           <button class="preset-btn" onclick="applyPreset('residue',0)">매우 둔감</button>
@@ -1244,22 +1235,18 @@ details.dev-accordion[open] > summary { color: var(--red) !important; }
           <button class="preset-btn" onclick="applyPreset('residue',3)">민감</button>
           <button class="preset-btn" onclick="applyPreset('residue',4)">매우 민감</button>
         </div>
-        <div class="preset-desc" id="pdesc-residue">로딩 중...</div>
       </div><div class="preset-card neu-raised">
         <div>
           <div class="preset-title">카메라 장애 감지</div>
-          <div class="preset-subtitle">암전·백화·정지 감지 민감도</div>
         </div>
         <div class="preset-btn-group" id="pbtn-camera">
           <button class="preset-btn" onclick="applyPreset('camera',0)">둔감</button>
           <button class="preset-btn active" onclick="applyPreset('camera',1)">보통</button>
           <button class="preset-btn" onclick="applyPreset('camera',2)">민감</button>
         </div>
-        <div class="preset-desc" id="pdesc-camera">로딩 중...</div>
-      </div></div></details><details class="setup-group" id="settings-privacy"><summary><strong>영상·개인정보</strong><span>영상 보호와 물체 표시</span></summary><div class="setup-group-body"><div class="preset-card neu-raised">
+      </div></div></details><details class="setup-group" id="settings-privacy"><summary><strong>영상·개인정보</strong></summary><div class="setup-group-body"><div class="preset-card neu-raised">
         <div>
           <div class="preset-title">개인정보 보호</div>
-          <div class="preset-subtitle">카메라 영상을 숨기고 감지 결과(박스·스켈레톤)만 표시 — 영상은 기기 밖으로 나가지 않습니다</div>
         </div>
         <div class="preset-door-row">
           <span class="preset-door-label">보호 모드</span>
@@ -1270,44 +1257,40 @@ details.dev-accordion[open] > summary { color: var(--red) !important; }
             <span class="toggle-slider"></span>
           </label>
         </div>
-        <div class="preset-desc">설정 작업(ROI·기준 캡처)이 필요하면 카메라 화면의 <strong>설정용 임시 해제</strong>를 누르세요. 시간이 지나면 자동으로 다시 잠깁니다.</div>
       </div><div class="preset-card neu-raised">
         <div>
           <div class="preset-title">영상에 표시할 물체</div>
-          <div class="preset-subtitle">카메라 화면에 테두리를 표시할 대상을 고릅니다</div>
         </div>
         <div class="preset-check-group">
           <label class="preset-check-item">
             <input type="checkbox" id="pcfg-show_animal"    checked onchange="syncSimpleToCfg('show_animal',this.checked?1:0)">
-            🐾 동물 (고양이·강아지)
+            <svg class="i"><use href="#i-paw"/></svg> 동물 (고양이·강아지)
           </label>
           <label class="preset-check-item">
             <input type="checkbox" id="pcfg-show_food"      checked onchange="syncSimpleToCfg('show_food',this.checked?1:0)">
-            🍔 외부 음식
+            <svg class="i"><use href="#i-food"/></svg> 외부 음식
           </label>
           <label class="preset-check-item">
             <input type="checkbox" id="pcfg-show_drink"     checked onchange="syncSimpleToCfg('show_drink',this.checked?1:0)">
-            🥤 음료 (병·컵)
+            <svg class="i"><use href="#i-cup"/></svg> 음료 (병·컵)
           </label>
           <label class="preset-check-item">
             <input type="checkbox" id="pcfg-show_furniture" checked onchange="syncSimpleToCfg('show_furniture',this.checked?1:0)">
-            🪑 가구 (의자·테이블)
+            <svg class="i"><use href="#i-chair"/></svg> 가구 (의자·테이블)
           </label>
         </div>
-      </div></div></details><details class="setup-group" id="settings-automation"><summary><strong>자동 관리</strong><span>기준 수집·예약 재시작</span></summary><div class="setup-group-body"><div class="preset-card neu-raised"><div class="preset-title">현장 시험 기록</div><div class="setting-row"><div><div class="setting-label">로그 보관 기간</div><div class="setting-desc">30일이 지난 기록은 자동으로 삭제합니다.</div></div><strong>30일</strong></div><div class="setting-row"><div><label class="setting-label" for="cfg-log_max_total_mb">로그 총 용량 제한 (MiB)</label><div class="setting-desc">기본 10,240MiB = 10GiB. 0은 용량 제한 없음입니다. 초과하면 30일 이내 기록도 오래된 순서로 삭제합니다. 기록 중인 파일은 보호하므로 일시적으로 상한을 넘을 수 있습니다.</div></div><input type="number" class="setting-input" id="cfg-log_max_total_mb" min="0" max="1048576" step="1" value="10240"></div><p class="preset-subtitle">이벤트·좌표·성능 DB와 실행 진단 로그를 1분마다 정리합니다. 별도 이미지·영상 폴더는 포함하지 않습니다.</p><p class="preset-subtitle">원본 영상 대신 박스·스켈레톤·판정 근거와 성능을 기록합니다. 평소 10초 간격, 알림 전후 각 10초는 최대 5회/초로 저장합니다.</p><p class="preset-desc" id="replay-health">기록 상태 확인 중…</p><a class="neu-btn" href="/replay">좌표 재생·검토 기록</a></div><div class="preset-card neu-raised">
+      </div></div></details><details class="setup-group" id="settings-automation"><summary><strong>자동 관리</strong></summary><div class="setup-group-body"><div class="preset-card neu-raised"><div class="preset-title">현장 시험 기록</div><div class="setting-row"><div><div class="setting-label">로그 보관 기간</div></div><strong>30일</strong></div><div class="setting-row"><div><label class="setting-label" for="cfg-log_max_total_mb">로그 총 용량 제한 (MiB)</label></div><input type="number" class="setting-input" id="cfg-log_max_total_mb" min="0" max="1048576" step="1" value="10240"></div><p class="preset-desc" id="replay-health">기록 상태 확인 중…</p><a class="neu-btn" href="/replay">좌표 재생·검토 기록</a></div><div class="preset-card neu-raised">
         <div>
           <div class="preset-title">기준 이미지 자동 캡처</div>
-          <div class="preset-subtitle">문은 통과 전후 변화를, 표면은 안정된 장면을 이용해 기준을 수집합니다</div>
         </div>
         <div class="preset-check-group">
-          <label class="preset-check-item"><input type="checkbox" id="pcfg-door_auto_capture"    checked onchange="syncSimpleToCfg('door_auto_capture',this.checked?1:0)"> 🚪 출입문 통과 전후</label>
-          <label class="preset-check-item"><input type="checkbox" id="pcfg-residue_auto_capture" checked onchange="syncSimpleToCfg('residue_auto_capture',this.checked?1:0)"> 🧹 바닥 잔류물</label>
-          <label class="preset-check-item"><input type="checkbox" id="pcfg-surface_auto_capture" checked onchange="syncSimpleToCfg('surface_auto_capture',this.checked?1:0)"> 🪑 테이블 표면</label>
+          <label class="preset-check-item"><input type="checkbox" id="pcfg-door_auto_capture"    checked onchange="syncSimpleToCfg('door_auto_capture',this.checked?1:0)"> <svg class="i"><use href="#i-door"/></svg> 출입문 통과 전후</label>
+          <label class="preset-check-item"><input type="checkbox" id="pcfg-residue_auto_capture" checked onchange="syncSimpleToCfg('residue_auto_capture',this.checked?1:0)"> <svg class="i"><use href="#i-sparkle"/></svg> 바닥 잔류물</label>
+          <label class="preset-check-item"><input type="checkbox" id="pcfg-surface_auto_capture" checked onchange="syncSimpleToCfg('surface_auto_capture',this.checked?1:0)"> <svg class="i"><use href="#i-chair"/></svg> 테이블 표면</label>
         </div>
       </div><div class="preset-card neu-raised">
         <div>
           <div class="preset-title">예약 재시작</div>
-          <div class="preset-subtitle">지정한 요일·시각에 프로그램을 다시 시작합니다 — 손님이 있으면 자동으로 미룹니다</div>
         </div>
         <div class="preset-door-row">
           <span class="preset-door-label">사용</span>
@@ -1333,12 +1316,7 @@ details.dev-accordion[open] > summary { color: var(--red) !important; }
           <input type="time" class="setting-input" id="pcfg-restart_time" style="width:auto"
                  onchange="syncSimpleToCfg('restart_time', this.value)">
         </div>
-        <div class="preset-desc">
-          영업이 끝난 한산한 시각을 권합니다. 예정 시각에 매장에 사람이 있으면 미루고,
-          <strong>1시간 안에 비지 않으면 그날은 건너뜁니다</strong> — 낮에 갑자기 재시작되는 것을 막기 위함입니다.
-        </div>
       </div><div class="preset-card neu-raised"><strong>매장 음성 안내</strong>
-        <p class="setting-desc">mp3 파일 선택 재생 또는 문구 읽기(TTS)를 수동으로 재생합니다.</p>
         <div class="setup-actions"><a class="neu-btn" href="/announce">음성 안내 열기</a></div>
       </div></div></details></div><!-- /simple-settings -->
 
@@ -1351,42 +1329,42 @@ details.dev-accordion[open] > summary { color: var(--red) !important; }
         <summary>감지 기본</summary>
         <div class="accordion-body">
           <div class="setting-row">
-            <div><div class="setting-label">모션 게이트 활성화</div><div class="setting-desc">변화 없으면 YOLO 추론 생략</div></div>
+            <div><div class="setting-label">모션 게이트 활성화</div></div>
             <label class="toggle"><input type="checkbox" id="cfg-motion_gate" checked><span class="toggle-slider"></span></label>
             <span></span>
           </div>
           <div class="setting-row">
-            <div><div class="setting-label">픽셀 변화 임계값</div><div class="setting-desc">motion_ratio_threshold</div></div>
+            <div><div class="setting-label">픽셀 변화 임계값</div></div>
             <input type="range" class="setting-input" id="cfg-motion_ratio_threshold" min="0.001" max="0.05" step="0.001" value="0.004" oninput="syncDisplay(this)">
             <span class="setting-value-display" id="disp-motion_ratio_threshold">0.004</span>
           </div>
           <div class="setting-row">
-            <div><div class="setting-label">강제 갱신 주기 (초)</div><div class="setting-desc">idle_refresh_seconds</div></div>
+            <div><div class="setting-label">강제 갱신 주기 (초)</div></div>
             <input type="number" class="setting-input" id="cfg-idle_refresh_seconds" min="1" max="3600" value="10">
             <span></span>
           </div>
           <div class="setting-row">
-            <div><div class="setting-label">체류 초과 한도 (초)</div><div class="setting-desc">dwell_limit_seconds</div></div>
+            <div><div class="setting-label">체류 초과 한도 (초)</div></div>
             <input type="number" class="setting-input" id="cfg-dwell_limit_seconds" min="60" max="86400" value="3600">
             <span></span>
           </div>
           <div class="setting-row">
-            <div><div class="setting-label">미주문 유예 (초)</div><div class="setting-desc">unordered_grace_seconds</div></div>
+            <div><div class="setting-label">미주문 유예 (초)</div></div>
             <input type="number" class="setting-input" id="cfg-unordered_grace_seconds" min="10" max="3600" value="300">
             <span></span>
           </div>
           <div class="setting-row">
-            <div><div class="setting-label">쓰러짐 유지 (초)</div><div class="setting-desc">fall_hold_seconds</div></div>
+            <div><div class="setting-label">쓰러짐 유지 (초)</div></div>
             <input type="range" class="setting-input" id="cfg-fall_hold_seconds" min="1" max="30" step="0.5" value="5" oninput="syncDisplay(this)">
             <span class="setting-value-display" id="disp-fall_hold_seconds">5</span>
           </div>
           <div class="setting-row">
-            <div><div class="setting-label">bbox 비율 (keypoint)</div><div class="setting-desc">fall_aspect_ratio_kp</div></div>
+            <div><div class="setting-label">bbox 비율 (keypoint)</div></div>
             <input type="range" class="setting-input" id="cfg-fall_aspect_ratio_kp" min="1.0" max="3.0" step="0.1" value="1.3" oninput="syncDisplay(this)">
             <span class="setting-value-display" id="disp-fall_aspect_ratio_kp">1.3</span>
           </div>
           <div class="setting-row">
-            <div><div class="setting-label">bbox 비율 (keypoint 없음)</div><div class="setting-desc">fall_aspect_ratio_nokp</div></div>
+            <div><div class="setting-label">bbox 비율 (keypoint 없음)</div></div>
             <input type="range" class="setting-input" id="cfg-fall_aspect_ratio_nokp" min="1.2" max="4.0" step="0.1" value="1.6" oninput="syncDisplay(this)">
             <span class="setting-value-display" id="disp-fall_aspect_ratio_nokp">1.6</span>
           </div>
@@ -1398,17 +1376,17 @@ details.dev-accordion[open] > summary { color: var(--red) !important; }
         <summary>카메라 장애 감지</summary>
         <div class="accordion-body">
           <div class="setting-row">
-            <div><div class="setting-label">암전 임계 밝기</div><div class="setting-desc">luma_black_threshold (0-255)</div></div>
+            <div><div class="setting-label">암전 임계 밝기</div></div>
             <input type="range" class="setting-input" id="cfg-luma_black_threshold" min="0" max="80" step="1" value="40" oninput="syncDisplay(this)">
             <span class="setting-value-display" id="disp-luma_black_threshold">40</span>
           </div>
           <div class="setting-row">
-            <div><div class="setting-label">백화 임계 밝기</div><div class="setting-desc">luma_white_threshold (0-255)</div></div>
+            <div><div class="setting-label">백화 임계 밝기</div></div>
             <input type="range" class="setting-input" id="cfg-luma_white_threshold" min="180" max="255" step="1" value="240" oninput="syncDisplay(this)">
             <span class="setting-value-display" id="disp-luma_white_threshold">240</span>
           </div>
           <div class="setting-row">
-            <div><div class="setting-label">정지 판정 프레임</div><div class="setting-desc">frozen_frames_threshold</div></div>
+            <div><div class="setting-label">정지 판정 프레임</div></div>
             <input type="number" class="setting-input" id="cfg-frozen_frames_threshold" min="5" max="500" value="45">
             <span></span>
           </div>
@@ -1420,27 +1398,27 @@ details.dev-accordion[open] > summary { color: var(--red) !important; }
         <summary>출입문 감지</summary>
         <div class="accordion-body">
           <div class="setting-row">
-            <div><div class="setting-label">문 감지 활성화</div><div class="setting-desc">door_enabled</div></div>
+            <div><div class="setting-label">문 감지 활성화</div></div>
             <label class="toggle"><input type="checkbox" id="cfg-door_enabled" checked><span class="toggle-slider"></span></label>
             <span></span>
           </div>
           <div class="setting-row">
-            <div><div class="setting-label">차이 임계값</div><div class="setting-desc">door_diff_threshold</div></div>
+            <div><div class="setting-label">차이 임계값</div></div>
             <input type="range" class="setting-input" id="cfg-door_diff_threshold" min="0.01" max="0.3" step="0.01" value="0.05" oninput="syncDisplay(this)">
             <span class="setting-value-display" id="disp-door_diff_threshold">0.05</span>
           </div>
           <div class="setting-row">
-            <div><div class="setting-label">확인 프레임</div><div class="setting-desc">door_confirm_frames</div></div>
+            <div><div class="setting-label">확인 프레임</div></div>
             <input type="number" class="setting-input" id="cfg-door_confirm_frames" min="1" max="300" value="5">
             <span></span>
           </div>
           <div class="setting-row">
-            <div><div class="setting-label">개방 유지 시간 (초)</div><div class="setting-desc">door_open_seconds</div></div>
+            <div><div class="setting-label">개방 유지 시간 (초)</div></div>
             <input type="range" class="setting-input" id="cfg-door_open_seconds" min="5" max="300" step="5" value="30" oninput="syncDisplay(this)">
             <span class="setting-value-display" id="disp-door_open_seconds">30</span>
           </div>
           <div class="setting-row">
-            <div><div class="setting-label">ROI (x, y, 너비, 높이)</div><div class="setting-desc">0,0,0,0 이면 전체 프레임</div></div>
+            <div><div class="setting-label">ROI (x, y, 너비, 높이)</div></div>
             <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:6px">
               <input type="number" class="setting-input" id="cfg-door_roi_x" min="0" value="0" placeholder="x">
               <input type="number" class="setting-input" id="cfg-door_roi_y" min="0" value="0" placeholder="y">
@@ -1483,7 +1461,7 @@ details.dev-accordion[open] > summary { color: var(--red) !important; }
                   <button class="neu-btn sm" onclick="refreshDoorPreview('open')">미리보기 갱신</button>
                 </div>
               </div>
-              <div class="door-status" id="door-status" style="margin-top:6px">detector 스트림 포트로 캡처합니다. 문을 닫은 상태에서 한 번, 연 상태에서 한 번 누르세요.</div>
+              <div class="door-status" id="door-status" style="margin-top:6px"></div>
             </div>
           </details>
         </div>
@@ -1494,20 +1472,16 @@ details.dev-accordion[open] > summary { color: var(--red) !important; }
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:6px">
           <button class="neu-btn sm primary" onclick="openRoiPicker()">화면 불러오기</button>
           <button class="neu-btn sm" onclick="clearRoi()">초기화</button>
-          <span class="roi-hint" id="roi-hint">불러온 화면 위에서 문 영역을 드래그하세요.</span>
+          <span class="roi-hint" id="roi-hint"></span>
         </div>
         <div id="roi-picker-wrap">
           <canvas id="roi-canvas"></canvas>
           <div class="roi-actions">
             <button class="neu-btn sm primary" id="roi-save-btn" disabled onclick="roiSave()">저장 및 적용</button>
-            <span id="roi-save-hint" class="roi-hint">드래그로 영역 선택 후 저장하세요.</span>
+            <span id="roi-save-hint" class="roi-hint"></span>
           </div>
         </div>
-        <div id="roi-summary" class="door-status">ROI를 지정하지 않았습니다.</div>
-        <div class="roi-glass-hint">
-          💡 <strong>유리문</strong>이면 유리가 아니라 <strong>문틀·손잡이</strong>만 들어가도록 좁게 잡으세요.
-          유리를 포함하면 너머로 지나가는 사람·차 때문에 기준이 잡히지 않고, 열림 판정도 흐려집니다.
-        </div>
+        <div id="roi-summary" class="door-status">ROI 없음</div>
       </div>
 
       <!-- 잔류물 -->
@@ -1515,42 +1489,42 @@ details.dev-accordion[open] > summary { color: var(--red) !important; }
         <summary>잔류물 감지</summary>
         <div class="accordion-body">
           <div class="setting-row">
-            <div><div class="setting-label">잔류물 감지 활성화</div><div class="setting-desc">residue_enabled</div></div>
+            <div><div class="setting-label">잔류물 감지 활성화</div></div>
             <label class="toggle"><input type="checkbox" id="cfg-residue_enabled" checked><span class="toggle-slider"></span></label>
             <span></span>
           </div>
           <div class="setting-row">
-            <div><div class="setting-label">블록 휘도 차 임계값</div><div class="setting-desc">residue_diff_threshold</div></div>
+            <div><div class="setting-label">블록 휘도 차 임계값</div></div>
             <input type="range" class="setting-input" id="cfg-residue_diff_threshold" min="5" max="60" step="1" value="18" oninput="syncDisplay(this)">
             <span class="setting-value-display" id="disp-residue_diff_threshold">18</span>
           </div>
           <div class="setting-row">
-            <div><div class="setting-label">최소 블록 수</div><div class="setting-desc">residue_min_blocks</div></div>
+            <div><div class="setting-label">최소 블록 수</div></div>
             <input type="number" class="setting-input" id="cfg-residue_min_blocks" min="1" max="64" value="3">
             <span></span>
           </div>
           <div class="setting-row">
-            <div><div class="setting-label">사람 여유 블록</div><div class="setting-desc">residue_person_margin_blocks</div></div>
+            <div><div class="setting-label">사람 여유 블록</div></div>
             <input type="number" class="setting-input" id="cfg-residue_person_margin_blocks" min="0" max="8" value="1">
             <span></span>
           </div>
           <div class="setting-row">
-            <div><div class="setting-label">이벤트 확정 시간 (초)</div><div class="setting-desc">residue_confirm_seconds</div></div>
+            <div><div class="setting-label">이벤트 확정 시간 (초)</div></div>
             <input type="range" class="setting-input" id="cfg-residue_confirm_seconds" min="10" max="300" step="5" value="60" oninput="syncDisplay(this)">
             <span class="setting-value-display" id="disp-residue_confirm_seconds">60</span>
           </div>
           <div class="setting-row">
-            <div><div class="setting-label">해소 확정 시간 (초)</div><div class="setting-desc">residue_clear_seconds</div></div>
+            <div><div class="setting-label">해소 확정 시간 (초)</div></div>
             <input type="range" class="setting-input" id="cfg-residue_clear_seconds" min="5" max="60" step="1" value="10" oninput="syncDisplay(this)">
             <span class="setting-value-display" id="disp-residue_clear_seconds">10</span>
           </div>
           <div class="setting-row">
-            <div><div class="setting-label">기준 갱신 주기 (초)</div><div class="setting-desc">residue_baseline_refresh_seconds</div></div>
+            <div><div class="setting-label">기준 갱신 주기 (초)</div></div>
             <input type="range" class="setting-input" id="cfg-residue_baseline_refresh_seconds" min="60" max="1800" step="30" value="300" oninput="syncDisplay(this)">
             <span class="setting-value-display" id="disp-residue_baseline_refresh_seconds">300</span>
           </div>
           <div class="setting-row">
-            <div><div class="setting-label">전역 변화 가드 비율</div><div class="setting-desc">residue_global_change_ratio</div></div>
+            <div><div class="setting-label">전역 변화 가드 비율</div></div>
             <input type="range" class="setting-input" id="cfg-residue_global_change_ratio" min="0.2" max="0.9" step="0.05" value="0.5" oninput="syncDisplay(this)">
             <span class="setting-value-display" id="disp-residue_global_change_ratio">0.50</span>
           </div>
@@ -1566,7 +1540,7 @@ details.dev-accordion[open] > summary { color: var(--red) !important; }
                 <button class="neu-btn sm" onclick="refreshResiduePreview()">미리보기 갱신</button>
               </div>
             </div>
-            <div class="door-status" id="residue-status" style="margin-top:6px">detector 스트림 포트로 캡처합니다.</div>
+            <div class="door-status" id="residue-status" style="margin-top:6px"></div>
             <div id="residue-auto-status" class="door-status" style="margin-top:4px;color:var(--accent)"></div>
           </div>
         </div>
@@ -1577,22 +1551,22 @@ details.dev-accordion[open] > summary { color: var(--red) !important; }
         <summary>Tier 2 바운딩 박스</summary>
         <div class="accordion-body">
           <div class="setting-row">
-            <div><div class="setting-label">동물 (고양이·강아지)</div><div class="setting-desc">show_animal — 빨강 박스</div></div>
+            <div><div class="setting-label">동물 (고양이·강아지)</div></div>
             <label class="toggle"><input type="checkbox" id="cfg-show_animal" checked><span class="toggle-slider"></span></label>
             <span></span>
           </div>
           <div class="setting-row">
-            <div><div class="setting-label">음식</div><div class="setting-desc">show_food — 주황 박스</div></div>
+            <div><div class="setting-label">음식</div></div>
             <label class="toggle"><input type="checkbox" id="cfg-show_food" checked><span class="toggle-slider"></span></label>
             <span></span>
           </div>
           <div class="setting-row">
-            <div><div class="setting-label">음료 (병·컵)</div><div class="setting-desc">show_drink — 보라 박스</div></div>
+            <div><div class="setting-label">음료 (병·컵)</div></div>
             <label class="toggle"><input type="checkbox" id="cfg-show_drink" checked><span class="toggle-slider"></span></label>
             <span></span>
           </div>
           <div class="setting-row">
-            <div><div class="setting-label">가구 (의자·테이블)</div><div class="setting-desc">show_furniture — 회청 박스</div></div>
+            <div><div class="setting-label">가구 (의자·테이블)</div></div>
             <label class="toggle"><input type="checkbox" id="cfg-show_furniture" checked><span class="toggle-slider"></span></label>
             <span></span>
           </div>
@@ -1604,27 +1578,27 @@ details.dev-accordion[open] > summary { color: var(--red) !important; }
         <summary>슬롯 모니터 (테이블·의자 청결)</summary>
         <div class="accordion-body">
           <div class="setting-row">
-            <div><div class="setting-label">경고 시간 (초)</div><div class="setting-desc">slot_warn_seconds</div></div>
+            <div><div class="setting-label">경고 시간 (초)</div></div>
             <input type="range" class="setting-input" id="cfg-slot_warn_seconds" min="10" max="600" step="5" value="60" oninput="syncDisplay(this)">
             <span class="setting-value-display" id="disp-slot_warn_seconds">60</span>
           </div>
           <div class="setting-row">
-            <div><div class="setting-label">긴급 시간 (초)</div><div class="setting-desc">slot_urgent_seconds</div></div>
+            <div><div class="setting-label">긴급 시간 (초)</div></div>
             <input type="range" class="setting-input" id="cfg-slot_urgent_seconds" min="60" max="3600" step="30" value="300" oninput="syncDisplay(this)">
             <span class="setting-value-display" id="disp-slot_urgent_seconds">300</span>
           </div>
           <div class="setting-row">
-            <div><div class="setting-label">슬롯 유지 시간 (초)</div><div class="setting-desc">slot_ttl_seconds</div></div>
+            <div><div class="setting-label">슬롯 유지 시간 (초)</div></div>
             <input type="number" class="setting-input" id="cfg-slot_ttl_seconds" min="10" max="3600" value="120">
             <span></span>
           </div>
           <div class="setting-row">
-            <div><div class="setting-label">블록 휘도 차</div><div class="setting-desc">slot_dirty_threshold</div></div>
+            <div><div class="setting-label">블록 휘도 차</div></div>
             <input type="range" class="setting-input" id="cfg-slot_dirty_threshold" min="5" max="80" step="1" value="20" oninput="syncDisplay(this)">
             <span class="setting-value-display" id="disp-slot_dirty_threshold">20</span>
           </div>
           <div class="setting-row">
-            <div><div class="setting-label">최소 오염 블록</div><div class="setting-desc">slot_min_dirty_blocks</div></div>
+            <div><div class="setting-label">최소 오염 블록</div></div>
             <input type="number" class="setting-input" id="cfg-slot_min_dirty_blocks" min="1" max="32" value="2">
             <span></span>
           </div>
@@ -1636,17 +1610,17 @@ details.dev-accordion[open] > summary { color: var(--red) !important; }
         <summary>고급 / 시스템</summary>
         <div class="accordion-body">
           <div class="setting-row">
-            <div><div class="setting-label">스트림 포트</div><div class="setting-desc">stream_port (detector --stream-port와 동일)</div></div>
+            <div><div class="setting-label">스트림 포트</div></div>
             <input type="number" class="setting-input" id="cfg-stream_port" min="1024" max="65535" value="8081">
             <span></span>
           </div>
           <div class="setting-row">
-            <div><div class="setting-label">성능 로그 주기 (초)</div><div class="setting-desc">perf_log_interval_seconds</div></div>
+            <div><div class="setting-label">성능 로그 주기 (초)</div></div>
             <input type="range" class="setting-input" id="cfg-perf_log_interval_seconds" min="10" max="600" step="10" value="60" oninput="syncDisplay(this)">
             <span class="setting-value-display" id="disp-perf_log_interval_seconds">60</span>
           </div>
           <div class="setting-row">
-            <div><div class="setting-label">스트림 연결 포트 (뷰어)</div><div class="setting-desc">카메라 피드 수동 연결 포트</div></div>
+            <div><div class="setting-label">스트림 연결 포트 (뷰어)</div></div>
             <input type="number" class="setting-input" id="port-input" min="1024" max="65535" value="8081">
             <span></span>
           </div>
@@ -1662,21 +1636,20 @@ details.dev-accordion[open] > summary { color: var(--red) !important; }
         <summary>보안 / 개인정보</summary>
         <div class="accordion-body">
           <div class="setting-row">
-            <div><div class="setting-label">개인정보 보호 모드</div><div class="setting-desc">stream_privacy_mode — 스트림·스냅샷에 실제 영상 대신 감지 결과만</div></div>
+            <div><div class="setting-label">개인정보 보호 모드</div></div>
             <label class="toggle"><input type="checkbox" id="cfg-stream_privacy_mode" checked><span class="toggle-slider"></span></label>
             <span></span>
           </div>
           <div class="setting-row">
-            <div><div class="setting-label">임시 해제 상한 (초)</div><div class="setting-desc">privacy_unlock_max_seconds — 서버가 이 시간 뒤 강제 재잠금</div></div>
+            <div><div class="setting-label">임시 해제 상한 (초)</div></div>
             <input type="number" class="setting-input" id="cfg-privacy_unlock_max_seconds" min="30" max="3600" value="600">
             <span></span>
           </div>
           <div class="setting-row">
-            <div><div class="setting-label">접근 PIN</div><div class="setting-desc">access_pin — 같은 망의 다른 기기가 설정을 바꿀 때 요구. 비우면 PIN 없음. 이 기기(localhost)는 항상 면제</div></div>
+            <div><div class="setting-label">접근 PIN</div></div>
             <input type="password" class="setting-input" id="cfg-access_pin" autocomplete="off" placeholder="비움 = PIN 없음">
             <button class="neu-btn sm" type="button" onclick="const e=document.getElementById('cfg-access_pin');e.type=e.type==='password'?'text':'password'">표시</button>
           </div>
-          <div class="setting-desc">모든 통신은 평문 HTTP 입니다. 같은 LAN 안의 스니핑까지 막지는 못하므로 매장 Wi-Fi 를 손님용과 분리하는 것이 가장 효과적입니다. 접근·변경·거부 기록은 로그 탭에 <strong>access</strong> 모듈로 남습니다.</div>
         </div>
       </details>
 
@@ -1685,42 +1658,42 @@ details.dev-accordion[open] > summary { color: var(--red) !important; }
         <summary>자동 기준 캡처</summary>
         <div class="accordion-body">
           <div class="setting-row">
-            <div><div class="setting-label">출입문 자동 캡처</div><div class="setting-desc">door_auto_capture — ROI 정지·무인 → 닫힘, 문만 변한 순간 → 열림</div></div>
+            <div><div class="setting-label">출입문 자동 캡처</div></div>
             <label class="toggle"><input type="checkbox" id="cfg-door_auto_capture" checked><span class="toggle-slider"></span></label>
             <span></span>
           </div>
           <div class="setting-row">
-            <div><div class="setting-label">닫힘 캡처 정지 시간 (초)</div><div class="setting-desc">door_auto_quiet_seconds</div></div>
+            <div><div class="setting-label">닫힘 캡처 정지 시간 (초)</div></div>
             <input type="range" class="setting-input" id="cfg-door_auto_quiet_seconds" min="5" max="120" step="5" value="20" oninput="syncDisplay(this)">
             <span class="setting-value-display" id="disp-door_auto_quiet_seconds">20</span>
           </div>
           <div class="setting-row">
-            <div><div class="setting-label">열림 후보 유지 시간 (초)</div><div class="setting-desc">door_auto_open_hold_seconds</div></div>
+            <div><div class="setting-label">열림 후보 유지 시간 (초)</div></div>
             <input type="range" class="setting-input" id="cfg-door_auto_open_hold_seconds" min="0.2" max="5" step="0.1" value="1.0" oninput="syncDisplay(this)">
             <span class="setting-value-display" id="disp-door_auto_open_hold_seconds">1.0</span>
           </div>
           <div class="setting-row">
-            <div><div class="setting-label">열림 판정 최소 변화 (L1)</div><div class="setting-desc">door_auto_open_l1 — 닫힘 기준 대비 ROI 평균 색 차이</div></div>
+            <div><div class="setting-label">열림 판정 최소 변화 (L1)</div></div>
             <input type="range" class="setting-input" id="cfg-door_auto_open_l1" min="5" max="120" step="1" value="25" oninput="syncDisplay(this)">
             <span class="setting-value-display" id="disp-door_auto_open_l1">25</span>
           </div>
           <div class="setting-row">
-            <div><div class="setting-label">잔류물 자동 캡처</div><div class="setting-desc">residue_auto_capture</div></div>
+            <div><div class="setting-label">잔류물 자동 캡처</div></div>
             <label class="toggle"><input type="checkbox" id="cfg-residue_auto_capture" checked><span class="toggle-slider"></span></label>
             <span></span>
           </div>
           <div class="setting-row">
-            <div><div class="setting-label">잔류물 정지 시간 (초)</div><div class="setting-desc">residue_auto_quiet_seconds</div></div>
+            <div><div class="setting-label">잔류물 정지 시간 (초)</div></div>
             <input type="range" class="setting-input" id="cfg-residue_auto_quiet_seconds" min="3" max="120" step="1" value="15" oninput="syncDisplay(this)">
             <span class="setting-value-display" id="disp-residue_auto_quiet_seconds">15</span>
           </div>
           <div class="setting-row">
-            <div><div class="setting-label">표면 자동 캡처</div><div class="setting-desc">surface_auto_capture — 테이블·바닥·벽 (감시할 곳 설정에 영역이 있어야 함)</div></div>
+            <div><div class="setting-label">표면 자동 캡처</div></div>
             <label class="toggle"><input type="checkbox" id="cfg-surface_auto_capture" checked><span class="toggle-slider"></span></label>
             <span></span>
           </div>
           <div class="setting-row">
-            <div><div class="setting-label">표면 정지 시간 (초)</div><div class="setting-desc">surface_auto_quiet_seconds</div></div>
+            <div><div class="setting-label">표면 정지 시간 (초)</div></div>
             <input type="range" class="setting-input" id="cfg-surface_auto_quiet_seconds" min="3" max="120" step="1" value="10" oninput="syncDisplay(this)">
             <span class="setting-value-display" id="disp-surface_auto_quiet_seconds">10</span>
           </div>
@@ -1731,52 +1704,48 @@ details.dev-accordion[open] > summary { color: var(--red) !important; }
       <details class="neu-accordion">
         <summary>리소스 / 재시작</summary>
         <div class="accordion-body">
-          <div class="setting-desc" style="margin-bottom:6px">
-            이 프로그램은 키오스크의 보조입니다. 결제 화면이 우리 때문에 버벅이지 않도록
-            우선순위를 낮추고, 다른 프로그램이 바쁘면 스스로 감지를 줄입니다.
-          </div>
           <div class="setting-row">
-            <div><div class="setting-label">프로세스 우선순위</div><div class="setting-desc">process_priority — 0 보통 / 1 보통 아래(권장) / 2 유휴. 재시작해야 반영됩니다</div></div>
+            <div><div class="setting-label">프로세스 우선순위</div></div>
             <input type="number" class="setting-input" id="cfg-process_priority" min="0" max="2" value="1">
             <span></span>
           </div>
           <div class="setting-row">
-            <div><div class="setting-label">적응형 감속</div><div class="setting-desc">throttle_enabled — 다른 프로그램 CPU 부하에 따라 추론 주기를 늘립니다</div></div>
+            <div><div class="setting-label">적응형 감속</div></div>
             <label class="toggle"><input type="checkbox" id="cfg-throttle_enabled" checked><span class="toggle-slider"></span></label>
             <span></span>
           </div>
           <div class="setting-row">
-            <div><div class="setting-label">1단계 임계 (%)</div><div class="setting-desc">throttle_light_percent — 추론 주기 2배</div></div>
+            <div><div class="setting-label">1단계 임계 (%)</div></div>
             <input type="range" class="setting-input" id="cfg-throttle_light_percent" min="10" max="100" step="5" value="50" oninput="syncDisplay(this)">
             <span class="setting-value-display" id="disp-throttle_light_percent">50</span>
           </div>
           <div class="setting-row">
-            <div><div class="setting-label">2단계 임계 (%)</div><div class="setting-desc">throttle_heavy_percent — 추론 4배, Tier 2 정지</div></div>
+            <div><div class="setting-label">2단계 임계 (%)</div></div>
             <input type="range" class="setting-input" id="cfg-throttle_heavy_percent" min="10" max="100" step="5" value="70" oninput="syncDisplay(this)">
             <span class="setting-value-display" id="disp-throttle_heavy_percent">70</span>
           </div>
           <div class="setting-row">
-            <div><div class="setting-label">3단계 임계 (%)</div><div class="setting-desc">throttle_minimal_percent — 추론 정지, 카메라 감시만</div></div>
+            <div><div class="setting-label">3단계 임계 (%)</div></div>
             <input type="range" class="setting-input" id="cfg-throttle_minimal_percent" min="10" max="100" step="5" value="85" oninput="syncDisplay(this)">
             <span class="setting-value-display" id="disp-throttle_minimal_percent">85</span>
           </div>
           <div class="setting-row">
-            <div><div class="setting-label">예약 재시작</div><div class="setting-desc">restart_enabled</div></div>
+            <div><div class="setting-label">예약 재시작</div></div>
             <label class="toggle"><input type="checkbox" id="cfg-restart_enabled"><span class="toggle-slider"></span></label>
             <span></span>
           </div>
           <div class="setting-row">
-            <div><div class="setting-label">재시작 요일 (비트마스크)</div><div class="setting-desc">restart_days — 1=일 2=월 4=화 8=수 16=목 32=금 64=토, 127=매일</div></div>
+            <div><div class="setting-label">재시작 요일 (비트마스크)</div></div>
             <input type="number" class="setting-input" id="cfg-restart_days" min="0" max="127" value="127">
             <span></span>
           </div>
           <div class="setting-row">
-            <div><div class="setting-label">재시작 시각</div><div class="setting-desc">restart_time (HH:MM)</div></div>
+            <div><div class="setting-label">재시작 시각</div></div>
             <input type="time" class="setting-input" id="cfg-restart_time" value="04:00">
             <span></span>
           </div>
           <div class="setting-row">
-            <div><div class="setting-label">연기 허용 시간 (분)</div><div class="setting-desc">restart_window_minutes — 이 안에 사람이 안 비면 그날은 건너뜁니다</div></div>
+            <div><div class="setting-label">연기 허용 시간 (분)</div></div>
             <input type="number" class="setting-input" id="cfg-restart_window_minutes" min="5" max="720" value="60">
             <span></span>
           </div>
@@ -1785,13 +1754,13 @@ details.dev-accordion[open] > summary { color: var(--red) !important; }
 
       <!-- 개발자 설정 (최적화 우회·테스트용) -->
       <details class="neu-accordion dev-accordion">
-        <summary>🛠 개발자 설정</summary>
+        <summary><svg class="i"><use href="#i-tool"/></svg> 개발자 설정</summary>
         <div class="accordion-body">
           <div style="font-size:11px;color:var(--orange);margin-bottom:10px;padding:6px 10px;border-radius:6px;background:rgba(249,115,22,.08)">
             ⚠ 이 설정들은 성능 최적화를 무시하거나 비정상 동작을 강제합니다. 테스트·디버깅 외에는 끄세요.
           </div>
           <div class="setting-row">
-            <div><div class="setting-label">Tier 2 강제 실행</div><div class="setting-desc">tier2_always — surface 감지 활성 중에도 Tier 2 항상 추론</div></div>
+            <div><div class="setting-label">Tier 2 강제 실행</div></div>
             <label class="toggle"><input type="checkbox" id="cfg-tier2_always"><span class="toggle-slider"></span></label>
             <span></span>
           </div>
@@ -1827,14 +1796,14 @@ details.dev-accordion[open] > summary { color: var(--red) !important; }
       </div>
       <div class="conn-bar">
         <span class="conn-dot" id="conn-dot"></span>
-        <span id="conn-label">연결 중</span>
+        <span id="conn-label"></span>
         <span id="footer-file" style="margin-left:8px"></span>
         <span id="footer-count" style="margin-left:auto"></span>
       </div>
       <div id="event-list">
         <div class="empty-state" id="empty-msg">
-          <span>⏳</span>
-          <span>이벤트를 기다리는 중...</span>
+          
+          
         </div>
       </div>
     </div><!-- /adv-logs -->
@@ -1857,14 +1826,14 @@ details.dev-accordion[open] > summary { color: var(--red) !important; }
     const candidates=s.candidates||[];
     if(candidates.some(c=>c.animal))return ['alert','동물 확인 필요','동물로 의심되는 모습이 보여요.'];
     if(candidates.some(c=>c.alert))return ['alert','청소 확인 필요','남겨진 물건이나 오염이 의심돼요.'];
-    if(s.capturing)return ['wait','깨끗한 모습 기억 중',`자동으로 등록하고 있어요. (${s.capture_count}/5)`];
+    if(s.capturing)return ['wait',`등록 ${s.capture_count}/5`,''];
     if(!s.baseline)return ['wait','처음 설정이 필요해요','깨끗하게 정리한 뒤 등록 버튼을 눌러 주세요.'];
     if(s.quality===2)return ['wait','가려져서 안 보여요','사람이나 물건이 비키면 다시 확인할게요.'];
     if(s.quality!==0)return ['wait','화면 확인 필요','카메라 화면이나 조명이 바뀌었는지 확인하세요.'];
     if(s.layout_changed)return ['wait','물건 위치가 바뀌었어요','원래 있던 물건의 위치를 확인하세요.'];
     if(s.occupancy==='occupied')return ['wait','사람이 사용 중이에요','사람이 떠난 뒤 확인할게요.'];
-    if(s.occupancy==='departure_pending')return ['wait','잠시 기다리는 중','사람이 떠났는지 확인하고 있어요.'];
-    if(s.occupancy!=='vacant'||candidates.length)return ['wait','확인 중','변화가 보여서 조금 더 지켜보고 있어요.'];
+    if(s.occupancy==='departure_pending')return ['wait','대기',''];
+    if(s.occupancy!=='vacant'||candidates.length)return ['wait','확인',''];
     return ['ok','이상 없음','현재 화면에서 청소가 필요한 변화는 감지되지 않았어요.'];
   }
   const base=()=>`${location.protocol}//${location.hostname}:${Number(el('port-input').value)||8081}`;
@@ -1876,7 +1845,7 @@ details.dev-accordion[open] > summary { color: var(--red) !important; }
   async function capture(s,revision,endpoint){
     if(pending)return;
     if(!confirm(`${s.id}: 평소 비치물만 남기고 쓰레기·오염을 치웠나요? 현재 모습을 정상 기준으로 등록합니다.`))return;
-    pending=true;message.textContent='등록 요청을 확인하고 있습니다...';
+    pending=true;message.textContent='';
     try{
       const config=await request('/api/surfaces');
       const live=await request(endpoint+'/surface/status');
@@ -1891,7 +1860,7 @@ details.dev-accordion[open] > summary { color: var(--red) !important; }
       const data=await request(endpoint+'/surface/status');if(endpoint!==base())return;
       if(lastBase!==endpoint||lastFrame!==data.frame_time){lastFrame=data.frame_time;lastBase=endpoint;lastChange=Date.now();}
       const stale=!Number.isFinite(data.frame_time)||Date.now()-lastChange>4000;
-      health.textContent=stale?'카메라 연결을 확인해 주세요.':!data.enabled?'감시가 꺼져 있어요.':'자동으로 확인 중';
+      health.textContent=stale?'카메라 연결을 확인해 주세요.':!data.enabled?'꺼짐':'';
       /* 간단 모드 잔류물 카드 업데이트 */
       const hasAlert=(data.surfaces||[]).some(s=>{const c=s.candidates||[];return c.some(x=>x.alert||x.animal);});
       updateCardState('residue', hasAlert?'warn':'normal', hasAlert?'확인 필요':'이상 없음');
@@ -1901,15 +1870,14 @@ details.dev-accordion[open] > summary { color: var(--red) !important; }
         const title=document.createElement('strong');title.textContent=place(s.id);card.append(title);
         const [kind,label,reason]=verdict(s,data.enabled,stale);card.dataset.state=kind;
         const line=document.createElement('p');line.className='surface-verdict';line.textContent=label;card.append(line);
-        const explanation=document.createElement('p');explanation.textContent=reason;card.append(explanation);
-        if(s.capturing){const progress=document.createElement('progress');progress.max=5;progress.value=s.capture_count;card.append(progress);}
+            if(s.capturing){const progress=document.createElement('progress');progress.max=5;progress.value=s.capture_count;card.append(progress);}
         let controls=card;
         if(s.baseline){controls=document.createElement('details');controls.open=expanded.has(s.id);controls.ontoggle=()=>{if(controls.open)expanded.add(s.id);else expanded.delete(s.id);};const summary=document.createElement('summary');summary.textContent='등록한 모습 보기 · 다시 등록';controls.append(summary);card.append(controls);}
         const button=document.createElement('button');button.className='neu-btn sm';button.textContent=s.baseline?'지금 모습으로 다시 등록':'깨끗한 모습 등록';button.disabled=pending||stale||s.age>3||!data.enabled||!!s.capturing;button.onclick=()=>capture(s,data.revision,endpoint);controls.append(button);
         if(s.baseline&&s.reference){const a=document.createElement('a');a.textContent='기억한 사진 보기';a.href=endpoint+'/surface/reference?file='+encodeURIComponent(s.reference);a.target='_blank';a.rel='noopener';a.style.cssText='margin-left:10px;color:var(--accent);font-size:12px;text-decoration:none';controls.append(a);}
         cards.append(card);
       }
-      if(!(data.surfaces||[]).length)cards.textContent='아직 적용된 영역이 없습니다. 영역 설정에서 ROI를 지정하세요.';
+      if(!(data.surfaces||[]).length)cards.textContent='영역 없음';
     }catch(e){if(endpoint===base()){health.textContent='표면 감시 연결 안 됨';cards.replaceChildren();}}
     finally{loading=false;}
   }
@@ -1997,7 +1965,7 @@ function toggleTheme() {
   const next = html.dataset.theme === "dark" ? "light" : "dark";
   html.dataset.theme = next;
   localStorage.setItem("dashTheme", next);
-  document.getElementById("theme-btn").textContent = next === "dark" ? "🌙" : "☀";
+  document.getElementById("theme-btn").innerHTML = next === "dark" ? '<svg class="i"><use href="#i-moon"/></svg>' : '<svg class="i"><use href="#i-sun"/></svg>';
 }
 
 /* ── 고급 탭 전환 ───────────────────────────────────────────────────────────── */
@@ -2217,7 +2185,7 @@ async function loadHistory(file) {
   counts = { overstay:0, unordered:0, fallen:0, camera:0, door:0, residue:0, total:0 };
   doorIsOpen = null; newCount = 0; newBadge.style.display = "none";
   logNewCount = 0; if (logNewBadge) logNewBadge.style.display = "none";
-  camDot.className = "cam-dot"; camLabel.textContent = "카메라 확인 중";
+  camDot.className = "cam-dot"; camLabel.textContent = "";
   alertItems = [];
   clearAlerts();
   updateCounts();
@@ -2324,7 +2292,7 @@ function disconnectStream() {
 }
 function onStreamError() {
   if (!streamActive) return;
-  camOffline.innerHTML = '<span style="font-size:36px">📷</span><span>스트림 연결 실패 — detector 실행 상태 확인</span><button class="cam-reconnect" onclick="connectStream()">재연결</button>';
+  camOffline.innerHTML = '<span style="font-size:36px"><svg class="i"><use href="#i-camera"/></svg></span><span>스트림 연결 실패 — detector 실행 상태 확인</span><button class="cam-reconnect" onclick="connectStream()">재연결</button>';
   camOffline.style.display = "";
   streamImg.style.display = "none";
 }
@@ -2423,7 +2391,7 @@ async function saveSettings() {
     st.textContent = "로그 용량은 0~1,048,576MiB의 정수로 입력해 주세요.";
     logLimit.reportValidity(); return false;
   }
-  st.textContent = "저장 중..."; st.style.color = "var(--muted)";
+  st.textContent = ""; st.style.color = "var(--muted)";
   const cfg = {
     stream_port:                    cfgVal("stream_port"),
     motion_gate:                    cfgVal("motion_gate"),
@@ -2523,7 +2491,7 @@ async function resetLocationSetup() {
   const st = document.getElementById("save-status");
   const resetButton = document.querySelector('button[onclick="resetLocationSetup()"]');
   if (resetButton) resetButton.disabled = true;
-  st.textContent = "장소별 설정을 초기화하는 중...";
+  st.textContent = "";
   st.style.color = "var(--muted)";
   try {
     /* 먼저 현재 감지를 멈춘 뒤 기준 파일을 제거합니다. */
@@ -2583,7 +2551,7 @@ async function captureDoorRef(state) {
   const st = document.getElementById("door-status");
   const label = state === "open" ? "열림" : "닫힘";
   if (!(await ensureUnlocked())) { st.textContent = "보호 모드 — 해제하지 않아 캡처하지 않았습니다."; return; }
-  st.textContent = `${label} 캡처 중...`;
+  st.textContent = "";
   try {
     const res = await authFetch(`http://${location.hostname}:${port}/door/save?state=${state}`, { method: "POST" });
     const json = await res.json();
@@ -2600,7 +2568,7 @@ function refreshDoorPreview(state) {
   const ph    = document.getElementById(phId);
   if (privacyState.mode && privacyState.active) {
     /* 저장된 매장 사진은 서버가 보호 모드에서 403 으로 막습니다 — 실패로 보이지 않게 이유를 적습니다 */
-    img.style.display = "none"; ph.style.display = ""; ph.textContent = "🔒 보호 모드 — 해제 후 표시";
+    img.style.display = "none"; ph.style.display = ""; ph.innerHTML = '<svg class="i"><use href="#i-lock"/></svg> 보호 모드';
     return;
   }
   ph.textContent = "캡처 없음";
@@ -2616,7 +2584,7 @@ async function captureResidueRef() {
   const port = getStreamPort();
   const st = document.getElementById("residue-status");
   if (!(await ensureUnlocked())) { st.textContent = "보호 모드 — 해제하지 않아 캡처하지 않았습니다."; return; }
-  st.textContent = "청결 기준 캡처 중...";
+  st.textContent = "";
   try {
     const res = await authFetch(`http://${location.hostname}:${port}/residue/save`, { method: "POST" });
     const json = await res.json();
@@ -2630,7 +2598,7 @@ function refreshResiduePreview() {
   const img  = document.getElementById("residue-preview-img");
   const ph   = document.getElementById("residue-preview-ph");
   if (privacyState.mode && privacyState.active) {
-    img.style.display = "none"; ph.style.display = ""; ph.textContent = "🔒 보호 모드 — 해제 후 표시";
+    img.style.display = "none"; ph.style.display = ""; ph.innerHTML = '<svg class="i"><use href="#i-lock"/></svg> 보호 모드';
     return;
   }
   ph.textContent = "캡처 없음";
@@ -2644,20 +2612,8 @@ function refreshResiduePreview() {
 /* ── 상태 폴링 (/status: 문·잔류물·자동 캡처·개인정보 모드) ─────────────────── */
 let privacyState = { mode: 0, active: 0, unlock_remaining: 0, unlock_max: 600 };
 let accessTier = "";
-const DOOR_AUTO_TEXT = {
-  1: "초기화 중 · 반복되는 출입 위치를 학습합니다. 수동 지정도 가능합니다.",
-  2: "문 위치 설정됨 · 닫힘 기준 수집 중 — 문 앞이 비고 화면이 멈추면 저장됩니다",
-  3: "문 위치 설정됨 · 닫힘 ✓ · 열림 기준 수집 중 — 손님이 문을 여는 순간을 기다립니다",
-  4: "✓ 완료 — 닫힘·열림 기준 모두 확보",
-  5: "통과 전 기준 수집 중 · 문 앞이 비고 상단이 안정되면 자동 보관합니다",
-  6: "통과 대기 · 사람이 지나갈 때 문짝 상단을 자동 캡처합니다",
-  7: "상단 확인 대기 · 사람이 가리거나 비교할 상단 영역이 부족합니다",
-  8: "통과 전후 비교 중 · 문 상단의 변화와 원래 장면으로의 복귀를 확인합니다",
-  9: "1회 확인 · 같은 변화가 한 번 더 반복되면 기준을 자동 저장합니다",
-};
-const DOOR_STALL_TEXT =
-  "⚠ 기준이 잡히지 않습니다 — ROI 안에서 계속 움직임이나 사람이 감지됩니다. " +
-  "유리문이면 유리 대신 문틀·손잡이만 들어가도록 영역을 좁혀보세요.";
+const DOOR_AUTO_TEXT = { 1: "위치 학습", 2: "닫힘 기준", 3: "열림 기준", 4: "✓", 5: "통과 기준", 6: "통과 대기", 7: "상단 부족", 8: "비교", 9: "1회 확인" };
+const DOOR_STALL_TEXT = "⚠ 기준 안 잡힘 — ROI 확인";
 function renderAutoWait(el, text, wait, total) {
   if (!el) return;
   if (!text) { el.textContent = ""; return; }
@@ -2691,55 +2647,55 @@ async function pollStatus() {
     const res = await fetch(`http://${location.hostname}:${port}/status`);
     const st  = await res.json();
     document.getElementById("probable-orders").textContent=st.probable_orders ?? 0;
-    document.getElementById("tier2-timing").textContent=st.tier2 ? `Tier 2 평균 ${st.tier2.mean_ms.toFixed(1)} ms/회 · ${st.tier2.runs}회 실행` : "Tier 2 실행 시간 측정 중";
+    document.getElementById("tier2-timing").textContent=st.tier2 ? `${st.tier2.mean_ms.toFixed(1)} ms · ${st.tier2.runs}` : "";
     const tableState=document.getElementById('settings-table-state');
-    if(tableState)tableState.textContent=st.table_mapping===1?((p)=>'테이블 위치를 자동으로 찾는 중입니다.'+(p?` · ${Math.round(p.elapsed)}초 경과 · 식탁 검출 ${p.seen}회(최고 점수 ${p.max_score.toFixed(2)} / 기준 ${st.thresholds.table.toFixed(2)}) · 후보 ${p.candidates}개(최대 ${p.best_hits}/5회 관측)`+(p.seen&&p.max_score<st.thresholds.table?' · 최고 점수가 기준보다 낮아 등록되지 않습니다':''):''))(st.table_progress):st.table_mapping===2?'자동 탐색 모델을 사용할 수 없습니다. 수동 수정에서 영역을 지정할 수 있습니다.':'자동 탐색 대기 또는 완료 · 영역 확인에서 등록 상태를 확인하세요.';
+    if(tableState)tableState.textContent=st.table_mapping===1?(st.table_progress?`${st.table_progress.max_score.toFixed(2)} / ${st.thresholds.table.toFixed(2)} · 후보 ${st.table_progress.candidates}`:''):st.table_mapping===2?'탐색 모델 없음':'';
     const calibration=st.calibration||{};
     const calibrationState=document.getElementById('settings-calibration-state');
-    if(calibrationState)calibrationState.textContent=calibration.active ? `보정 중 · ${Math.floor((calibration.seconds||0)/60)}분 / ${Math.round((calibration.total||600)/60)}분` : `저장된 배경 보정 영역 ${calibration.regions||0}개 · 장소가 바뀌면 다시 학습하세요.`;
-    if(st.thresholds)document.getElementById('confidence-effective').textContent=`현재 적용: 사람 ${Math.round(st.thresholds.person*100)}% · 물체 ${Math.round(st.thresholds.object*100)}% · 새 사람 ${Math.round(st.thresholds.new_person*100)}% · 테이블 ${Math.round(st.thresholds.table*100)}%`;
-    if(st.recording){const r=st.recording;document.getElementById('replay-health').textContent=r.full?'좌표 저장 중단 · 파일당 1 GiB 한도 도달':!r.active?'기록 비활성 · 감지기 확인 필요':`좌표 기록 중 · 이번 실행 ${r.frames}개 · 기록 오류 ${r.errors}회`;}
+    if(calibrationState)calibrationState.textContent=calibration.active ? `${Math.floor((calibration.seconds||0)/60)} / ${Math.round((calibration.total||600)/60)}분` : `${calibration.regions||0}개`;
+    if(st.thresholds)document.getElementById('confidence-effective').textContent=`${Math.round(st.thresholds.person*100)} · ${Math.round(st.thresholds.object*100)} · ${Math.round(st.thresholds.new_person*100)} · ${Math.round(st.thresholds.table*100)}%`;
+    if(st.recording){const r=st.recording;document.getElementById('replay-health').textContent=r.full?'⚠ 기록 한도 도달':!r.active?'⚠ 기록 꺼짐':`${r.frames}${r.errors?` · ⚠ 오류 ${r.errors}`:''}`;}
     const d   = st.door || {};
     const collecting = d.auto_phase === 2 || d.auto_phase === 3 || d.auto_phase >= 5;
     const btnForce = document.getElementById("btn-force-closed");
     if (d.enabled && !d.roi_set) {
-      badge.className = "door-pill unknown"; badge.textContent = "초기화 중 · 문 위치 학습";
+      badge.className = "door-pill unknown"; badge.textContent = "위치 학습";
       doorIsOpen = false;
-      updateCardState("door", "normal", "초기화 중 · 문 위치 학습");
+      updateCardState("door", "normal", "위치 학습");
       if (btnForce) btnForce.style.display = "none";
     } else if (d.enabled && !d.closed_ready) {
       doorIsOpen = false;
-      const label = d.auto_phase >= 5 ? "활성 · 통과 기준 자동 학습 중" : d.auto_phase === 2 ? "활성 · 닫힘 기준 학습 중" : "활성 · 닫힘 기준 필요";
+      const label = d.auto_phase >= 5 ? "통과 기준 학습" : d.auto_phase === 2 ? "닫힘 기준 학습" : "닫힘 기준 필요";
       badge.className = "door-pill unknown"; badge.textContent = label;
       updateCardState("door", "normal", label);
       if (btnForce) btnForce.style.display = "none";
     } else if (d.enabled && d.state === 1) {
-      badge.className = "door-pill open"; badge.textContent = "활성 · 열림";
-      doorIsOpen = true;  updateCardState("door", "warn", "현재 열려 있음");
+      badge.className = "door-pill open"; badge.textContent = "열림";
+      doorIsOpen = true;  updateCardState("door", "warn", "열림");
       if (btnForce) btnForce.style.display = "";
     } else if (d.enabled && d.state === 0) {
-      badge.className = "door-pill closed"; badge.textContent = "활성 · 닫힘";
-      doorIsOpen = false; updateCardState("door", "normal", "닫힘 정상");
+      badge.className = "door-pill closed"; badge.textContent = "닫힘";
+      doorIsOpen = false; updateCardState("door", "normal", "닫힘");
       if (btnForce) btnForce.style.display = "none";
     } else if (d.enabled) {
-      badge.className = "door-pill unknown"; badge.textContent = collecting ? "활성 · 열림 기준 학습 중" : "활성 · 개폐 상태 미확인";
+      badge.className = "door-pill unknown"; badge.textContent = collecting ? "열림 기준 학습" : "미확인";
       doorIsOpen = false;
-      updateCardState("door", "normal", collecting ? "활성 · 열림 기준 학습 중" : "활성 · 개폐 상태 미확인");
+      updateCardState("door", "normal", collecting ? "열림 기준 학습" : "미확인");
       if (btnForce) btnForce.style.display = "none";
     } else {
-      badge.className = "door-pill unknown"; badge.textContent = "비활성";
+      badge.className = "door-pill unknown"; badge.textContent = "꺼짐";
       doorIsOpen = false;
-      updateCardState("door", "normal", "감지 비활성");
+      updateCardState("door", "normal", "꺼짐");
       if (btnForce) btnForce.style.display = "none";
     }
     /* 설정 탭 문·잔류물 상태 문구에 자동 캡처 진행을 표시 (간단·고급 양쪽) */
     const quiet = parseFloat(document.getElementById("cfg-door_auto_quiet_seconds")?.value) || 20;
     const hold  = parseFloat(document.getElementById("cfg-door_auto_open_hold_seconds")?.value) || 1;
     const stalled = !!d.auto_stalled;
-    const doorText = !d.enabled ? "출입문 감지가 꺼져 있습니다"
-                   : !d.roi_set ? `초기화 중 · 출입 위치 학습 (${d.map_samples || 0}회 관측, 진입·이탈 양쪽 필요)`
+    const doorText = !d.enabled ? "꺼짐"
+                   : !d.roi_set ? `위치 학습 ${d.map_samples || 0}회`
                    : stalled    ? DOOR_STALL_TEXT
-                   : (DOOR_AUTO_TEXT[d.auto_phase] || (d.closed_ready ? "문 위치 설정됨 · 개폐 상태 확인 중" : "문 위치 설정됨 · 닫힘 기준을 저장하거나 자동 수집을 켜주세요"));
+                   : (DOOR_AUTO_TEXT[d.auto_phase] || (d.closed_ready ? "" : "기준 필요"));
     /* 정체 중에는 진행 막대가 의미 없으므로(계속 0 근처) 숨깁니다 */
     const doorWait = stalled ? 0 : (d.auto_wait || 0);
     for (const id of ["door-auto-status", "pdoor-auto"])
@@ -2751,9 +2707,8 @@ async function pollStatus() {
     }
     const r = st.residue || {};
     renderAutoWait(document.getElementById("residue-auto-status"),
-      !r.enabled ? "" : r.ready ? "기준 있음 ✓"
-        : r.auto_phase === 1 ? "자동 캡처: 사람 없고 화면이 멈추면 기준을 잡습니다"
-        : "기준 없음 (자동 캡처 꺼짐 — 아래 버튼으로 캡처)",
+      !r.enabled ? "" : r.ready ? "✓"
+        : "기준 없음",
       r.auto_wait || 0, parseFloat(document.getElementById("cfg-residue_auto_quiet_seconds")?.value) || 15);
     applyPrivacyState(st.privacy);
     if (st.access) accessTier = st.access.tier || "";
@@ -2779,7 +2734,7 @@ async function showDoorLocation() {
   const message = document.getElementById('door-location-message');
   const canvas = document.getElementById('door-location-canvas');
   canvas.hidden = true;
-  message.textContent = '현재 감시 위치를 확인하는 중입니다.';
+  message.textContent = '';
   try {
     const response = await fetch(`http://${location.hostname}:${getStreamPort()}/status`);
     if (!response.ok) throw Error('설정을 불러오지 못했습니다.');
@@ -2787,7 +2742,7 @@ async function showDoorLocation() {
     const d = status.door || {};
     const cfg = {door_roi_x:d.roi_x,door_roi_y:d.roi_y,door_roi_w:d.roi_w,door_roi_h:d.roi_h};
     if (!(cfg.door_roi_w > 0 && cfg.door_roi_h > 0)) {
-      message.textContent = `초기화 중 · 출입 위치 ${d.map_samples || 0}회 관측. 같은 위치에서 진입·이탈이 반복되어야 확정됩니다.`;
+      message.textContent = `위치 학습 ${d.map_samples || 0}회`;
       return;
     }
     if (!(await ensureUnlocked())) { message.textContent = '영상 확인을 위한 보호 모드 해제가 취소됐습니다.'; return; }
@@ -2830,7 +2785,7 @@ async function resetDoorLocation() {
     if(!reset.ok)throw Error('문 위치 초기화 실패 — detector 버전과 연결을 확인하세요.');
     await loadSettings();
     document.getElementById('door-location-canvas').hidden=true;
-    message.textContent='초기화 중 · 새 출입 경로를 학습합니다.';
+    message.textContent='';
   }catch(e){message.textContent=e.message;}
 }
 
@@ -2843,7 +2798,7 @@ async function forceDoorClosed() {
     await fetch(`http://${location.hostname}:${port}/door/force-closed`, { method: "POST" });
     /* 즉시 배지 갱신 — pollStatus가 3초 뒤 덮어씀 */
     const badge = document.getElementById("door-state-badge");
-    if (badge) { badge.className = "door-pill closed"; badge.textContent = "🟢 닫힘"; }
+    if (badge) { badge.className = "door-pill closed"; badge.textContent = "닫힘"; }
     if (btn) btn.style.display = "none";
   } catch (_) {}
   if (btn) btn.disabled = false;
@@ -2908,7 +2863,7 @@ async function openRoiPicker() {
     setRoiHint("보호 모드 — 해제하지 않아 화면을 불러오지 않았습니다.", "var(--orange)");
     return;
   }
-  setRoiHint("화면 불러오는 중...", "var(--accent)");
+  setRoiHint("", "");
   const img = new Image();
   img.crossOrigin = "anonymous";
   img.onload = () => {
@@ -3216,40 +3171,21 @@ function detectPresetLevel(category) {
   return best;
 }
 
-/* 프리셋 설명 문자열 생성 */
-function updatePresetDesc(category, level) {
-  const el = document.getElementById("pdesc-" + category);
-  if (!el) return;
-  const p = PRESETS[category][level];
-  if (!p) return;
-  let desc = "";
-  if (category === "dwell") {
-    /* 체류 한도·미주문 유예는 위 슬라이더가 실시간으로 보여주므로 여기서는 생략합니다.
-       슬라이더를 움직인 뒤에도 이 설명이 어긋나지 않도록, 프리셋만 바꾸는 값만 남깁니다. */
-    desc = `쓰러짐 의심 자세가 <strong>${p.fall_hold_seconds}초</strong> 유지되면 알림을 보냅니다. 체류 시간은 위에서 따로 조절할 수 있습니다.`;
-  } else if (category === "residue") {
-    desc = `변화가 <strong>${p.residue_confirm_seconds}초</strong> 유지되면 알림을 보내고, 정상 모습이 ${p.residue_clear_seconds}초 유지되면 해제합니다.`;
-  } else if (category === "camera") {
-    desc = "화면이 지나치게 어둡거나 밝아지거나, 영상이 멈췄을 때 알립니다. 잦은 알림은 둔감으로 조절하세요.";
-  }
-  el.innerHTML = desc;
-}
-
-function updateDoorDesc(sec) {
-  const el = document.getElementById("pdesc-door");
-  if (el) el.textContent = `${sec}초 이상 열려 있으면 알림`;
-}
+/* 프리셋 설명 문구는 삭제했다(디자인 방침: 값·색·오류만 표시). 호출부는 유지하므로 빈 함수로 둔다. */
+function updatePresetDesc() {}
+function updateDoorDesc() {}
 
 /* syncCfgToSimple은 loadSettings 완료 후 switchAdvTab('settings')에서 호출됨 */
 
 /* ── 초기화 ────────────────────────────────────────────────────────────────── */
 /* 저장된 테마/모드 복원 */
 (function init() {
-  const theme    = localStorage.getItem("dashTheme")        || "light";
-  const mode     = localStorage.getItem("dashMode")         || "easy";
+  const qp = new URLSearchParams(location.search);
+  const theme    = qp.get("theme") || localStorage.getItem("dashTheme")        || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+  const mode     = qp.get("mode")  || localStorage.getItem("dashMode")         || "easy";
   const smode    = localStorage.getItem("dashSettingsMode") || "simple";
   document.documentElement.dataset.theme = theme;
-  document.getElementById("theme-btn").textContent = theme === "dark" ? "🌙" : "☀";
+  document.getElementById("theme-btn").innerHTML = theme === "dark" ? '<svg class="i"><use href="#i-moon"/></svg>' : '<svg class="i"><use href="#i-sun"/></svg>';
   currentSettingsMode = smode;
   /* simple/full 패널 초기 상태 설정 (setMode 전에) */
   document.getElementById("simple-settings").style.display = smode === "simple" ? "" : "none";

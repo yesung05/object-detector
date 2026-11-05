@@ -30,14 +30,13 @@ textarea{width:100%;min-height:96px;padding:10px;border:1px solid var(--border);
 #status{min-height:1.5em;font-size:13px;color:var(--muted)}
 #status.err{color:var(--red)}
 @media(min-width:520px){.clips{grid-template-columns:1fr 1fr}}
-</style>
+</style><link rel="stylesheet" href="/assets/theme.css">
 </head>
 <body>
 <header><a href="/">← 대시보드</a><strong>매장 음성 안내</strong></header>
 <main>
   <section>
     <h2>녹음/mp3 안내</h2>
-    <p class="hint">매장 PC의 <code>announce</code> 폴더에 mp3·wav 파일을 넣으면 여기에 나타납니다. 파일명은 영문·숫자·_ - 만 쓸 수 있습니다.</p>
     <div class="clips" id="clips"></div>
     <div class="row" style="margin-top:10px">
       <button class="sub" id="random" type="button">무작위 1개 재생</button>
@@ -46,7 +45,7 @@ textarea{width:100%;min-height:96px;padding:10px;border:1px solid var(--border);
   </section>
   <section>
     <h2>직접 녹음</h2>
-    <p class="hint" id="rec-hint">녹음 후 들어보고 저장하면 위 목록에 추가됩니다. 최대 60초.</p>
+    <p class="hint" id="rec-hint"></p>
     <div class="row">
       <button id="rec" type="button">● 녹음 시작</button>
       <label class="filebtn sub">폰 녹음기·파일 선택<input id="recfile" type="file" accept="audio/*" capture hidden></label>
@@ -59,7 +58,6 @@ textarea{width:100%;min-height:96px;padding:10px;border:1px solid var(--border);
   </section>
   <section>
     <h2>문구 읽기 (TTS)</h2>
-    <p class="hint">Windows 내장 음성으로 읽습니다. 인터넷으로 전송되지 않습니다. 최대 100자 안팎.</p>
     <textarea id="text" maxlength="100" placeholder="예) 영업 종료 10분 전입니다. 이용해 주셔서 감사합니다."></textarea>
     <div class="row" style="margin-top:10px"><button id="speak" type="button">읽기</button></div>
   </section>

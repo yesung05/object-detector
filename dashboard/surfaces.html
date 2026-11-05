@@ -10,26 +10,24 @@ body{font:14px/1.55 'Segoe UI','Noto Sans KR',system-ui,sans-serif;background:va
 .editor-note{color:var(--muted);font-size:12px;margin:0 0 14px}.layout{grid-template-columns:minmax(0,1.7fr) minmax(310px,.8fr);gap:16px}section{background:var(--bg);padding:18px;border-radius:14px;margin-bottom:16px;box-shadow:-5px -5px 12px var(--sh-light),5px 5px 12px var(--sh-dark)}
 h2{font-size:15px;margin:0 0 10px}canvas{background:#17212b;border:0;border-radius:10px;box-shadow:inset 2px 2px 7px #0c1218,inset -2px -2px 7px #2a3a4a}button,input,select,textarea{font:inherit;background:var(--bg);color:var(--text);border:0;border-radius:9px;padding:8px 10px;margin:4px;box-shadow:-2px -2px 5px var(--sh-light),2px 2px 5px var(--sh-dark)}button{font-weight:700}button:hover{color:var(--accent)}button.primary{background:var(--accent);color:#fff;box-shadow:-2px -2px 5px var(--sh-light),3px 3px 7px var(--sh-dark)}button.primary:hover{color:#fff;filter:brightness(.96)}button:active{box-shadow:inset -2px -2px 5px var(--sh-light),inset 2px 2px 5px var(--sh-dark)}
 .quick{display:flex;gap:5px;flex-wrap:wrap;margin-bottom:10px}.quick button{padding:9px 12px}.help{color:var(--muted);font-size:12px}#drawing-help{background:#eef3f8;border:0;border-left:3px solid var(--accent);border-radius:8px;color:var(--text);font-size:12px}#message{background:#fff7dc;color:#8a5a00;border-radius:10px;box-shadow:0 3px 10px rgba(80,60,0,.12);margin-bottom:12px;padding:10px 14px}#status{display:grid;gap:8px}.card{border-color:var(--border)}details{border-top:1px solid var(--border);padding-top:9px;margin-top:10px}summary{font-weight:700;color:var(--muted)}textarea{width:100%;background:#f3f6fa}.layout aside section{position:sticky;top:16px}@media(max-width:850px){.page-head{align-items:flex-start;flex-wrap:wrap}.page-head,main{padding-left:14px;padding-right:14px}.layout{grid-template-columns:1fr}.layout aside section{position:static}}
-</style></head><body><header class="page-head"><a class="back-link" href="/#settings-place">← 설정 · 감시 장소</a><div class="page-head-copy"><h1>감시 영역 설정</h1><p>테이블 위치를 자동으로 찾고 감지 상태를 확인합니다. 위치가 다를 때만 수동으로 수정하세요.</p></div></header>
+</style><link rel="stylesheet" href="/assets/theme.css"></head><body><header class="page-head"><a class="back-link" href="/#settings-place">← 설정 · 감시 장소</a><div class="page-head-copy"><h1>감시 영역 설정</h1></div></header>
 <main><div id="message" role="status"></div><div class="layout"><div><section>
-<p id="table-mapping-status" role="status">테이블 위치 상태 확인 중</p>
+<p id="table-mapping-status" role="status"></p>
 <p id="calibration-status" class="help" role="status"></p>
 <div class="quick"><button id="auto-tables" class="primary">초기화 · 테이블 자동으로 다시 찾기</button><button id="manual-tables">초기화 · 수동으로 설정하기</button></div>
-<p class="help">자동 등록은 테이블 검출 상자를 기준으로 합니다. 상판 경계와 좌석 범위는 영상에서 확인하고 필요하면 수정하세요.</p>
 <div class="quick"><button id="quick-table" class="primary">+ 테이블</button><button id="quick-floor">+ 바닥</button><button id="refresh">영상 새로고침</button></div>
 <canvas id="canvas" width="1280" height="720"></canvas>
-<p id="drawing-help" role="status">설정을 불러오는 중입니다.</p>
+<p id="drawing-help" role="status"></p>
 <label>선택 영역 <select id="selected"></select></label><button id="redraw">경계 다시 그리기</button><button id="quick-usage">사람이 앉는 곳 추가</button><button id="remove">선택 영역 삭제</button><button id="cancel">그리기 취소</button>
-<p class="help">초록색: 감시할 표면 · 노란색: 사람이 앉는 곳. 테이블은 상판을 그린 뒤 좌석 영역도 그려주세요. 사람의 몸이 있는 곳을 포함해야 합니다.</p>
 <button id="finish">영역 확정</button><button id="undo">점 되돌리기</button>
 <details><summary>고급 그리기 · 비치물 이동 허용 / 제외 영역</summary>
 <button id="polygon-tool">클릭으로 다각형 그리기</button><select id="mode"><option value="polygon">표면 경계</option><option value="usage">이용 구역 추가</option><option value="exclusion">제외 구역 추가</option><option value="fixture">비치물 추가</option><option value="allowed">마지막 비치물 이동 허용 구역</option></select>
-<p class="help">고정된 비치물은 따로 그릴 필요가 없습니다. 정상 모습에 함께 등록됩니다. 이동을 허용할 물건만 ‘비치물 추가’로 지정한 뒤 ‘마지막 비치물 이동 허용 구역’을 그리세요.</p></details>
-</section><section><h2>실시간 감시 상태</h2><p class="help">위생 위험 세부 분류: 미지원. 일반 변화·잔류물 감시는 동작하지만 배설물/토사물을 확정하지 않습니다.</p><div id="status">감시 프로그램 연결 대기</div></section></div>
-<aside><section><h2>설정 순서</h2><p>1. 테이블 또는 바닥을 선택하고 영상에 점을 3개 이상 찍은 뒤 ‘영역 확정’을 누르세요.</p><p>2. 테이블은 ‘사람이 앉는 곳 추가’로 좌석 영역도 지정하세요.</p><p>3. 설정을 저장하고 평소 비치물을 그대로 둔 채 ‘정상 모습 등록’을 누르세요. 물건별 이름이나 테두리는 필요 없습니다.</p><details><summary>고급 설정 · 이름 / 감도 / 비치물</summary><input id="newid" placeholder="ID 생략 가능"><select id="type"><option value="table">테이블</option><option value="floor">바닥</option></select><button id="add">다각형 영역 추가</button><div id="details"></div><label>영상 포트 <input id="port" type="number" value="8081" style="width:90px"></label><p class="help">비치물 아래는 빈 표면 기준이 없으면 판단을 유보합니다.</p></details></section>
-<section><h2>2. 설정 적용</h2><label><input type="checkbox" id="enabled">새 표면 감시 활성화</label><p class="help">활성화하면 기존 residue/slot 청소 경로를 대신합니다. 기존 문·카메라 감시는 유지됩니다.</p><button id="save" class="primary">검증하고 저장</button><button id="reload">저장된 설정 다시 읽기</button></section>
-<section><h2>3. 기본 비치물 한 번에 등록</h2><p>컵·휴지통 등 원래 있는 물건은 평소 자리에 두세요. 쓰레기와 오염만 치우고, 사람이 영역을 가리지 않을 때 등록하세요.</p><p id="baseline-target">위에서 등록할 영역을 선택하세요.</p><button id="capture" class="primary">이 영역의 정상 모습 등록</button><p class="help">물건을 하나씩 그리거나 종류를 고를 필요가 없습니다. 현재 배치 전체를 기준으로 저장합니다. 가림 없는 5회 관측 후 등록되며, 완료 여부는 실시간 감시 상태에서 확인하세요.</p><p class="help">물건 자체를 알아보는 기능은 아닙니다. 나중에 컵이나 휴지통의 위치·모양이 달라지면 변화로 감지될 수 있습니다. 정상 배치를 바꿨다면 깨끗한지 확인하고 다시 등록하세요.</p><details><summary>선택 사항 · 물건이 이동할 때</summary><p>고급 그리기에서 이동할 비치물과 허용 구역을 지정할 수 있습니다. 제한적인 위치 이동만 비교하며 회전·모양 변화까지 보장하지 않습니다.</p><button id="empty">물건을 치운 빈 표면 등록</button><p class="help">비치물 아래까지 비교해야 할 때만 사용하세요. 물건을 잠시 치우고 빈 표면을 등록한 뒤, 원래 배치로 되돌려 놓으세요. 기본 비치물 등록에는 필요하지 않습니다.</p></details></section></aside></div>
-<section><details><summary>설정 초안 JSON · 가져오기/세부 수정</summary><p>자동 설정도 같은 형식을 사용합니다. 수정 후 ‘초안 읽기’와 ‘검증하고 저장’을 순서대로 누르세요. 잠금은 자동 제안으로부터 표면 전체를 보호합니다.</p><textarea id="json"></textarea><button id="import">초안 읽기</button></details></section></main>
+</details>
+</section><section><h2>실시간 감시 상태</h2><div id="status">감시 프로그램 연결 대기</div></section></div>
+<aside><section><h2>설정 순서</h2><details><summary>고급 설정 · 이름 / 감도 / 비치물</summary><input id="newid" placeholder="ID 생략 가능"><select id="type"><option value="table">테이블</option><option value="floor">바닥</option></select><button id="add">다각형 영역 추가</button><div id="details"></div><label>영상 포트 <input id="port" type="number" value="8081" style="width:90px"></label></details></section>
+<section><h2>2. 설정 적용</h2><label><input type="checkbox" id="enabled">새 표면 감시 활성화</label><button id="save" class="primary">검증하고 저장</button><button id="reload">저장된 설정 다시 읽기</button></section>
+<section><h2>3. 기본 비치물 한 번에 등록</h2><p id="baseline-target">위에서 등록할 영역을 선택하세요.</p><button id="capture" class="primary">이 영역의 정상 모습 등록</button><details><summary>선택 사항 · 물건이 이동할 때</summary><button id="empty">물건을 치운 빈 표면 등록</button></details></section></aside></div>
+<section><details><summary>설정 초안 JSON · 가져오기/세부 수정</summary><textarea id="json"></textarea><button id="import">초안 읽기</button></details></section></main>
 <script>
 'use strict';
 let config=null,points=[],picture=null,savedRevision=0,savedConfig='',lastFrameTime=-1,lastFrameReceived=Date.now();
@@ -55,8 +53,8 @@ async function request(url,options){
   if(!r.ok)throw Error(explainError(j.message||j.error||`HTTP ${r.status}`));return j;}
 function sync(){ $('json').value=JSON.stringify(config,null,2); }
 function populate(id){const select=$('selected');select.replaceChildren();for(const s of config.surfaces){const o=document.createElement('option');o.value=s.id;o.textContent=`${s.id} · ${s.type}`;select.append(o);}if(id)select.value=id;$('enabled').checked=config.enabled;details();sync();draw();}
-function drawingHelp(){const s=selected();$('drawing-help').textContent=!config?'설정을 불러오는 중입니다.':tool==='polygon'?`${s?.id||'영역 추가 필요'} · ${$('mode').value==='usage'?'사람이 앉는 곳':'선택한 영역'} · 꼭짓점 ${points.length}/16 · 3점 이상 클릭 후 ‘영역 확정’`:'테이블·바닥·벽 버튼을 눌러 시작하세요. 비치물은 하나씩 그리지 않고 정상 모습으로 함께 등록합니다.';}
-function setReadOnlyView(){if(!readOnly)return;document.querySelector('h1').textContent='감시 영역 · 안정화 확인';document.querySelector('header p').textContent='자동 등록과 실시간 감시 상태를 확인합니다. 영역 변경은 설정 화면에서만 할 수 있습니다.';for(const e of document.querySelectorAll('button,input,select,textarea'))if(e.id!=='refresh')e.disabled=true;}
+function drawingHelp(){const s=selected();$('drawing-help').textContent=config&&tool==='polygon'?`${s?.id||''} · ${points.length}/16`:'';}
+function setReadOnlyView(){if(!readOnly)return;document.querySelector('h1').textContent='감시 영역 · 안정화 확인';for(const e of document.querySelectorAll('button,input,select,textarea'))if(e.id!=='refresh')e.disabled=true;}
 function resetDrawing(){points=[];tool='idle';}
 function startPolygon(mode='polygon'){if(!selected())return say('먼저 영역을 추가하세요.');resetDrawing();tool='polygon';$('mode').value=mode;draw();}
 for(const type of ['table','floor'])$('quick-'+type).onclick=()=>{$('type').value=type;$('newid').value='';$('add').click();};
@@ -81,7 +79,7 @@ $('add').onclick=()=>{if(!config)return say('설정을 먼저 불러와야 합�
 const addPolygon=$('add').onclick;
 $('add').onclick=()=>{resetDrawing();tool='polygon';addPolygon();};
 $('remove').onclick=()=>{if(!config)return;resetDrawing();config.surfaces=config.surfaces.filter(s=>s.id!==$('selected').value);populate();};
-async function load(){config=await request('/api/surfaces');savedRevision=config.revision;savedConfig=JSON.stringify(config);canvas.width=config.width;canvas.height=config.height;populate();say('설정을 읽었습니다.');}
+async function load(){config=await request('/api/surfaces');savedRevision=config.revision;savedConfig=JSON.stringify(config);canvas.width=config.width;canvas.height=config.height;populate();}
 $('reload').onclick=()=>{resetDrawing();load().catch(e=>say(e.message));};
 $('refresh').onclick=()=>{const img=new Image();img.crossOrigin='anonymous';img.onload=()=>{if(config.surfaces.length&&(img.naturalWidth!==config.width||img.naturalHeight!==config.height))return say('영상 해상도가 설정과 다릅니다. 구도를 확인하고 설정을 다시 등록하세요.');picture=img;config.width=canvas.width=img.naturalWidth;config.height=canvas.height=img.naturalHeight;sync();draw();};img.onerror=()=>say('카메라 영상을 가져오지 못했습니다. 영상 포트와 프로그램 실행 상태를 확인하세요.');img.src=stream()+'/snapshot?t='+Date.now();};
 $('save').onclick=async()=>{try{const next=structuredClone(config);next.revision=savedRevision+1;next.source='manual';next.surfaces.forEach(s=>s.locked=true);next.enabled=$('enabled').checked;const result=await request('/api/surfaces',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(next)});config=next;savedRevision=next.revision;savedConfig=JSON.stringify(config);sync();say('수동 설정을 저장했습니다. 자동 탐색이 덮어쓰지 않습니다.');}catch(e){say(e.message);}};
@@ -131,13 +129,13 @@ async function status(){
    $('status').append(div);
   }
   if(!data.enabled)$('status').append(document.createTextNode('새 표면 감시가 비활성 상태입니다.'));
- }catch(e){$('status').textContent='감시 프로그램 연결 대기: '+e.message;}
+ }catch(e){$('status').textContent='⚠ 연결 안 됨';}
 }
 async function mappingStatus(){try{
   const s=await request(stream()+'/status');
-  $('table-mapping-status').textContent=s.table_mapping===2?'자동 탐색 대기 · 테이블 인식 모델이 연결되지 않았습니다.':s.table_mapping===1?((p)=>'테이블 위치를 자동으로 찾는 중입니다.'+(p?` · ${Math.round(p.elapsed)}초 경과 · 식탁 검출 ${p.seen}회(최고 점수 ${p.max_score.toFixed(2)} / 기준 ${s.thresholds.table.toFixed(2)}) · 후보 ${p.candidates}개(최대 ${p.best_hits}/5회 관측)`+(p.seen&&p.max_score<s.thresholds.table?' · 최고 점수가 기준보다 낮아 등록되지 않습니다':''):''))(s.table_progress)+' · 10초 이상 안정적으로 보이는 위치를 등록합니다.':config?.surfaces.length?'등록된 테이블 위치를 확인하거나 수동으로 수정할 수 있습니다.':'수동 설정 대기 · 자동으로 다시 찾기를 선택할 수도 있습니다.';
+  $('table-mapping-status').textContent=s.table_mapping===2?'탐색 모델 없음':s.table_mapping===1&&s.table_progress?`${s.table_progress.max_score.toFixed(2)} / ${s.thresholds.table.toFixed(2)} · 후보 ${s.table_progress.candidates} · ${Math.round(s.table_progress.elapsed)}s`:'';
   const c=s.calibration;
-  if(c)$('calibration-status').textContent=c.active?`배경 안정화 중 · ${Math.floor(c.seconds/60)} / ${Math.round(c.total/60)}분`:`배경 안정화 대기 또는 저장 결과 적용 · 제외 구역 ${c.regions}개`;
+  if(c)$('calibration-status').textContent=c.active?`${Math.floor(c.seconds/60)} / ${Math.round(c.total/60)}분`:`${c.regions}`;
   /* Refresh auto-generated geometry only while the local editor is pristine. */
   if(config?.source==='auto'&&!config.surfaces.length&&!points.length&&JSON.stringify(config)===savedConfig&&$('enabled').checked===config.enabled){
     const next=await request('/api/surfaces');if(next.revision!==savedRevision){await load();setReadOnlyView();}
