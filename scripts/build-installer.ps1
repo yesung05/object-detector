@@ -1,5 +1,5 @@
 ﻿param(
-    [string]$Version = '0.1.0-alpha.4',
+    [string]$Version = '0.1.0-alpha.5',
     [string]$BuildDir = 'build-g',
     [string]$FfmpegRoot = '',
     [string]$OrtRoot = '',
@@ -65,17 +65,21 @@ foreach ($pair in @(@('ORT_INCLUDE_DIR', "$OrtRoot/include"), @('FFMPEG_INCLUDE_
 if ($LASTEXITCODE) { throw 'Tests failed; no installer produced' }
 $stage = Join-Path $BuildDir ('installer-payload-' + [Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $stage | Out-Null
-foreach ($dir in @('models','dashboard','licenses','tools','docs')) { New-Item -ItemType Directory -Path "$stage\$dir" | Out-Null }
+foreach ($dir in @('models','dashboard','dashboard\assets','dashboard\assets\fonts','licenses','tools','docs')) { New-Item -ItemType Directory -Path "$stage\$dir" | Out-Null }
 foreach ($exe in @('unmanned_detector.exe','unmanned_detector-dashboard.exe','unmanned_detector-launcher.exe')) { Copy-Item "$BuildDir\Release\$exe" $stage }
 Copy-Item "$FfmpegRoot\bin\*.dll" $stage
 Copy-Item "$FfmpegRoot\bin\ffmpeg.exe" $stage
 Copy-Item "$OrtRoot\lib\*.dll" $stage
 Copy-Item "$VcRuntimeDir\*.dll" $stage
-foreach ($model in @('yolo11n-pose-416x224.onnx','yolo11n-pose-416x288.onnx','yolo11n-pose-416x416.onnx','yolo11n_tier2_fp32.onnx')) {
+# fight_stage2.onnx: 폭행 2단계 분류기(91KB, 기본 꺼짐 — fight_enabled=1 일 때만 로드)
+foreach ($model in @('yolo11n-pose-416x224.onnx','yolo11n-pose-416x288.onnx','yolo11n-pose-416x416.onnx','yolo11n_tier2_fp32.onnx','fight_stage2.onnx')) {
     Copy-Item "$root\models\$model" "$stage\models"
 }
 Copy-Item "$root\dashboard\*.html" "$stage\dashboard"
 Copy-Item "$root\dashboard\*.js" "$stage\dashboard"
+# 대시보드 공용 테마·로컬 폰트(Pretendard, OFL). 서버의 /assets 허용 목록이 이 두 파일만 연다 — 빠지면 스타일과 폰트가 깨진다.
+Copy-Item "$root\dashboard\assets\theme.css" "$stage\dashboard\assets"
+Copy-Item "$root\dashboard\assets\fonts\*" "$stage\dashboard\assets\fonts"
 Copy-Item "$root\run-all.ps1", "$root\start-installed.ps1" $stage
 Copy-Item "$root\scripts\export-coordinate-trial.py" "$stage\tools"
 Copy-Item "$root\docs\coordinate-field-trial.md" "$stage\docs"
