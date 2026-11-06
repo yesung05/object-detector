@@ -1257,6 +1257,14 @@ details.dev-accordion[open] > summary { color: var(--red) !important; }
             <span class="toggle-slider"></span>
           </label>
         </div>
+        <div class="preset-door-row">
+          <span class="preset-door-label">가림 화면</span>
+          <!-- 0 단색 / 1 엣지 그레이. 기본 0: 엣지 화면은 얼굴 윤곽·간판 글자가 일부 보인다(config 주석 참고) -->
+          <select class="neu-select" id="pcfg-stream_privacy_style" onchange="syncSimpleToCfg('stream_privacy_style', this.value)">
+            <option value="0">단색</option>
+            <option value="1">엣지 그레이</option>
+          </select>
+        </div>
       </div><div class="preset-card neu-raised">
         <div>
           <div class="preset-title">영상에 표시할 물체</div>
@@ -1638,6 +1646,29 @@ details.dev-accordion[open] > summary { color: var(--red) !important; }
           <div class="setting-row">
             <div><div class="setting-label">개인정보 보호 모드</div></div>
             <label class="toggle"><input type="checkbox" id="cfg-stream_privacy_mode" checked><span class="toggle-slider"></span></label>
+            <span></span>
+          </div>
+          <div class="setting-row">
+            <div><div class="setting-label">가림 화면 모양</div></div>
+            <select class="neu-select" id="cfg-stream_privacy_style">
+              <option value="0">단색</option>
+              <option value="1">엣지 그레이</option>
+            </select>
+            <span></span>
+          </div>
+          <div class="setting-row">
+            <div><div class="setting-label">모자이크 칸 (px)</div></div>
+            <input type="number" class="setting-input" id="cfg-privacy_mosaic_cell" min="8" max="64" value="24">
+            <span></span>
+          </div>
+          <div class="setting-row">
+            <div><div class="setting-label">엣지 임계 (약/강)</div></div>
+            <input type="number" class="setting-input" id="cfg-privacy_edge_low" min="5" max="250" value="40">
+            <input type="number" class="setting-input" id="cfg-privacy_edge_high" min="5" max="255" value="110">
+          </div>
+          <div class="setting-row">
+            <div><div class="setting-label">엣지 갱신 (회/초)</div></div>
+            <input type="number" class="setting-input" id="cfg-privacy_style_fps" min="1" max="30" value="5">
             <span></span>
           </div>
           <div class="setting-row">
@@ -2353,7 +2384,8 @@ async function loadSettings() {
       "slot_warn_seconds","slot_urgent_seconds","slot_ttl_seconds",
       "slot_dirty_threshold","slot_min_dirty_blocks","perf_log_interval_seconds","log_max_total_mb",
       "show_animal","show_food","show_drink","show_furniture","tier2_always",
-      "stream_privacy_mode","privacy_unlock_max_seconds","access_pin",
+      "stream_privacy_mode","stream_privacy_style","privacy_mosaic_cell","privacy_edge_low","privacy_edge_high",
+      "privacy_style_fps","privacy_unlock_max_seconds","access_pin",
       "door_auto_capture","door_auto_quiet_seconds","door_auto_open_hold_seconds","door_auto_open_l1",
       "residue_auto_capture","residue_auto_quiet_seconds",
       "surface_auto_capture","surface_auto_quiet_seconds",
@@ -2436,6 +2468,11 @@ async function saveSettings() {
     show_furniture:                 cfgVal("show_furniture"),
     tier2_always:                   cfgVal("tier2_always"),
     stream_privacy_mode:            cfgVal("stream_privacy_mode"),
+    stream_privacy_style:           cfgVal("stream_privacy_style"),
+    privacy_mosaic_cell:            cfgVal("privacy_mosaic_cell"),
+    privacy_edge_low:               cfgVal("privacy_edge_low"),
+    privacy_edge_high:              cfgVal("privacy_edge_high"),
+    privacy_style_fps:              cfgVal("privacy_style_fps"),
     privacy_unlock_max_seconds:     cfgVal("privacy_unlock_max_seconds"),
     access_pin:                     cfgVal("access_pin"),
     door_auto_capture:              cfgVal("door_auto_capture"),
@@ -3024,6 +3061,13 @@ function syncCfgToSimple() {
     const dst = document.getElementById("pcfg-" + k);
     if (src && dst) dst.checked = src.checked;
   });
+
+  /* 가림 화면 모양(셀렉트): 고급 설정 값을 간단 모드에 반영 */
+  {
+    const src = document.getElementById("cfg-stream_privacy_style");
+    const dst = document.getElementById("pcfg-stream_privacy_style");
+    if (src && dst) dst.value = src.value || "0";
+  }
 
   /* preset levels (reverse-map from current cfg) */
   setPresetLevel("dwell",   detectPresetLevel("dwell"));
