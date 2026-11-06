@@ -811,7 +811,7 @@ details.fallback-block > summary:hover { color: var(--accent); }
 }
 .adv-main-grid {
   display: grid;
-  grid-template-columns: 300px 1fr;
+  grid-template-columns: 1fr 2fr;   /* 카메라 1/3, 설정 2/3 */
   gap: 12px;
   flex: 1; min-height: 0;
 }
@@ -821,23 +821,25 @@ details.fallback-block > summary:hover { color: var(--accent); }
   gap: 10px; min-height: 0; overflow: hidden;
 }
 #adv-stream-slot {
-  flex: 1; min-height: 0;
+  flex: none; min-height: 0;
   display: flex; flex-direction: column;
 }
 #adv-stream-slot .camera-panel {
-  flex: 1; min-height: 180px; max-height: 420px;
+  flex: none; min-height: 0; max-height: none;
+  aspect-ratio: 16 / 9;   /* 영상이 가로형이라 세로로 길 필요가 없다 */
 }
+#adv-stream-slot .camera-panel img { max-height: none; width: 100%; height: 100%; object-fit: contain; }
 #adv-stream-slot .camera-offline { padding: 16px; }
 #adv-stream-slot .camera-offline span:first-child { font-size: 24px !important; }
 .adv-chips-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(108px, 1fr));
-  gap: 6px; flex-shrink: 0;
+  grid-template-columns: repeat(3, 1fr);   /* 6개를 3x2 로 */
+  gap: 8px; flex-shrink: 0;
 }
 .status-chip {
   display: flex; align-items: center; gap: 5px;
-  padding: 7px 9px; border-radius: 10px;
-  font-size: 11px; font-weight: 500;
+  padding: 14px 12px; border-radius: 12px;
+  font-size: 14px; font-weight: 600;
   background: var(--bg);
   box-shadow: -2px -2px 6px var(--sh-light), 2px 2px 6px var(--sh-dark);
   transition: box-shadow .3s; overflow: hidden; cursor: default;
@@ -850,10 +852,11 @@ details.fallback-block > summary:hover { color: var(--accent); }
   box-shadow: -2px -2px 6px var(--sh-light), 2px 2px 6px var(--sh-dark),
               inset 0 0 0 1.5px rgba(232,68,90,.5);
 }
-.chip-icon { font-size: 14px; flex-shrink: 0; }
+.chip-icon { font-size: 20px; flex-shrink: 0; }
+.chip-icon svg { width: 20px; height: 20px; }
 .chip-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chip-count {
-  font-variant-numeric: tabular-nums; font-size: 10px; font-weight: 700;
+  font-variant-numeric: tabular-nums; font-size: 14px; font-weight: 700;
   color: var(--muted);
   background: var(--bg);
   box-shadow: inset -1px -1px 2px var(--sh-light), inset 1px 1px 2px var(--sh-dark);
@@ -940,10 +943,6 @@ details.dev-accordion[open] > summary { color: var(--red) !important; }
       </div>
       <img id="stream-img" src="" alt="카메라 피드" style="display:none"
            onerror="if(window.onStreamError)onStreamError()" onload="if(window.onStreamLoad)onStreamLoad()">
-      <div class="obj-hide-bar" style="position:absolute;right:8px;bottom:8px;display:flex;gap:6px;z-index:3">
-        <button class="pb-btn" id="obj-hide-btn" onclick="objHideToggle()">박스 지우기</button>
-        <button class="pb-btn ghost" onclick="objHideClear()">삭제 해제</button>
-      </div>
       <!-- 개인정보 보호 모드 배너 — /status 폴링으로 갱신. 카메라 패널과 함께 easy/adv 슬롯을 이동 -->
       <div class="privacy-banner" id="privacy-banner">
         <span><svg class="i"><use href="#i-lock"/></svg> 보호 모드 — 감지 결과만 표시</span>
@@ -1580,6 +1579,11 @@ details.dev-accordion[open] > summary { color: var(--red) !important; }
       <details class="neu-accordion">
         <summary>Tier 2 바운딩 박스</summary>
         <div class="accordion-body">
+          <div class="setting-row">
+            <div><div class="setting-label">박스 지우기</div></div>
+            <label class="toggle"><input type="checkbox" id="obj-hide-toggle" onchange="objHideMode(this.checked)"><span class="toggle-slider"></span></label>
+            <button class="pb-btn ghost" onclick="objHideClear()">모두 복원</button>
+          </div>
           <div class="setting-row">
             <div><div class="setting-label">동물 (고양이·강아지)</div></div>
             <label class="toggle"><input type="checkbox" id="cfg-show_animal" checked><span class="toggle-slider"></span></label>
@@ -3572,13 +3576,14 @@ setInterval(async () => {
   } catch (_) {}
 }, 30000);
 
-/* ── Tier 2 박스 수동 삭제: 버튼을 켠 뒤 영상의 박스를 누르면 그 박스(와 같은 자리의 이후 검출)를 지운다 ── */
+/* ── Tier 2 박스 수동 삭제: 설정의 "박스 지우기"를 켜 두면 영상의 박스를 눌러 연속으로 지울 수 있다.
+   켜진 동안은 영상에 십자 커서와 빨간 테두리가 보인다. 전체 복원은 같은 줄의 "모두 복원". ── */
 let objHideOn = false;
-function objHideToggle() {
-  objHideOn = !objHideOn;
-  const b = document.getElementById("obj-hide-btn"), img = document.getElementById("stream-img");
-  b.textContent = objHideOn ? "지울 박스를 누르세요" : "박스 지우기";
-  img.style.cursor = objHideOn ? "crosshair" : "";
+function objHideMode(on) {
+  objHideOn = on;
+  const c = document.getElementById("stream-container");
+  c.style.outline = on ? "3px solid var(--red)" : "";
+  document.getElementById("stream-img").style.cursor = on ? "crosshair" : "";
 }
 async function objHidePost(query) {
   try { await authFetch(`http://${location.hostname}:${getStreamPort()}/obj/hide?${query}`, { method: "POST" }); } catch (_) {}
@@ -3588,7 +3593,6 @@ document.getElementById("stream-img").addEventListener("click", (e) => {
   if (!objHideOn) return;
   const r = e.currentTarget.getBoundingClientRect();
   objHidePost(`x=${((e.clientX - r.left) / r.width).toFixed(4)}&y=${((e.clientY - r.top) / r.height).toFixed(4)}`);
-  objHideToggle();
 });
 </script>
 </body>
