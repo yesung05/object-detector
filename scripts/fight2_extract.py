@@ -6,7 +6,7 @@
   2) 프레임마다 가장 가까운 두 사람을 골라 쌍 외접 박스 기준으로 정규화한 관절 + 쌍 기하를 특징으로 만든다.
   3) 9프레임 창(이동 3)에서 게이트(2인 이상 5프레임 이상 + pair_close>=0.2 가 3프레임 이상)를 통과한 창만 저장한다.
   4) 라벨: 폭행 정답 구간과 50% 이상 겹치면 양성, 폭행이 아닌 클립이거나 폭행 클립의 구간 밖(앞뒤 2초)이면 음성, 그 사이는 제외.
-dev+pool 만 쓴다(test 거부). 정답 관절이 아니라 모델이 낸 검출 관절만 쓴다.
+dev+pool 만 쓴다(test 는 --final-test 로만). 정답 관절이 아니라 모델이 낸 검출 관절만 쓴다.
 
 출력: <work>/windows.npz  (X[N,9,106], y, clip, store, scene, split, cls, w0, gate_close(창 안 최대 pair_close), fscore(창 안 최대 fight_score))
 """
@@ -144,8 +144,11 @@ def main():
     ap.add_argument("--jobs", type=int, default=4)
     ap.add_argument("--threads", type=int, default=2)
     ap.add_argument("--fps", type=float, default=3.0)
+    ap.add_argument("--final-test", action="store_true",
+                    help="test 분할만 처리한다(최종 모델·임계값을 고정한 뒤 한 번만 쓴다). 기본은 dev+pool")
     a = ap.parse_args()
-    rows = [r for r in csv.DictReader(open(a.index, encoding="utf-8-sig")) if r["split"] in ("dev", "pool")]
+    splits = ("test",) if a.final_test else ("dev", "pool")
+    rows = [r for r in csv.DictReader(open(a.index, encoding="utf-8-sig")) if r["split"] in splits]
     fights = [r for r in rows if r["class_code"] == "13"]
     rng = random.Random(0)
     negs = []
