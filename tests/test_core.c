@@ -1038,6 +1038,38 @@ static void test_fall_false_positive_regressions(void) {
     }
 }
 
+/* fall_hold_max_misses: 누운 사람 9관측(100~108초, hold 5초) 중 일부를 결손(점수 .29)이나 직립으로 바꾼다.
+ * miss_a/miss_b: 결손으로 만들 관측 번호(-1 이면 없음), upright_at: 직립으로 만들 관측 번호. */
+static int fall_miss_scenario(int max_misses, int miss_a, int miss_b, int upright_at) {
+    TrackList tl; RulesEngine re = {0}; EventLog log; char error[128] = {0};
+    RulesConfig cfg = {3600, 300, 5, 1.8f, 2.2f};
+    int fired, j;
+    cfg.fall_hold_max_misses = max_misses;
+    event_log_open(&log, ":memory:", LOG_INFO, 0);
+    tracks_init(&tl, 16, .3f, 5, 1800, .45f, error, sizeof(error));
+    rules_init(&re, 16, &cfg, error, sizeof(error));
+    tl.count = 1; tl.items[0].id = 1; tl.items[0].active = 1;
+    fall_seed_upright(&re, &tl, &log);
+    for (j = 0; j < 9; ++j) {
+        Track *t = &tl.items[0]; double now = 100.0 + j;
+        t->box = fall_test_pose(j == upright_at); t->last_seen = now; t->match_score = .9f;
+        if (j == miss_a || j == miss_b) t->box.score = t->match_score = .29f;
+        rules_evaluate(&re, &tl, now, &log);
+    }
+    fired = count_events(&log, "person_fallen");
+    rules_destroy(&re); tracks_destroy(&tl); event_log_close(&log);
+    return fired;
+}
+
+static void test_fall_hold_tolerates_missed_observations(void) {
+    EXPECT_INT_EQ(fall_miss_scenario(0, -1, -1, -1), 1); /* 결손 없음 → 발화 */
+    EXPECT_INT_EQ(fall_miss_scenario(0, 3, -1, -1), 0);  /* 이전 동작: 결손 1번에 hold 재시작 → 4초뿐 */
+    EXPECT_INT_EQ(fall_miss_scenario(1, 3, -1, -1), 1);  /* 1번 허용 → hold 유지 → 발화 */
+    EXPECT_INT_EQ(fall_miss_scenario(1, 3, 4, -1), 0);   /* 연속 2번은 허용치 초과 → 재시작 */
+    EXPECT_INT_EQ(fall_miss_scenario(1, 3, 5, -1), 1);   /* 떨어진 결손 2번은 각각 1번씩 → 유지 */
+    EXPECT_INT_EQ(fall_miss_scenario(3, -1, -1, 3), 0);  /* 직립은 결손이 아니라 반증 → 즉시 재시작 */
+}
+
 /* ── 쓰러짐 보강: 트랙 인계와 넓은 박스 증거(둘 다 config 로 켜는 기능, 기본 꺼짐) ───────────── */
 
 /* 서 있던 트랙 1 이 쓰러지며 매칭이 끊기고, 같은 자리에 누운 사람이 새 트랙 2 로 잡힌 상황을 만든다. */
@@ -2115,6 +2147,31 @@ static void test_rules_obj_external_food(void) {
     tracks_destroy(&tl);
     detection_list_destroy(&objs);
     event_log_close(&elog);
+}
+
+/* 큰 의자 위 작은 고양이: IoU 는 0.01 이라 IoU 만으로는 발화하지 않았다. 포함률(1.0)로 발화해야 한다.
+ * 의자 옆에 붙어 선 동물(겹침이 동물 면적의 10%)은 여전히 발화하지 않아야 한다. */
+static int animal_chair_case(float ax1, float ay1, float ax2, float ay2) {
+    TrackList tl; RulesEngine re; EventLog elog; DetectionList objs; char error[128] = {0}; int latched;
+    RulesConfig rcfg = {3600.0, 300.0, 5.0, 1.8f, 2.2f, 0, 0, 0, 0, 0, 0.15f, 1};
+    event_log_open(&elog, ":memory:", LOG_INFO, 0);
+    tracks_init(&tl, 16, 0.3f, 5, 1800.0, 0.45f, error, sizeof(error));
+    rules_init(&re, 16, &rcfg, error, sizeof(error));
+    detection_list_init(&objs, 8);
+    objs.count = 2;
+    memset(objs.items, 0, 2 * sizeof(objs.items[0]));
+    objs.items[0].x2 = 200; objs.items[0].y2 = 200; objs.items[0].score = .9f; objs.items[0].class_id = 14;
+    objs.items[1].x1 = ax1; objs.items[1].y1 = ay1; objs.items[1].x2 = ax2; objs.items[1].y2 = ay2;
+    objs.items[1].score = .85f; objs.items[1].class_id = 0;
+    rules_evaluate_objects(&re, &objs, &tl, 100.0, &elog);
+    latched = re.obj_rule[OBJ_RULE_ANIMAL_CHAIR].latched;
+    rules_destroy(&re); tracks_destroy(&tl); detection_list_destroy(&objs); event_log_close(&elog);
+    return latched;
+}
+
+static void test_rules_animal_containment(void) {
+    EXPECT_INT_EQ(animal_chair_case(90, 90, 110, 110), 1);   /* 작은 고양이가 의자 박스 안 */
+    EXPECT_INT_EQ(animal_chair_case(190, 0, 290, 100), 0);   /* 옆에 선 동물: 겹침 10% */
 }
 
 /* 동물(cat=0)과 의자(OBJ_CHAIR=14) bbox가 충분히 겹치면 animal_on_chair 발화 */
@@ -4410,6 +4467,7 @@ int main(void) {
     RUN_TEST(test_fall_handoff_ignores_matched_track);
     RUN_TEST(test_fall_wide_box_evidence);
     RUN_TEST(test_fall_false_positive_regressions);
+    RUN_TEST(test_fall_hold_tolerates_missed_observations);
     RUN_TEST(test_rules_fall_requires_hold);
     RUN_TEST(test_rules_unordered_seated);
     RUN_TEST(test_rules_unordered_suppressed_by_probable_order);
@@ -4438,6 +4496,7 @@ int main(void) {
     RUN_TEST(test_rules_obj_external_requires_person);
     RUN_TEST(test_rules_obj_external_food);
     RUN_TEST(test_rules_obj_animal_on_chair);
+    RUN_TEST(test_rules_animal_containment);
     RUN_TEST(test_rules_obj_animal_on_table);
     RUN_TEST(test_rules_obj_animal_present);
     RUN_TEST(test_rules_obj_no_cup_seated);

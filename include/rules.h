@@ -31,9 +31,9 @@ typedef struct {
     double fall_hold_seconds;         /* 기본 5.0  — 쓰러짐으로 확정하는 최소 지속 시간 */
     /* 쓰러짐 bbox 가로/세로 비 임계값.
      * CCTV 각도(높이·기울기)에 따라 최적값이 달라지므로 설정으로 노출합니다.
-     * 낮은 CCTV 각도에서는 1.3~1.5, 하향 각도에서는 기본값(1.8/2.2)이 적합합니다. */
-    float  fall_aspect_ratio_kp;      /* 기본 1.8 — keypoint 있을 때 */
-    float  fall_aspect_ratio_nokp;    /* 기본 2.2 — keypoint 없을 때 */
+     * 사선 화각(30-45°)에서는 1.3~1.5, 정수직 하향 화각에서는 1.8/2.2 가 적합합니다. */
+    float  fall_aspect_ratio_kp;      /* 기본 1.3 — keypoint 있을 때 */
+    float  fall_aspect_ratio_nokp;    /* 기본 1.6 — keypoint 없을 때 */
     /* 키오스크 ROI: 박스 중심이 이 영역 안에 있으면 ORDERED 로 전환 (결제 프록시) */
     float  roi_kiosk_x, roi_kiosk_y, roi_kiosk_w, roi_kiosk_h;
     int    roi_kiosk_set;
@@ -116,6 +116,11 @@ typedef struct {
     float  fall_wide_ratio;
     /* 넓은 박스 증거에 필요한 최소 관측 점수(실제 입력 점수 기준, 이월된 점수가 아님). */
     float  fall_wide_min_score;
+    /* 쓰러짐 유지(hold) 중 허용하는 연속 결손 관측 수. 결손 = 신뢰도 미달·자세 판정 불가·수평 아님(넓은 박스
+     * 경로는 넓지 않음). 쓰러진 사람은 포즈 점수가 무너져(dev 중앙값 0.33) 3Hz 에서 5초 hold 에 필요한
+     * 연속 15관측 중 한 번만 빠져도 처음부터 다시 셌다. 직립 판정은 결손이 아니라 반증이라 즉시 초기화한다.
+     * 0 = 결손 즉시 초기화(이전 동작). */
+    int    fall_hold_max_misses;
 } RulesConfig;
 
 /*
@@ -173,6 +178,8 @@ typedef struct {
     /* 넓은 박스 증거 누적(fall_wide_ratio). 시각 0 = 미시작. */
     double wide_start;
     unsigned int wide_samples;
+    /* fall_hold_max_misses 용 연속 결손 수(일반 경로, 넓은 박스 경로). 좋은 관측 하나로 0 이 된다. */
+    unsigned int fall_misses, wide_misses;
 } TrackRuleState;
 
 /*
@@ -209,6 +216,9 @@ void rules_destroy(RulesEngine *re);
 
 /* 실행 중 설정 교체 — 기존 latch 상태는 유지합니다. */
 void rules_update_config(RulesEngine *re, const RulesConfig *config);
+/* 설정 파일에 키가 없을 때의 기본값. main.c 의 config_float fallback 이 이 값을 써야 기본값이 한 곳에 남습니다
+ * (예전엔 main.c 가 1.8/2.2, rules.c 가 1.3/1.6 이라 설정 파일 유무에 따라 쓰러짐 재현율이 달랐습니다). */
+const RulesConfig *rules_default_config(void);
 
 /*
  * 카메라가 gap 초 동안 끊겼다 돌아온 뒤 호출합니다. 진행 중인 쓰러짐 후보를
@@ -237,8 +247,8 @@ void rules_evaluate(RulesEngine *re, TrackList *tl, double now, EventLog *elog);
  * 발화 이벤트:
  *   external_drink     — bottle 감지
  *   external_food      — 음식류(banana..cake) 감지
- *   animal_on_chair    — cat/dog bbox가 chair와 IoU ≥ animal_iou_threshold
- *   animal_on_table    — cat/dog bbox가 dining table과 IoU ≥ animal_iou_threshold
+ *   animal_on_chair    — cat/dog bbox가 chair와 IoU ≥ animal_iou_threshold, 또는 동물 박스의 절반 이상이 chair 안
+ *   animal_on_table    — cat/dog bbox가 dining table과 IoU ≥ animal_iou_threshold, 또는 절반 이상이 table 안
  *   no_cup_seated      — 활성 사람 수 > cup 감지 수 + no_cup_margin
  */
 void rules_evaluate_objects(RulesEngine *re, const DetectionList *objs,

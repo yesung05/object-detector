@@ -14,6 +14,23 @@ static int is_food(int id)     { return id >= OBJ_FOOD_FIRST && id <= OBJ_FOOD_L
  * rules.c 내부에서만 사용하는 별도 구현으로, postprocess.c의
  * intersection_over_union()와 독립적입니다.
  */
+static float obj_iou(const Detection *a, const Detection *b);
+
+/*
+ * 동물이 가구 위에 있는가. IoU 만 쓰면 큰 의자 위의 작은 고양이는 IoU = 면적비라(고양이가 의자 박스의 15% 미만이면)
+ * 한 번도 성립하지 않았다. 그래서 "동물 박스의 절반 이상이 가구 박스 안"(포함률)도 성립으로 본다.
+ * IoU 조건을 남긴 이유: animal_iou_threshold 의 뜻을 바꾸면 매장에 저장된 값이 조용히 다른 기준이 된다.
+ * 포함률 0.5 를 설정으로 빼지 않은 이유: 가구에 반쯤 걸친 것과 옆에 선 것을 가르는 기하 기준이라 매장마다 다를 이유가 없다.
+ */
+#define ANIMAL_CONTAIN_RATIO 0.5f
+static int animal_on_furniture(const Detection *animal, const Detection *furn, float iou_thresh) {
+    float iw = fminf(animal->x2, furn->x2) - fmaxf(animal->x1, furn->x1);
+    float ih = fminf(animal->y2, furn->y2) - fmaxf(animal->y1, furn->y1);
+    float area = (animal->x2 - animal->x1) * (animal->y2 - animal->y1);
+    if (iw <= 0.0f || ih <= 0.0f || area <= 0.0f) return 0;
+    return obj_iou(animal, furn) >= iou_thresh || iw * ih >= ANIMAL_CONTAIN_RATIO * area;
+}
+
 static float obj_iou(const Detection *a, const Detection *b) {
     float left   = a->x1 > b->x1 ? a->x1 : b->x1;
     float top    = a->y1 > b->y1 ? a->y1 : b->y1;
@@ -56,6 +73,8 @@ static const RulesConfig DEFAULT_RULES = {
     300.0,   /* still_seconds */
     0.10f,   /* still_motion_threshold */
 };
+
+const RulesConfig *rules_default_config(void) { return &DEFAULT_RULES; }
 
 int rules_init(RulesEngine *re, size_t capacity, const RulesConfig *config,
                char *error, size_t error_size) {
@@ -160,12 +179,12 @@ static void release_state(RulesEngine *re, int track_id) {
  * 쓰러짐 판정 (개선 버전):
  *
  * keypoint 있는 경우 (pose 모델):
- *   - bbox 가로 > 세로 × 1.8 (기존 1.2보다 엄격)
+ *   - bbox 가로 > 세로 × fall_aspect_ratio_kp (기본 1.3)
  *   - 신뢰 관절(score≥0.4) 3개 이상 + 엉덩이(11·12) 최소 1개 유효해야 std 계산
  *   - 머리·어깨·엉덩이 y 표준편차 / bbox높이 ≤ 0.20 (기존 0.25보다 엄격)
  *
  * keypoint 없는 경우 (detection 전용 모델, 유효 관절 2개 미만, 또는 엉덩이 없음):
- *   - bbox 가로 > 세로 × 2.2 로 훨씬 엄격하게 적용
+ *   - bbox 가로 > 세로 × fall_aspect_ratio_nokp (기본 1.6) 로 더 엄격하게 적용
  *   - 앉아서 팔 벌리거나 숙인 자세(1.2x 수준)는 오감지하지 않음
  *   - 엉덩이 없이 코+어깨만으로 y-std 계산 시 해부학적으로 항상 작은 값이
  *     나와 조건을 거의 항상 통과하므로 이 경로도 폴백으로 처리한다.
@@ -176,8 +195,6 @@ static void release_state(RulesEngine *re, int track_id) {
  */
 #define KP_SCORE_THRESH  0.4f
 #define FALL_STD_THRESH  0.20f   /* 관절 y 분산 비율 상한 */
-#define FALL_RATIO_KP    1.8f    /* keypoint 있을 때 bbox 가로/세로 기준 */
-#define FALL_RATIO_NOKP  2.2f    /* keypoint 없을 때 bbox 가로/세로 기준 */
 #define FALL_MIN_H       30.0f   /* bbox 최소 세로 (px), 이하는 노이즈 */
 #define FALL_MIN_SCORE   0.30f   /* detection 신뢰도 하한 */
 #define FALL_EDGE_PX      2.0f   /* 이 거리 안에서 화면 경계에 닿으면 박스가 잘린 것으로 봄 */
@@ -345,6 +362,21 @@ static int try_fall_handoff(RulesEngine *re, const TrackList *tl, const Track *t
 }
 
 /*
+ * 쓰러짐 hold 중 결손 관측을 허용할지(fall_hold_max_misses). 1 이면 fall_start 를 유지하고 결손 수만 올립니다.
+ * Tier 2 의 K-of-N(obj_rule_observe) 대신 "연속 결손 상한"을 쓴 이유: 쓰러짐은 hold 시간(초)으로 확정하고
+ * 관측 간격이 detect_every·게이트에 따라 달라져 고정 창 N 을 정하기 어렵습니다. 연속 상한은 간격과 무관하게
+ * "잠깐 놓친 것"과 "자세가 바뀐 것"을 가릅니다. 0 이면 결손 수도 0 으로 두고 항상 0 을 반환합니다(이전 동작).
+ */
+static int fall_tolerate_miss(const RulesEngine *re, TrackRuleState *s) {
+    if (s->fall_start > 0 && s->fall_misses < (unsigned)re->config.fall_hold_max_misses) {
+        s->fall_misses++;
+        return 1;
+    }
+    s->fall_misses = 0;
+    return 0;
+}
+
+/*
  * 넓은 박스 증거(fall_wide_ratio): 키포인트 판정이 불가능한 쓰러짐을 박스 모양만으로 잡습니다.
  *
  * 쓰러진 사람은 포즈 모델 점수가 무너져(AI-Hub dev: 정답 구간 중앙값 0.33) 기존 경로가 신뢰도·몸통 자세 게이트에서
@@ -363,14 +395,22 @@ static int fall_wide_step(RulesEngine *re, const TrackList *tl, const Track *t,
     int have_hist, wide;
     char msg[256];
     if (re->config.fall_wide_ratio <= 0.0f || s->fall_latched) return 0;
-    if (quality && pose == 1) { s->wide_start = 0.0; s->wide_samples = 0; return 0; }
+    if (quality && pose == 1) { s->wide_start = 0.0; s->wide_samples = 0; s->wide_misses = 0; return 0; }
     have_hist = s->upright_last > 0 && now - s->upright_last <= 30.0;
     if (!have_hist && s->upright_last <= 0)
         have_hist = try_fall_handoff(re, tl, t, s, now, elog);
     wide = have_hist && h >= FALL_MIN_H && w > h * re->config.fall_wide_ratio &&
            isfinite(t->match_score) && t->match_score >= re->config.fall_wide_min_score &&
            !box_touches_edge(b, re->frame_width, re->frame_height);
-    if (!wide) { s->wide_start = 0.0; s->wide_samples = 0; return 0; }
+    if (!wide) {
+        if (s->wide_start > 0.0 && s->wide_misses < (unsigned)re->config.fall_hold_max_misses) {
+            s->wide_misses++;
+            return 0;
+        }
+        s->wide_start = 0.0; s->wide_samples = 0; s->wide_misses = 0;
+        return 0;
+    }
+    s->wide_misses = 0;
     if (s->wide_start <= 0.0) s->wide_start = now;
     s->wide_samples++;
     if (s->wide_samples >= 3 && now - s->wide_start >= re->config.fall_hold_seconds) {
@@ -477,11 +517,11 @@ void rules_evaluate_objects(RulesEngine *re, const DetectionList *objs,
             for (j = 0; j < objs->count; ++j) {
                 const Detection *furn = &objs->items[j];
                 if (furn->class_id == OBJ_CHAIR &&
-                    obj_iou(obj, furn) >= iou_thresh) {
+                    animal_on_furniture(obj, furn, iou_thresh)) {
                     animal_on_chair = 1;
                 }
                 if (furn->class_id == OBJ_DININGTABLE &&
-                    obj_iou(obj, furn) >= iou_thresh) {
+                    animal_on_furniture(obj, furn, iou_thresh)) {
                     animal_on_table = 1;
                 }
             }
@@ -863,7 +903,8 @@ void rules_evaluate(RulesEngine *re, TrackList *tl, double now, EventLog *elog) 
             if(quality)s->dbg_pose=pose;
             fall_wide_step(re,tl,t,s,quality,pose,now,elog); /* 꺼져 있으면(기본) 즉시 반환 */
             if(!quality || !pose) {
-                s->fall_gate=quality?3:1;s->fall_start=0;s->fall_samples=0;
+                s->fall_gate=quality?3:1;
+                if(!fall_tolerate_miss(re,s)){s->fall_start=0;s->fall_samples=0;}
                 s->upright_start=0;s->upright_samples=0;
                 still_reset(s);
                 continue;
@@ -873,14 +914,19 @@ void rules_evaluate(RulesEngine *re, TrackList *tl, double now, EventLog *elog) 
                 if(s->upright_start<=0)s->upright_start=now;
                 s->upright_samples++;
                 if(s->upright_samples>=3 && now-s->upright_start>=1.0)s->upright_last=now;
-                s->fall_start=0;s->fall_samples=0;s->fall_latched=0;s->fall_gate=0;
+                s->fall_start=0;s->fall_samples=0;s->fall_misses=0;s->fall_latched=0;s->fall_gate=0;
                 continue;
             }
             s->upright_start=0;s->upright_samples=0;
             horizontal=is_horizontal_pose(b,re->config.fall_aspect_ratio_kp,
                 re->config.fall_aspect_ratio_nokp,re->frame_width,re->frame_height);
             s->dbg_horizontal=horizontal;
-            if(!horizontal) {s->fall_start=0;s->fall_samples=0;s->fall_gate=3;continue;}
+            if(!horizontal) {
+                s->fall_gate=3;
+                if(!fall_tolerate_miss(re,s)){s->fall_start=0;s->fall_samples=0;}
+                continue;
+            }
+            s->fall_misses=0; /* 좋은 관측 — 결손 연속이 끊김 */
             if(s->fall_latched) {s->fall_gate=6;continue;}
             if(s->upright_last<=0 && re->config.fall_handoff_seconds>0)
                 try_fall_handoff(re,tl,t,s,now,elog); /* 성공하면 아래 직립 이력 검사를 통과한다 */

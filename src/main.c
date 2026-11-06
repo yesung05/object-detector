@@ -1741,8 +1741,19 @@ static void apply_alert_config(AppContext *app, const Config *cfg) {
     }
 }
 
-/* 쓰러짐 보강 설정. 기본값은 모두 꺼짐(rules.h 의 이유 참조). 시작 시와 hot-reload 양쪽에서 호출합니다. */
-static void apply_fall_extra_config(RulesConfig *rc, const Config *cfg) {
+/* 쓰러짐 설정. 시작 시와 hot-reload 양쪽에서 호출합니다. 기본 임계값은 rules_default_config() 한 곳에서 가져옵니다
+ * (예전엔 여기 fallback 이 1.8/2.2 라 키가 없는 설정 파일 — config/store-launch.ini 등 — 에서 rules.c 기본 1.3/1.6 보다
+ * 엄격하게 돌았고, AI-Hub test 쓰러짐 재현율이 11.1% vs 14.8% 로 갈렸습니다). 보강 기능은 기본 꺼짐(rules.h 이유 참조). */
+static void apply_fall_config(RulesConfig *rc, const Config *cfg) {
+    const RulesConfig *d = rules_default_config();
+    rc->fall_hold_seconds =
+        (double)config_float(cfg, "fall_hold_seconds", (float)d->fall_hold_seconds, 1.0f, 60.0f);
+    rc->fall_aspect_ratio_kp =
+        config_float(cfg, "fall_aspect_ratio_kp", d->fall_aspect_ratio_kp, 0.8f, 5.0f);
+    rc->fall_aspect_ratio_nokp =
+        config_float(cfg, "fall_aspect_ratio_nokp", d->fall_aspect_ratio_nokp, 0.8f, 5.0f);
+    rc->fall_hold_max_misses =
+        (int)config_long(cfg, "fall_hold_max_misses", d->fall_hold_max_misses, 0, 10);
     rc->fall_handoff_seconds =
         (double)config_float(cfg, "fall_handoff_seconds", 0.0f, 0.0f, 30.0f);
     rc->fall_handoff_reach =
@@ -1873,15 +1884,9 @@ static void reload_config(AppContext *app) {
         (double)config_float(&cfg, "dwell_limit_seconds", 3600.0f, 60.0f, 86400.0f);
     rules_cfg.unordered_grace_seconds =
         (double)config_float(&cfg, "unordered_grace_seconds", 300.0f, 0.0f, 3600.0f);
-    rules_cfg.fall_hold_seconds =
-        (double)config_float(&cfg, "fall_hold_seconds", 5.0f, 1.0f, 60.0f);
-    rules_cfg.fall_aspect_ratio_kp =
-        config_float(&cfg, "fall_aspect_ratio_kp", 1.8f, 0.8f, 5.0f);
-    rules_cfg.fall_aspect_ratio_nokp =
-        config_float(&cfg, "fall_aspect_ratio_nokp", 2.2f, 0.8f, 5.0f);
     apply_object_rule_config(&rules_cfg, &cfg);
     apply_vanish_config(&rules_cfg, &cfg);
-    apply_fall_extra_config(&rules_cfg, &cfg);
+    apply_fall_config(&rules_cfg, &cfg);
     apply_alert_config(app, &cfg);
     apply_fight_config(app, &cfg);
     apply_roi_kiosk(&rules_cfg, &cfg);
@@ -2112,7 +2117,16 @@ static void table_mapping_step(AppContext *app,RgbFrame *frame,double now) {
     if(surface_config_read(app->surface_config_path,&old,err,sizeof(err))||
        old.revision!=app->table_mapping_revision||old.count||!old.automatic)return;
     /* Runs independently of person motion gating; an empty room still maps. */
-    if(detector_run(app->obj_detector,frame->data,frame->width,frame->height,frame->stride,&app->surface_detections,err,sizeof(err)))return;
+    /* 감지기 컷이 object_confidence(기본 0.30)라 table_confidence(0.28)보다 낮은 식탁 박스는 감지기에서 이미
+     * 버려졌다(현장 식탁 점수 중앙값 0.28 → 절반 손실). 이 실행의 결과는 table_mapper 만 쓰고 다음 실행이 덮어쓰므로,
+     * 이 한 번만 컷을 낮췄다가 되돌린다. 다른 Tier 2 소비자(룰·표면 감시)에는 낮은 점수 박스가 가지 않는다. */
+    {
+        int rc;
+        detector_set_confidence(app->obj_detector,fminf(app->table_confidence,app->object_confidence));
+        rc=detector_run(app->obj_detector,frame->data,frame->width,frame->height,frame->stride,&app->surface_detections,err,sizeof(err));
+        detector_set_confidence(app->obj_detector,app->object_confidence);
+        if(rc)return;
+    }
     record_tier2_run(app);
     table_mapper_update(&app->table_mapper,&app->surface_detections,frame->width,frame->height,now,app->table_confidence);
     {   /* 진행 로그: 60초마다. 정체(30분 넘게 등록 없음)는 원인 힌트와 함께 1시간마다 WARN. */
@@ -3218,7 +3232,7 @@ static int process_frame(RgbFrame *frame, void *opaque,
         st.door_band_ratio=app->door.band_ratio;
         st.door_roi_auto=app->door_roi_auto;st.door_map_samples=app->door_mapper.samples;
         st.person_confidence=app->person_confidence;st.object_confidence=app->object_confidence;
-        st.new_person_confidence=app->tracks.new_track_min_score;st.table_confidence=fmaxf(app->table_confidence,app->object_confidence);
+        st.new_person_confidence=app->tracks.new_track_min_score;st.table_confidence=app->table_confidence;
         st.replay_active=app->replay.ring!=NULL;st.replay_full=app->replay.full;st.replay_frames=app->replay.written;st.replay_errors=app->replay.errors;st.replay_bytes=app->replay.bytes;st.replay_write_ms=app->replay.write_ms;
         st.probable_orders=0;
         for(size_t oi=0;oi<app->tracks.count;oi++)
@@ -3674,12 +3688,6 @@ int main(int argc, char **argv) {
             (double)config_float(&cfg, "dwell_limit_seconds",  3600.0f, 60.0f, 86400.0f);
         rules_cfg.unordered_grace_seconds =
             (double)config_float(&cfg, "unordered_grace_seconds", 300.0f, 0.0f, 3600.0f);
-        rules_cfg.fall_hold_seconds =
-            (double)config_float(&cfg, "fall_hold_seconds", 5.0f, 1.0f, 60.0f);
-        rules_cfg.fall_aspect_ratio_kp =
-            config_float(&cfg, "fall_aspect_ratio_kp", 1.8f, 0.8f, 5.0f);
-        rules_cfg.fall_aspect_ratio_nokp =
-            config_float(&cfg, "fall_aspect_ratio_nokp", 2.2f, 0.8f, 5.0f);
         app.motion_gate_enabled   =
             (int)config_long(&cfg, "motion_gate", args.motion_gate, 0, 1);
         app.motion_ratio_threshold =
@@ -3690,7 +3698,7 @@ int main(int argc, char **argv) {
         apply_camera_health_config(&app, &cfg);
         apply_object_rule_config(&rules_cfg, &cfg);
         apply_vanish_config(&rules_cfg, &cfg);
-        apply_fall_extra_config(&rules_cfg, &cfg);
+        apply_fall_config(&rules_cfg, &cfg);
         apply_alert_config(&app, &cfg);
         apply_fight_config(&app, &cfg);
         apply_roi_kiosk(&rules_cfg, &cfg);
