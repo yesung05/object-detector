@@ -50,6 +50,14 @@ static int g_locks_ready;
 static char g_surface_status[32768] = "{\"enabled\":false,\"surfaces\":[]}";
 static char g_surface_capture[40];
 static int g_surface_empty;
+/* 박스 수동 삭제 우편함: 클라이언트 스레드가 g_lock 아래에서 쓰고 main 스레드가 꺼낸다.
+ * 0=없음 1=좌표 2=전체 해제. 좌표는 프레임 기준 0~1 정규화. */
+static int g_obj_hide_req;static float g_obj_hide_x,g_obj_hide_y;
+int stream_obj_hide_request(float *x,float *y){
+    int r;if(!g_running)return 0;
+    EnterCriticalSection(&g_lock);r=g_obj_hide_req;*x=g_obj_hide_x;*y=g_obj_hide_y;g_obj_hide_req=0;
+    LeaveCriticalSection(&g_lock);return r;
+}
 static char g_surface_ack[40];
 static int g_surface_ack_candidate,g_surface_ack_revision,g_surface_ack_version;
 int stream_surface_ack_request(char *id,size_t size,int *candidate,int *revision,int *version) {
@@ -690,6 +698,15 @@ static DWORD WINAPI client_thread(LPVOID arg) {
         char copy[32768];
         EnterCriticalSection(&g_lock);memcpy(copy,g_surface_status,sizeof(copy));LeaveCriticalSection(&g_lock);
         send_json(s,200,copy);
+    } else if (strcmp(url,"/obj/hide")==0 && is_post) {
+        /* 정적 배경의 오탐 가구 박스를 점주가 눌러 지운다. x,y 는 0~1 정규화(범위 밖은 거부). */
+        const char *px=strstr(qs,"x="),*py=strstr(qs,"y=");
+        if(strstr(qs,"clear=1")){EnterCriticalSection(&g_lock);g_obj_hide_req=2;LeaveCriticalSection(&g_lock);
+            access_log(0,"obj/hide clear by %s (%s)",acc.ip,netaccess_tier_name(acc.tier));send_json(s,202,"{\"queued\":true}");}
+        else if(px&&py&&atof(px+2)>=0&&atof(px+2)<=1&&atof(py+2)>=0&&atof(py+2)<=1){
+            EnterCriticalSection(&g_lock);g_obj_hide_x=(float)atof(px+2);g_obj_hide_y=(float)atof(py+2);g_obj_hide_req=1;LeaveCriticalSection(&g_lock);
+            access_log(0,"obj/hide by %s (%s)",acc.ip,netaccess_tier_name(acc.tier));send_json(s,202,"{\"queued\":true}");}
+        else send_json(s,400,"{\"error\":\"invalid x,y\"}");
     } else if ((!strcmp(url,"/surface/capture")||!strcmp(url,"/surface/ack")) && strcmp(method,"POST")==0) {
         char id[40]={0};int k=0;const char *p=strstr(qs,"id=");
         if(p) {p+=3;while(*p&&*p!='&'&&k<39) {

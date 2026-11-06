@@ -66,6 +66,8 @@ int  stream_start(int port, const char *data_dir);
 /* Snapshot mailbox: copied under stream lock; monitor runs on processing thread. */
 void stream_surface_status(const char *json);
 int stream_surface_capture_request(char *id, size_t size, int *empty);
+/* 박스 수동 삭제: 0=요청 없음, 1=좌표(x,y 정규화), 2=전체 해제 */
+int stream_obj_hide_request(float *x, float *y);
 int stream_surface_ack_request(char *id, size_t size, int *candidate, int *revision, int *version);
 
 /*
@@ -151,6 +153,7 @@ static inline int stream_surface_capture_request(char *id, size_t size, int *emp
 static inline int stream_surface_ack_request(char *id, size_t size, int *candidate, int *revision, int *version) {
     (void)id; (void)size; (void)candidate; (void)revision; (void)version; return 0;
 }
+static inline int stream_obj_hide_request(float *x, float *y) { (void)x; (void)y; return 0; }
 static inline int  stream_client_count(void) { return 0; }
 static inline void stream_set_door_state(int state) { (void)state; }
 static inline void stream_set_door_enabled(int enabled) { (void)enabled; }

@@ -940,6 +940,10 @@ details.dev-accordion[open] > summary { color: var(--red) !important; }
       </div>
       <img id="stream-img" src="" alt="카메라 피드" style="display:none"
            onerror="if(window.onStreamError)onStreamError()" onload="if(window.onStreamLoad)onStreamLoad()">
+      <div class="obj-hide-bar" style="position:absolute;right:8px;bottom:8px;display:flex;gap:6px;z-index:3">
+        <button class="pb-btn" id="obj-hide-btn" onclick="objHideToggle()">박스 지우기</button>
+        <button class="pb-btn ghost" onclick="objHideClear()">삭제 해제</button>
+      </div>
       <!-- 개인정보 보호 모드 배너 — /status 폴링으로 갱신. 카메라 패널과 함께 easy/adv 슬롯을 이동 -->
       <div class="privacy-banner" id="privacy-banner">
         <span><svg class="i"><use href="#i-lock"/></svg> 보호 모드 — 감지 결과만 표시</span>
@@ -1985,6 +1989,7 @@ const EVENT_MSG = {
   external_food:              { text: "외부 음식 반입 의심",                sev: "warn" },
   animal_on_chair:            { text: "반려동물이 의자 위에 있음",          sev: "warn" },
   animal_on_table:            { text: "반려동물이 테이블 위에 있음",        sev: "warn" },
+  animal_present:             { text: "반려동물이 매장 안에 있음",          sev: "warn" },
   no_cup_seated:              { text: "컵 없이 착석한 손님",                sev: "warn" },
   slot_item_urgent:           { text: "테이블 청결 확인 필요",              sev: "warn" },
   person_fight:               { text: "몸싸움 의심 — 확인 필요",             sev: "danger" },
@@ -2901,7 +2906,7 @@ const ALERT_ORDER = [
   ["person_fallen", "쓰러짐"], ["overstay", "장기 체류"], ["unordered_seated", "미주문 착석"], ["door_open", "문 개방"],
   ["person_unaccounted", "사람 소실"], ["person_unaccounted_residue", "소실+잔류"], ["external_drink", "외부 음료"],
   ["external_food", "외부 음식"], ["no_cup_seated", "컵 없는 착석"], ["animal_on_chair", "동물·의자"],
-  ["animal_on_table", "동물·테이블"], ["residue_trash", "쓰레기"], ["residue_spill", "흘림"], ["residue_unknown", "바닥 변화"],
+  ["animal_on_table", "동물·테이블"], ["animal_present", "동물 출입"], ["residue_trash", "쓰레기"], ["residue_spill", "흘림"], ["residue_unknown", "바닥 변화"],
   ["slot_item_urgent", "테이블 청결"], ["person_fight", "몸싸움"], ["occupancy_exceeded", "인원 초과"], ["person_motionless", "무동작"],
 ];
 /* 출시 프로파일(config/store-launch.ini): 켜는 4종, 그림자 11종, 끔 2종 */
@@ -3566,6 +3571,25 @@ setInterval(async () => {
     }
   } catch (_) {}
 }, 30000);
+
+/* ── Tier 2 박스 수동 삭제: 버튼을 켠 뒤 영상의 박스를 누르면 그 박스(와 같은 자리의 이후 검출)를 지운다 ── */
+let objHideOn = false;
+function objHideToggle() {
+  objHideOn = !objHideOn;
+  const b = document.getElementById("obj-hide-btn"), img = document.getElementById("stream-img");
+  b.textContent = objHideOn ? "지울 박스를 누르세요" : "박스 지우기";
+  img.style.cursor = objHideOn ? "crosshair" : "";
+}
+async function objHidePost(query) {
+  try { await authFetch(`http://${location.hostname}:${getStreamPort()}/obj/hide?${query}`, { method: "POST" }); } catch (_) {}
+}
+function objHideClear() { objHidePost("clear=1"); }
+document.getElementById("stream-img").addEventListener("click", (e) => {
+  if (!objHideOn) return;
+  const r = e.currentTarget.getBoundingClientRect();
+  objHidePost(`x=${((e.clientX - r.left) / r.width).toFixed(4)}&y=${((e.clientY - r.top) / r.height).toFixed(4)}`);
+  objHideToggle();
+});
 </script>
 </body>
 </html>

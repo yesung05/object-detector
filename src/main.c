@@ -142,6 +142,14 @@ typedef struct {
     char alert_summary[400]; /* 마지막으로 로그에 낸 알림 모드 요약(바뀔 때만 다시 로그) */
     int              detect_every_obj;  /* Tier 2 실행 간격(프레임), 기본 90 */
     int              tier2_always;      /* 1=surface 활성 중에도 Tier 2 강제 실행 (개발용) */
+    int              animal_present_on; /* alert_animal_present 가 on|shadow — 전체 프레임 Tier 2 필요 */
+    double           obj_box_ttl;       /* Tier 2 박스 표시 수명(초), 기본 10 */
+    float            obj_hide[16][5];   /* 수동 삭제 목록: class,x1,y1,x2,y2(정규화) — 값 소유 */
+    int              obj_hide_count;
+    char             obj_hide_path[600];
+    int              animal_crop;       /* 1=등록된 테이블 영역을 잘라 Tier 2 추가 실행(기본 1) */
+    int              table_box_count;   /* 값 소유 — surface_reload 가 갱신, 포인터 없음 */
+    float            table_box[SURFACE_MAX][4]; /* 정규화 x1,y1,x2,y2 (여유 포함) */
     int64_t          obj_inference_runs;
     /* 이상 탐지 모듈 */
     GrayBuf      gray;           /* 현재 프레임 그레이스케일 (지연 초기화) */
@@ -1623,7 +1631,7 @@ static const char *const ALERT_TOKENS[] = {
     "overstay", "unordered_seated", "person_fallen", "person_unaccounted", "person_unaccounted_residue",
     "occupancy_exceeded", "person_motionless", "external_drink", "external_food", "animal_on_chair",
     "animal_on_table", "no_cup_seated", "residue_trash", "residue_spill", "residue_unknown", "door_open",
-    "slot_item_urgent", "person_fight",
+    "slot_item_urgent", "person_fight", "animal_present",
 };
 /* 폭행 2단계 설정. 시작 시와 hot-reload 양쪽에서 호출한다.
  *   fight_enabled (0|1, 기본 0)        끄면 모델도 해제한다
@@ -1704,7 +1712,15 @@ static void apply_alert_config(AppContext *app, const Config *cfg) {
     for (i = 0; i < sizeof(ALERT_TOKENS) / sizeof(ALERT_TOKENS[0]); ++i) {
         const char *v = NULL;
         snprintf(key, sizeof(key), "alert_%s", ALERT_TOKENS[i]);
-        if (config_get(cfg, key, &v) != 0 || !v) continue;
+        /* animal_present 는 "동물 출입 금지" 매장만 쓰는 정책이라 키가 없으면 끈다. 기본 on 이면 반려동물
+         * 허용 매장에서 첫날부터 알림이 쏟아진다. 켜져 있을 때만 전체 프레임 Tier 2 도 돌린다(아래 플래그). */
+        int is_any = strcmp(ALERT_TOKENS[i], "animal_present") == 0;
+        if (is_any) app->animal_present_on = 0;
+        if (config_get(cfg, key, &v) != 0 || !v) {
+            if (is_any) event_log_set_alert_mode(ALERT_TOKENS[i], ALERT_OFF);
+            continue;
+        }
+        if (is_any && strcmp(v, "off") != 0) app->animal_present_on = 1;
         if (strcmp(v, "shadow") == 0) event_log_set_alert_mode(ALERT_TOKENS[i], ALERT_SHADOW);
         else if (strcmp(v, "off") == 0) event_log_set_alert_mode(ALERT_TOKENS[i], ALERT_OFF);
         else if (strcmp(v, "on") != 0) {
@@ -1878,6 +1894,10 @@ static void reload_config(AppContext *app) {
     /* tier2_always: surface 활성 중에도 Tier 2를 강제 실행합니다.
      * 운영 환경에서는 0(기본값)으로 두어 CPU 부하를 아낍니다. */
     app->tier2_always = (int)config_long(&cfg, "tier2_always", 0, 0, 1);
+    /* animal_crop: 테이블 영역 크롭 Tier 2. 기본 1 — 전체 프레임 320 입력에서 놓치는 작은 동물을 잡는
+     * 가장 싼 방법이다(주기당 크롭 수만큼 추론 추가). CPU가 빠듯하면 0으로 끈다. */
+    app->animal_crop = (int)config_long(&cfg, "animal_crop", 1, 0, 1);
+    app->obj_box_ttl = (double)config_long(&cfg, "obj_box_ttl_seconds", 10, 1, 3600);
 
     apply_residue_config(app, &cfg);
     apply_slot_config(app, &cfg);
@@ -1969,6 +1989,22 @@ static void surface_reload(AppContext *app, double now) {
     if(surface_config_read(app->surface_config_path,&config,err,sizeof(err))==0&&config.revision!=app->surface_revision) {
         if(surface_monitor_apply(app->surface_monitor,&config,err,sizeof(err))==0){
             app->surface_revision=config.revision;
+            {   /* 테이블 폴리곤의 외접 상자 — 고양이처럼 작은 물체는 전체 프레임 320 입력에서 22px 로 줄어
+                   놓치므로, 이 상자만 잘라 Tier 2 에 따로 넣는다(tier2_table_crops). */
+                int si,pi;app->table_box_count=0;
+                for(si=0;si<config.count&&si<SURFACE_MAX;si++){
+                    const SurfaceDefinition *sd=&config.surfaces[si];float *b;
+                    if(sd->type!=1||sd->polygon.count<3)continue;
+                    b=app->table_box[app->table_box_count];b[0]=b[1]=1;b[2]=b[3]=0;
+                    for(pi=0;pi<sd->polygon.count;pi++){
+                        if(sd->polygon.points[pi].x<b[0])b[0]=sd->polygon.points[pi].x;
+                        if(sd->polygon.points[pi].y<b[1])b[1]=sd->polygon.points[pi].y;
+                        if(sd->polygon.points[pi].x>b[2])b[2]=sd->polygon.points[pi].x;
+                        if(sd->polygon.points[pi].y>b[3])b[3]=sd->polygon.points[pi].y;}
+                    /* 위쪽을 더 넓힌다: 테이블 위에 앉은 동물은 상판 위로 솟아 있다 */
+                    b[0]=fmaxf(0,b[0]-.03f);b[2]=fminf(1,b[2]+.03f);b[1]=fmaxf(0,b[1]-.10f);b[3]=fminf(1,b[3]+.03f);
+                    app->table_box_count++;}
+            }
             app->table_mapping=config.automatic && config.count==0;
             app->table_mapping_revision=config.revision;
             memset(&app->table_mapper,0,sizeof(app->table_mapper));
@@ -1983,6 +2019,91 @@ static void record_tier2_run(AppContext *app) {
     app->obj_detector_stats.preprocess_seconds+=rs.preprocess_seconds;
     app->obj_detector_stats.inference_seconds+=rs.inference_seconds;
     app->obj_detector_stats.postprocess_seconds+=rs.postprocess_seconds;
+}
+/* 등록된 테이블 영역을 잘라 Tier 2 를 돌려 동물만 obj_detections 에 더한다.
+ * 같은 320 입력이라도 영역이 프레임의 일부라 고양이가 3~4배 크게 들어간다. 동물이 테이블 상자 안에
+ * 있으면 테이블 박스도 합성해 넣어 기존 animal_on_table IoU 룰이 그대로 동작하게 한다(크롭 안에서
+ * 모델이 테이블을 못 알아봐도 성립). 호출자가 목록을 비우거나 전체 프레임 결과를 먼저 채운다. */
+static void tier2_table_crops(AppContext *app,RgbFrame *frame) {
+    int i;char err[256];
+    for(i=0;i<app->table_box_count;i++){
+        const float *b=app->table_box[i];
+        int x=(int)(b[0]*frame->width),y=(int)(b[1]*frame->height);
+        int w=(int)(b[2]*frame->width)-x,h=(int)(b[3]*frame->height)-y;
+        size_t k;int has_animal=0;
+        if(w<32||h<32)continue;
+        if(detector_run(app->obj_detector,frame->data+(size_t)y*frame->stride+(size_t)x*3,w,h,frame->stride,
+                        &app->surface_detections,err,sizeof(err)))continue;
+        record_tier2_run(app);
+        for(k=0;k<app->surface_detections.count&&app->obj_detections.count<app->obj_detections.capacity;k++){
+            Detection d=app->surface_detections.items[k];
+            if(d.class_id!=OBJ_CAT&&d.class_id!=OBJ_DOG)continue;
+            d.x1+=(float)x;d.x2+=(float)x;d.y1+=(float)y;d.y2+=(float)y;
+            app->obj_detections.items[app->obj_detections.count++]=d;has_animal=1;
+        }
+        if(has_animal&&app->obj_detections.count<app->obj_detections.capacity){
+            Detection t;memset(&t,0,sizeof(t));
+            t.x1=b[0]*frame->width;t.y1=b[1]*frame->height;t.x2=b[2]*frame->width;t.y2=b[3]*frame->height;
+            t.score=1.0f;t.class_id=OBJ_DININGTABLE;
+            app->obj_detections.items[app->obj_detections.count++]=t;
+        }
+    }
+}
+/* ── Tier 2 박스 수동 삭제 ────────────────────────────────────────────────
+ * 정적 배경(옷더미→CHAIR 등)의 오탐은 같은 자리에서 반복되므로 시간 만료(obj_box_ttl)로는 안 사라진다.
+ * 점주가 클릭한 박스의 (클래스, 위치)를 기억해 같은 클래스·IoU 0.4 이상인 이후 검출을 버린다.
+ * 위치 기반이라 재시작 후에도 유지되도록 obj_hide.txt 에 저장한다(줄당 "class x1 y1 x2 y2"). */
+static void obj_hide_save(const AppContext *app) {
+    FILE *f;int i;
+    if(!app->obj_hide_path[0])return;
+    f=fopen(app->obj_hide_path,"w");if(!f)return;  /* 저장 실패해도 메모리 목록은 유효 */
+    for(i=0;i<app->obj_hide_count;i++)
+        fprintf(f,"%d %.5f %.5f %.5f %.5f\n",(int)app->obj_hide[i][0],app->obj_hide[i][1],app->obj_hide[i][2],app->obj_hide[i][3],app->obj_hide[i][4]);
+    fclose(f);
+}
+static void obj_hide_load(AppContext *app) {
+    FILE *f;int c;float a,b,d,e;
+    app->obj_hide_count=0;if(!app->obj_hide_path[0])return;
+    f=fopen(app->obj_hide_path,"r");if(!f)return;
+    while(app->obj_hide_count<16&&fscanf(f,"%d %f %f %f %f",&c,&a,&b,&d,&e)==5){
+        float *h=app->obj_hide[app->obj_hide_count++];h[0]=(float)c;h[1]=a;h[2]=b;h[3]=d;h[4]=e;}
+    fclose(f);
+}
+static int obj_hide_match(const AppContext *app,const Detection *d,int w,int h) {
+    int i;float bx1=d->x1/w,by1=d->y1/h,bx2=d->x2/w,by2=d->y2/h;
+    for(i=0;i<app->obj_hide_count;i++){
+        const float *r=app->obj_hide[i];float ix1,iy1,ix2,iy2,inter,uni;
+        if((int)r[0]!=d->class_id)continue;
+        ix1=fmaxf(bx1,r[1]);iy1=fmaxf(by1,r[2]);ix2=fminf(bx2,r[3]);iy2=fminf(by2,r[4]);
+        inter=fmaxf(0,ix2-ix1)*fmaxf(0,iy2-iy1);
+        uni=(bx2-bx1)*(by2-by1)+(r[3]-r[1])*(r[4]-r[2])-inter;
+        if(uni>0&&inter/uni>=0.4f)return 1;
+    }
+    return 0;
+}
+static void obj_hide_filter(AppContext *app,const RgbFrame *frame) {
+    size_t i,k=0;DetectionList *l=&app->obj_detections;
+    if(!app->obj_hide_count)return;
+    for(i=0;i<l->count;i++)if(!obj_hide_match(app,&l->items[i],frame->width,frame->height))l->items[k++]=l->items[i];
+    l->count=k;
+}
+/* 대시보드 클릭 요청 처리: 점이 들어간 모든 박스를 지우고 목록에 기억한다. */
+static void obj_hide_poll(AppContext *app,const RgbFrame *frame) {
+    float x,y;int r=stream_obj_hide_request(&x,&y);size_t i,k=0;DetectionList *l=&app->obj_detections;char m[160];
+    if(!r)return;
+    if(r==2){app->obj_hide_count=0;obj_hide_save(app);
+        event_log_write(&app->event_log,LOG_INFO,"access","obj_hide cleared — 수동 삭제 목록을 비웠습니다");return;}
+    for(i=0;i<l->count;i++){
+        Detection *d=&l->items[i];
+        if(x>=d->x1/frame->width&&x<=d->x2/frame->width&&y>=d->y1/frame->height&&y<=d->y2/frame->height){
+            if(app->obj_hide_count<16){float *h=app->obj_hide[app->obj_hide_count++];
+                h[0]=(float)d->class_id;h[1]=d->x1/frame->width;h[2]=d->y1/frame->height;h[3]=d->x2/frame->width;h[4]=d->y2/frame->height;}
+            snprintf(m,sizeof(m),"obj_hide class=%d bbox=%.3f,%.3f,%.3f,%.3f total=%d — 점주가 박스를 수동 삭제",
+                     d->class_id,d->x1/frame->width,d->y1/frame->height,d->x2/frame->width,d->y2/frame->height,app->obj_hide_count);
+            event_log_write(&app->event_log,LOG_INFO,"access",m);
+        }else l->items[k++]=*d;
+    }
+    l->count=k;obj_hide_save(app);
 }
 static void table_mapping_step(AppContext *app,RgbFrame *frame,double now) {
     char json[16384],err[256];SurfaceConfig old,next,latest;int pos,count=0,i,j,kept[16];
@@ -2100,6 +2221,13 @@ static int process_frame(RgbFrame *frame, void *opaque,
     double started;
     double now = app->video_clock ? video_clock_now(app, frame)
                                   : platform_monotonic_seconds();
+    /* Tier 2 박스 수명. Tier 2 는 표면 감시 중 건너뛰거나 주기가 길어, 마지막 결과가 영구히 화면에 남아
+     * 정적 배경의 오탐 가구(TABLE/CHAIR)가 사라지지 않았다. 마지막 Tier 2 실행 후 obj_box_ttl 초가
+     * 지나면 비운다. 룰은 실행 시점에만 평가하므로 비워도 판정에는 영향이 없다. */
+    obj_hide_poll(app, frame);
+    if (app->obj_detections.count > 0 && app->replay_tier2_at > 0 &&
+        now - app->replay_tier2_at > app->obj_box_ttl)
+        app->obj_detections.count = 0;
     if (log_rotation_tick(&app->log_rotation, &app->event_log, &app->replay, &app->perf_log, now) > 0)
         app->replay_geometry_revision=-1;
     app->replay.now=now;
@@ -2724,16 +2852,28 @@ static int process_frame(RgbFrame *frame, void *opaque,
          * 않는 버그가 있었다(detect_every=5, detect_every_obj=90 → 45%5==0).
          * 조건을 단순 주기로 변경한다. ORT는 내부적으로 직렬 실행되므로 경합 없음. */
         int tier2_mul = throttle_tier2_multiplier(app->throttle.level);
-        if (app->obj_detector && tier2_mul > 0 &&
-                (app->tier2_always || !surface_monitor_enabled(app->surface_monitor))) {
+        /* 표면 감시가 켜져 있으면 전체 프레임 Tier 2 는 건너뛰던 것이 기존 정책(CPU 절감).
+         * 대신 동물 정책이 필요한 경우만 예외로 둔다: 출입 금지(animal_present)는 전체 프레임을,
+         * 가구 위 금지는 테이블 크롭만 돌려 비용을 최소화한다. */
+        int full_t2 = app->tier2_always || app->animal_present_on ||
+                      !surface_monitor_enabled(app->surface_monitor);
+        int crop_t2 = app->animal_crop && app->table_box_count > 0;
+        if (app->obj_detector && tier2_mul > 0 && (full_t2 || crop_t2)) {
             int run_obj = (frame->index % (app->detect_every_obj * tier2_mul) == 0);
             if (run_obj) {
-                int rc = detector_run(app->obj_detector,
-                                      frame->data, frame->width, frame->height,
-                                      frame->stride,
-                                      &app->obj_detections, error, error_size);
-                if (rc != 0) return -1;
-                record_tier2_run(app);app->replay_tier2_at=now;
+                if (full_t2) {
+                    int rc = detector_run(app->obj_detector,
+                                          frame->data, frame->width, frame->height,
+                                          frame->stride,
+                                          &app->obj_detections, error, error_size);
+                    if (rc != 0) return -1;
+                    record_tier2_run(app);
+                } else {
+                    app->obj_detections.count = 0;  /* 크롭 결과만 담는다 */
+                }
+                if (crop_t2) tier2_table_crops(app, frame);
+                app->replay_tier2_at=now;
+                obj_hide_filter(app, frame);
                 rules_evaluate_objects(&app->rules, &app->obj_detections,
                                        &app->tracks, now, &app->event_log);
             }
@@ -3373,6 +3513,7 @@ int main(int argc, char **argv) {
     app.perf_log_interval = 60.0; /* 60초마다 성능 지표를 별도 perf DB에 기록 */
     app.detect_every = args.detect_every;
     app.detect_every_obj = args.detect_every_obj;
+    app.obj_box_ttl = 10; app.animal_crop = 1;  /* 설정 적용 전 기본값 */
     app.detect_fps_limit = args.detect_fps_limit;
     app.stream_port = args.stream_port;
     app.tracking = args.tracking;
@@ -3933,6 +4074,7 @@ int main(int argc, char **argv) {
         snprintf(app.door_closed_path, sizeof(app.door_closed_path),
                  "%s\\door_closed_reference.raw", data_dir);
         snprintf(app.door_map_path,sizeof(app.door_map_path),"%s/door_location.json",data_dir);
+        snprintf(app.obj_hide_path,sizeof(app.obj_hide_path),"%s/obj_hide.txt",data_dir);obj_hide_load(&app);
         snprintf(app.door_open_path, sizeof(app.door_open_path),
                  "%s\\door_open_reference.raw", data_dir);
         if (door_load(&app.door, app.door_closed_path, app.door_open_path) != 0)

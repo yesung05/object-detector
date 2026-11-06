@@ -450,7 +450,7 @@ void rules_evaluate_objects(RulesEngine *re, const DetectionList *objs,
                              const TrackList *tl, double now, EventLog *elog) {
     size_t i, j;
     int found_bottle = 0, found_food = 0;
-    int animal_on_chair = 0, animal_on_table = 0;
+    int animal_on_chair = 0, animal_on_table = 0, animal_any = 0;
     int cup_count = 0, active_persons = 0;
     char detail[96];
     float iou_thresh;
@@ -473,6 +473,7 @@ void rules_evaluate_objects(RulesEngine *re, const DetectionList *objs,
 
         /* 동물-가구 IoU 체크 */
         if (is_animal(id)) {
+            animal_any = 1;
             for (j = 0; j < objs->count; ++j) {
                 const Detection *furn = &objs->items[j];
                 if (furn->class_id == OBJ_CHAIR &&
@@ -512,6 +513,10 @@ void rules_evaluate_objects(RulesEngine *re, const DetectionList *objs,
         snprintf(detail, sizeof(detail), "iou_thresh=%.2f", iou_thresh);
         obj_rule_log(re, elog, "animal_on_table", detail, &re->obj_rule[OBJ_RULE_ANIMAL_TABLE]);
     }
+    /* 동물 정책 3단계는 알림 모드로 표현한다: 허용=세 알림 off, 가구만 금지=on_chair/on_table on,
+     * 출입 금지=animal_present on. 룰은 항상 계산하고 기록 여부는 alert_<token> 이 정한다. */
+    if (obj_rule_observe(re, &re->obj_rule[OBJ_RULE_ANIMAL_ANY], animal_any, now) == 1)
+        obj_rule_log(re, elog, "animal_present", "", &re->obj_rule[OBJ_RULE_ANIMAL_ANY]);
     if (obj_rule_observe(re, &re->obj_rule[OBJ_RULE_NO_CUP],
                          active_persons > cup_count + margin, now) == 1) {
         snprintf(detail, sizeof(detail), "persons=%d cups=%d margin=%d",

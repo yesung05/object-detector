@@ -129,6 +129,7 @@ typedef enum {
     OBJ_RULE_ANIMAL_CHAIR,
     OBJ_RULE_ANIMAL_TABLE,
     OBJ_RULE_NO_CUP,
+    OBJ_RULE_ANIMAL_ANY,   /* 동물 출입 자체 금지 매장용 — 맨 뒤에 둬서 기존 인덱스를 밀지 않는다 */
     OBJ_RULE_COUNT
 } ObjRuleId;
 

@@ -2192,6 +2192,27 @@ static void test_rules_obj_animal_on_table(void) {
     event_log_close(&elog);
 }
 
+/* 동물만 있고 가구가 없어도 animal_present 가 확정되고, 동물이 없으면 확정되지 않는다 */
+static void test_rules_obj_animal_present(void) {
+    TrackList tl; RulesEngine re; EventLog elog; DetectionList objs;
+    RulesConfig rcfg = {3600.0, 300.0, 5.0, 1.8f, 2.2f, 0, 0, 0, 0, 0, 0.10f, 1};
+    char error[128] = {0};
+    event_log_open(&elog, ":memory:", LOG_INFO, 0);
+    ASSERT_INT_EQ(tracks_init(&tl, 16, 0.3f, 5, 1800.0, 0.45f, error, sizeof(error)), 0);
+    ASSERT_INT_EQ(rules_init(&re, 16, &rcfg, error, sizeof(error)), 0);
+    ASSERT_INT_EQ(detection_list_init(&objs, 8), 0);
+    objs.count = 0;
+    rules_evaluate_objects(&re, &objs, &tl, 100.0, &elog);
+    EXPECT_INT_EQ(re.obj_rule[OBJ_RULE_ANIMAL_ANY].latched, 0);
+    objs.count = 1;
+    memset(&objs.items[0], 0, sizeof(objs.items[0]));
+    objs.items[0].x2 = 50; objs.items[0].y2 = 50; objs.items[0].score = 0.5f;
+    objs.items[0].class_id = 0; /* OBJ_CAT */
+    rules_evaluate_objects(&re, &objs, &tl, 101.0, &elog);
+    EXPECT_INT_EQ(re.obj_rule[OBJ_RULE_ANIMAL_ANY].latched, 1);
+    EXPECT_INT_EQ(re.obj_rule[OBJ_RULE_ANIMAL_TABLE].latched, 0);
+    rules_destroy(&re); tracks_destroy(&tl); detection_list_destroy(&objs); event_log_close(&elog);
+}
 /* 2명 착석 + 컵 0개, margin=1 → 2 > 0+1 → no_cup_seated 발화
  * 2명 착석 + 컵 1개, margin=1 → 2 > 1+1 은 거짓 → 발화 없음 */
 static void test_rules_obj_no_cup_seated(void) {
@@ -4418,6 +4439,7 @@ int main(void) {
     RUN_TEST(test_rules_obj_external_food);
     RUN_TEST(test_rules_obj_animal_on_chair);
     RUN_TEST(test_rules_obj_animal_on_table);
+    RUN_TEST(test_rules_obj_animal_present);
     RUN_TEST(test_rules_obj_no_cup_seated);
     RUN_TEST(test_rules_obj_confirm_filter);
     RUN_TEST(test_rules_occupancy_exceeded);
