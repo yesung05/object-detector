@@ -45,7 +45,7 @@ SOURCES := src/main.c src/postprocess.c src/draw.c src/detector_ort.c src/infer_
            src/gray.c src/log.c src/config.c src/camera_health.c \
            src/tracks.c src/rules.c src/door.c src/model_select.c \
            src/residue.c src/slot_monitor.c src/perf_log.c src/surface_config.c src/surface_monitor.c third_party/sqlite/sqlite3.c \
-           src/calib.c src/capture.c src/reconnect.c
+           src/calib.c src/capture.c src/privacy_style.c src/reconnect.c
 OBJECTS := $(SOURCES:.c=.o)
 TARGET := yolo11-person
 
@@ -98,7 +98,7 @@ TEST_CORE_SRCS := tests/test_core.c src/infer_cache.c src/postprocess.c src/draw
                   src/config.c src/tracks.c src/camera_health.c \
                   src/gray.c src/door.c src/model_select.c \
                   src/residue.c src/slot_monitor.c third_party/sqlite/sqlite3.c \
-                  src/calib.c src/capture.c src/reconnect.c
+                  src/calib.c src/capture.c src/privacy_style.c src/reconnect.c
 
 build/test_core: $(TEST_CORE_SRCS) tests/test_runner.h \
                  include/yolo11.h include/tracker.h include/platform.h \

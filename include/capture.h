@@ -2,6 +2,7 @@
 #define CAPTURE_H
 
 #include "yolo11.h"
+#include "privacy_style.h"
 
 #include <stddef.h>
 #include <stdint.h>
@@ -24,7 +25,16 @@ typedef struct {
      */
     uint8_t *buf;
     size_t   buf_size;
+    /*
+     * 보호 모드 증거 사진의 모양(기본 SOLID). main.c 가 config 에서 읽어 capture_set_privacy_style 로 넣는다.
+     * privacy_scratch 소유: EventCapture. 처음 SOLID 가 아닌 스타일로 저장할 때 할당하고 capture_destroy 에서 해제.
+     */
+    PrivacyParams    privacy_params;
+    PrivacyScratch  *privacy_scratch;
 } EventCapture;
+
+/* 보호 모드 증거 사진의 모양을 바꾼다(hot-reload 에서 호출 가능). params 가 NULL 이면 SOLID. */
+void capture_set_privacy_style(EventCapture *cap, const PrivacyParams *params);
 
 /* dir 을 만들고(이미 있으면 그대로) 준비합니다. 성공 0, 실패 -1. */
 int  capture_init(EventCapture *cap, const char *dir, int quality,
@@ -34,7 +44,7 @@ void capture_destroy(EventCapture *cap);
 /*
  * rgb 사본에 box 를 그려 "<dir>/<kind>_YYYYmmdd_HHMMSS_track<id>.jpg" 로 저장합니다.
  * rgb: 호출자 소유 프레임을 읽기만 합니다. box 가 NULL 이면 표시 없이 저장합니다.
- * privacy_mask: 1 이면 영상을 단색으로 지우고 박스·관절만 남깁니다.
+ * privacy_mask: 1 이면 영상을 가리고(모양은 cap->privacy_params: 단색 또는 엣지 그레이) 박스·관절만 남깁니다.
  *   stream_privacy_mode 가 켜진 매장은 "출력에 실제 픽셀을 내보내지 않는다"가 정책이라
  *   증거 사진도 같은 규칙을 따라야 합니다. 위치·자세·시각은 그대로 남습니다.
  * path_out 에 저장한 경로를 씁니다(실패 시에도 시도한 경로).

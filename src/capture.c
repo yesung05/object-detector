@@ -55,6 +55,7 @@ int capture_init(EventCapture *cap, const char *dir, int quality,
         return -1;
     }
     memset(cap, 0, sizeof(*cap));
+    cap->privacy_params = privacy_params_default();
     if (strlen(dir) >= sizeof(cap->dir)) {
         if (error) snprintf(error, error_size, "capture_init: path too long");
         return -1;
@@ -73,6 +74,8 @@ int capture_init(EventCapture *cap, const char *dir, int quality,
 void capture_destroy(EventCapture *cap) {
     if (!cap) return;
     free(cap->buf);
+    privacy_scratch_destroy(cap->privacy_scratch); /* NULL 안전 */
+    cap->privacy_scratch = NULL;
     cap->buf = NULL;
     cap->buf_size = 0;
 }
@@ -133,8 +136,18 @@ int capture_save(EventCapture *cap, const char *kind, int track_id,
         cap->buf_size = need;
     }
     if (privacy_mask) {
-        /* main.c 의 보호 모드 화면과 비슷한 어두운 회색. 박스 선이 잘 보이는 밝기입니다. */
-        memset(cap->buf, 0x30, need);
+        /* 보호 모드: 원본 픽셀을 한 바이트도 남기지 않는다. SOLID 는 main.c 화면과 비슷한 어두운 회색(0x30, 박스 선이
+         * 잘 보이는 밝기)이고, EDGE_GRAY 는 rgb 사본을 가려진 화면으로 바꾼다. 가공 실패 시 privacy_style_apply 가
+         * 단색으로 덮으므로 어느 경우에도 원본이 저장되지 않는다. */
+        if (cap->privacy_params.style == PRIVACY_STYLE_EDGE_GRAY) {
+            if (!cap->privacy_scratch) cap->privacy_scratch = privacy_scratch_create();
+            for (y = 0; y < height; ++y)
+                memcpy(cap->buf + (size_t)y * row_bytes, rgb + (size_t)y * (size_t)stride, row_bytes);
+            privacy_style_apply(cap->privacy_scratch, cap->buf, width, height, (int)row_bytes,
+                                &cap->privacy_params);
+        } else {
+            memset(cap->buf, 0x30, need);
+        }
     } else {
         for (y = 0; y < height; ++y)
             memcpy(cap->buf + (size_t)y * row_bytes, rgb + (size_t)y * (size_t)stride,
@@ -176,4 +189,10 @@ int capture_save(EventCapture *cap, const char *kind, int track_id,
         return -1;
     }
     return 0;
+}
+
+void capture_set_privacy_style(EventCapture *cap, const PrivacyParams *params) {
+    if (!cap) return;
+    cap->privacy_params = params ? *params : privacy_params_default();
+    privacy_params_sanitize(&cap->privacy_params);
 }

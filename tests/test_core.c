@@ -16,6 +16,7 @@
 #include "slot_monitor.h"
 #include "calib.h"
 #include "capture.h"
+#include "privacy_style.h"
 #include "reconnect.h"
 #include "../third_party/sqlite/sqlite3.h" /* count_events: 룰 발화 횟수 검증 */
 #include "infer_cache.h"
@@ -3461,6 +3462,154 @@ static void test_rules_fall_once_and_gap_shift(void) {
     event_log_close(&elog);
 }
 
+/* ── 보호 모드 화면 모양(privacy_style) ─────────────────────────────────────── */
+
+static int priv_all_gray(const uint8_t *rgb, int w, int h, int stride) {
+    for (int y = 0; y < h; ++y) {
+        const uint8_t *r = rgb + (size_t)y * stride;
+        for (int x = 0; x < w; ++x, r += 3)
+            if (r[0] != r[1] || r[1] != r[2]) return 0;
+    }
+    return 1;
+}
+
+static void test_privacy_style_solid_is_default_and_fills(void) {
+    enum { W = 40, H = 30 };
+    uint8_t frame[W * H * 3];
+    PrivacyParams p = privacy_params_default();
+    EXPECT_INT_EQ(p.style, PRIVACY_STYLE_SOLID);
+    memset(frame, 200, sizeof(frame));
+    EXPECT_INT_EQ(privacy_style_apply(NULL, frame, W, H, W * 3, &p), 0); /* 단색은 스크래치가 필요 없다 */
+    for (size_t i = 0; i < sizeof(frame); ++i) EXPECT_INT_EQ(frame[i], 0x24);
+}
+
+static void test_privacy_style_edge_gray_removes_color_keeps_structure(void) {
+    enum { W = 160, H = 96 };
+    static uint8_t frame[W * H * 3];
+    PrivacyScratch *s = privacy_scratch_create();
+    PrivacyParams p = privacy_params_default();
+    int edge_found = 0;
+    ASSERT_TRUE(s != NULL);
+    p.style = PRIVACY_STYLE_EDGE_GRAY;
+    /* 왼쪽은 밝은 노랑 계열, 오른쪽은 어두운 파랑 계열: 휘도 차가 커서 x=80 에 강한 엣지가 생긴다. */
+    for (int y = 0; y < H; ++y)
+        for (int x = 0; x < W; ++x) {
+            uint8_t *px = frame + ((size_t)y * W + x) * 3;
+            if (x < 80) { px[0] = 250; px[1] = 200; px[2] = 50; }
+            else        { px[0] = 10;  px[1] = 10;  px[2] = 200; }
+        }
+    ASSERT_INT_EQ(privacy_style_apply(s, frame, W, H, W * 3, &p), 0);
+    EXPECT_TRUE(priv_all_gray(frame, W, H, W * 3));      /* 색 정보가 하나도 남지 않는다 */
+    for (int x = 77; x <= 82; ++x) if (frame[((size_t)(H / 2) * W + x) * 3] == 255) edge_found = 1;
+    EXPECT_TRUE(edge_found);                              /* 경계선에 흰 엣지가 그려진다 */
+    /* 경계에서 먼 곳은 엣지가 아니라 블러된 배경 휘도(왼쪽 ≈198, 오른쪽 ≈31)다. */
+    EXPECT_TRUE(abs((int)frame[((size_t)(H / 2) * W + 10) * 3] - 198) <= 25);
+    EXPECT_TRUE(abs((int)frame[((size_t)(H / 2) * W + 150) * 3] - 31) <= 25);
+    privacy_scratch_destroy(s);
+}
+
+static void test_privacy_style_edge_gray_flattens_fine_texture(void) {
+    enum { W = 160, H = 96 };
+    static uint8_t frame[W * H * 3];
+    PrivacyScratch *s = privacy_scratch_create();
+    PrivacyParams p = privacy_params_default();
+    int white = 0;
+    p.style = PRIVACY_STYLE_EDGE_GRAY;
+    /* 1px 체커보드: 모자이크와 약한 가우시안이 평균(≈127)으로 만들어 엣지도 배경 변화도 남지 않아야 한다.
+       "작은 디테일(글자·얼굴 질감)은 사라진다"는 성질의 회귀 시험. */
+    for (int y = 0; y < H; ++y)
+        for (int x = 0; x < W; ++x)
+            memset(frame + ((size_t)y * W + x) * 3, ((x + y) & 1) ? 255 : 0, 3);
+    ASSERT_INT_EQ(privacy_style_apply(s, frame, W, H, W * 3, &p), 0);
+    for (int y = 0; y < H; ++y)
+        for (int x = 0; x < W; ++x) {
+            int v = frame[((size_t)y * W + x) * 3];
+            if (v == 255) ++white;
+            EXPECT_TRUE(v >= 100 && v <= 155 || v == 255);
+        }
+    EXPECT_TRUE(white < W * H / 50);                      /* 엣지로 흰 픽셀이 2% 넘게 생기면 질감이 새고 있다 */
+    privacy_scratch_destroy(s);
+}
+
+static void test_privacy_style_failures_never_leave_original_pixels(void) {
+    enum { W = 8, H = 8 };
+    uint8_t tiny[W * H * 3];
+    uint8_t big[64 * 32 * 3];
+    PrivacyScratch *s = privacy_scratch_create();
+    PrivacyParams p = privacy_params_default();
+    p.style = PRIVACY_STYLE_EDGE_GRAY;
+    memset(tiny, 77, sizeof(tiny));
+    EXPECT_INT_EQ(privacy_style_apply(s, tiny, W, H, W * 3, &p), -1);   /* 너무 작은 프레임 */
+    for (size_t i = 0; i < sizeof(tiny); ++i) EXPECT_INT_EQ(tiny[i], 0x24);
+    memset(big, 77, sizeof(big));
+    EXPECT_INT_EQ(privacy_style_apply(NULL, big, 64, 32, 64 * 3, &p), -1); /* 스크래치 없음 */
+    for (size_t i = 0; i < sizeof(big); ++i) EXPECT_INT_EQ(big[i], 0x24);
+    EXPECT_INT_EQ(privacy_style_apply(s, big, 64, 32, 10, &p), -1);     /* stride 오류 */
+    privacy_scratch_destroy(s);
+    privacy_scratch_destroy(NULL);                                       /* NULL 안전 */
+}
+
+static void test_privacy_style_respects_stride_padding_and_sanitizes(void) {
+    enum { W = 64, H = 48, STRIDE = W * 3 + 16 };
+    static uint8_t buf[STRIDE * H];
+    PrivacyScratch *s = privacy_scratch_create();
+    PrivacyParams p = privacy_params_default();
+    PrivacyParams bad = {99, -5, 1000, 0, 0};
+    memset(buf, 0xAB, sizeof(buf));
+    p.style = PRIVACY_STYLE_EDGE_GRAY;
+    ASSERT_INT_EQ(privacy_style_apply(s, buf, W, H, STRIDE, &p), 0);
+    for (int y = 0; y < H; ++y)                          /* 행 끝 패딩 16바이트는 건드리면 안 된다 */
+        for (int i = W * 3; i < STRIDE; ++i) EXPECT_INT_EQ(buf[(size_t)y * STRIDE + i], 0xAB);
+    privacy_params_sanitize(&bad);
+    EXPECT_INT_EQ(bad.style, PRIVACY_STYLE_SOLID);
+    EXPECT_INT_EQ(bad.solid_gray, 0x24);
+    EXPECT_INT_EQ(bad.cell, 64);
+    EXPECT_TRUE(bad.edge_low >= 5 && bad.edge_high >= bad.edge_low);
+    privacy_scratch_destroy(s);
+}
+
+static void test_capture_privacy_edge_style_writes_gray_copy(void) {
+    enum { W = 96, H = 64 };
+    EventCapture cap;
+    static uint8_t frame[W * H * 3];
+    PrivacyParams p = privacy_params_default();
+    char path[720];
+    char error[256] = {0};
+    const char *dir = "test_capture_edge_tmp";
+    for (int i = 0; i < W * H; ++i) { frame[i * 3] = 250; frame[i * 3 + 1] = 40; frame[i * 3 + 2] = 40; }
+    ASSERT_INT_EQ(capture_init(&cap, dir, 85, error, sizeof(error)), 0);
+    p.style = PRIVACY_STYLE_EDGE_GRAY;
+    capture_set_privacy_style(&cap, &p);
+    ASSERT_INT_EQ(capture_save(&cap, "person_fallen", 5, frame, W, H, W * 3,
+                               NULL, 1, path, sizeof(path), error, sizeof(error)), 0);
+    EXPECT_TRUE(priv_all_gray(cap.buf, W, H, W * 3));    /* 저장 사본에 빨간색이 남지 않는다 */
+    EXPECT_INT_EQ(frame[0], 250);                        /* 원본 프레임은 건드리지 않는다 */
+    remove(path);
+    capture_destroy(&cap);
+    EXPECT_INT_EQ(test_rmdir(dir), 0);
+}
+
+static void test_privacy_style_speed_report(void) {
+    /* 통과/실패 기준 없음: 이 PC 에서 1280x720 한 장을 가리는 데 걸리는 시간을 출력한다(i5-4200U 실측 아님). */
+    enum { W = 1280, H = 720 };
+    uint8_t *frame = (uint8_t *)malloc((size_t)W * H * 3);
+    PrivacyScratch *s = privacy_scratch_create();
+    PrivacyParams p = privacy_params_default();
+    double t0, best = 1e9;
+    ASSERT_TRUE(frame != NULL && s != NULL);
+    p.style = PRIVACY_STYLE_EDGE_GRAY;
+    for (int i = 0; i < W * H * 3; ++i) frame[i] = (uint8_t)((i * 31 + (i / 7) * 13) & 255);
+    for (int k = 0; k < 6; ++k) {
+        t0 = platform_monotonic_seconds();
+        ASSERT_INT_EQ(privacy_style_apply(s, frame, W, H, W * 3, &p), 0);
+        t0 = platform_monotonic_seconds() - t0;
+        if (t0 < best) best = t0;
+    }
+    printf("  [info] privacy_style EDGE_GRAY 1280x720: best %.1f ms/frame (dev PC)\n", best * 1000.0);
+    privacy_scratch_destroy(s);
+    free(frame);
+}
+
 static void test_capture_writes_jpeg_and_respects_privacy(void) {
     enum { W = 64, H = 48 };
     EventCapture cap;
@@ -3970,6 +4119,13 @@ int main(void) {
     RUN_TEST(test_draw_partial_box);
     RUN_TEST(test_draw_empty_detections);
     RUN_TEST(test_draw_label_glyphs_exist);
+    RUN_TEST(test_privacy_style_solid_is_default_and_fills);
+    RUN_TEST(test_privacy_style_edge_gray_removes_color_keeps_structure);
+    RUN_TEST(test_privacy_style_edge_gray_flattens_fine_texture);
+    RUN_TEST(test_privacy_style_failures_never_leave_original_pixels);
+    RUN_TEST(test_privacy_style_respects_stride_padding_and_sanitizes);
+    RUN_TEST(test_capture_privacy_edge_style_writes_gray_copy);
+    RUN_TEST(test_privacy_style_speed_report);
     RUN_TEST(test_tracker_invalid_create);
     RUN_TEST(test_tracker_null_args);
     RUN_TEST(test_tracker_stationary);

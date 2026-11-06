@@ -1,6 +1,7 @@
 #include "calib.h"
 #include "camera_health.h"
 #include "capture.h"
+#include "privacy_style.h"
 #include "perf_log.h"
 #include "replay.h"
 #include "log_rotation.h"
@@ -233,6 +234,19 @@ typedef struct {
     int    privacy_unlock_max;
     char   access_pin[64];
     int    privacy_was_active;       /* 전환 로그용 */
+    /* 보호 모드 화면 모양 (config: stream_privacy_style, privacy_mosaic_cell, privacy_edge_low/high, privacy_style_fps) */
+    PrivacyParams   privacy_params;
+    int             privacy_style_fps;      /* 관찰자가 있을 때 엣지 화면을 다시 그리는 최대 횟수/초 */
+    /* 스크래치: 소유 AppContext, 첫 렌더 때 할당, 종료 시 privacy_scratch_destroy(NULL 안전).
+       캐시: 소유 AppContext, 렌더 결과(RGB, 회색)의 사본. 해상도가 바뀔 때만 realloc, 종료 시 free. */
+    PrivacyScratch *privacy_scratch;
+    uint8_t        *privacy_cache;
+    size_t          privacy_cache_size;
+    int             privacy_cache_w, privacy_cache_h;
+    double          privacy_cache_time;      /* 마지막 렌더 시각(monotonic) */
+    unsigned long   privacy_renders;         /* 렌더 횟수(로그용) */
+    unsigned long   privacy_reuses;          /* 캐시 재사용 횟수(로그용) */
+    double          privacy_render_seconds;  /* 렌더 누적 시간(로그용) */
     int    door_stall_logged;        /* door.auto_stalled 0→1 전환을 한 번만 기록 */
     /* 문이 마지막으로 열린 시각. 소실 판정에서 "나갈 수 있었나"를 가르는 근거입니다. */
     double door_last_open_time;
@@ -979,6 +993,27 @@ static void apply_security_config(AppContext *app, const Config *cfg) {
         snprintf(app->access_pin, sizeof(app->access_pin), "%s", pin);
     else
         app->access_pin[0] = '\0';
+    {
+        /* 화면 모양: 기본은 단색(SOLID). 엣지 스타일은 얼굴 윤곽선이 일부 남으므로(privacy_style.h) 명시적으로 켠다. */
+        PrivacyParams pp = privacy_params_default();
+        pp.style      = (int)config_long(cfg, "stream_privacy_style", PRIVACY_STYLE_SOLID, 0, 1);
+        pp.cell       = (int)config_long(cfg, "privacy_mosaic_cell", 24, 8, 64);
+        pp.edge_low   = (int)config_long(cfg, "privacy_edge_low", 40, 5, 250);
+        pp.edge_high  = (int)config_long(cfg, "privacy_edge_high", 110, 5, 255);
+        privacy_params_sanitize(&pp);
+        app->privacy_style_fps = (int)config_long(cfg, "privacy_style_fps", 5, 1, 30);
+        if (pp.style != app->privacy_params.style || pp.cell != app->privacy_params.cell ||
+            pp.edge_low != app->privacy_params.edge_low || pp.edge_high != app->privacy_params.edge_high) {
+            char smsg[200];
+            snprintf(smsg, sizeof(smsg), "privacy_style=%s cell=%d edge=%d/%d fps<=%d",
+                     pp.style == PRIVACY_STYLE_EDGE_GRAY ? "edge_gray" : "solid", pp.cell, pp.edge_low,
+                     pp.edge_high, app->privacy_style_fps);
+            event_log_write(&app->event_log, LOG_INFO, "access", smsg);
+            app->privacy_cache_time = 0; /* 새 모양이 바로 보이도록 캐시를 무효화 */
+        }
+        app->privacy_params = pp;
+        capture_set_privacy_style(&app->capture, &pp);
+    }
     stream_set_privacy_mode(app->privacy_mode);
     stream_set_privacy_unlock_max(app->privacy_unlock_max);
     stream_set_access_pin(app->access_pin);
@@ -1379,6 +1414,71 @@ static void calib_step(AppContext *app, double now) {
  * 쓰러짐은 트랙당 한 번만 발화(latch)하므로 드물고, 그때 한두 프레임 늦는
  * 것보다 별도 스레드·프레임 복사 큐를 유지하는 비용이 더 큽니다.
  */
+/*
+ * 보호 모드 프레임 가림. SOLID 는 단색 채움(기존 동작). EDGE_GRAY 는 프레임 전체에 모자이크·가우시안·엣지를 계산하므로
+ * 프레임마다 하면 CPU 를 많이 쓴다. 그래서:
+ *   - 보는 사람이 없을 때(스트림 클라이언트·미리보기·출력 파일 없음)는 1초에 한 번만 렌더한다 — /snapshot 용으로
+ *     stream_push 가 1fps 로 복사하는 화면이 이 결과와 같아 스냅샷이 단색으로 깜박이지 않는다.
+ *   - 보는 사람이 있으면 privacy_style_fps(기본 5)까지 렌더한다. 박스·스켈레톤은 매 프레임 이 화면 위에 새로 그려지므로
+ *     움직임은 매끄럽고, 배경 윤곽만 5fps 로 갱신된다.
+ *   - 렌더하지 않는 프레임은 캐시 사본을 덮어쓴다(memcpy). 어떤 경로로도 원본 픽셀이 프레임에 남지 않는다.
+ * 어느 단계가 실패해도 단색으로 덮는다(실패해도 원본이 나가지 않는 쪽이 안전).
+ */
+static void apply_privacy_mask(AppContext *app, RgbFrame *frame, int has_observer) {
+    size_t row = (size_t)frame->width * 3, need = row * (size_t)frame->height;
+    double now, interval;
+    int y;
+    if (app->privacy_params.style != PRIVACY_STYLE_EDGE_GRAY) {
+        int gray = app->privacy_params.solid_gray > 0 ? app->privacy_params.solid_gray : 0x24;
+        for (y = 0; y < frame->height; y++)
+            memset(frame->data + (size_t)y * frame->stride, gray, row);
+        return;
+    }
+    now = platform_monotonic_seconds();
+    interval = has_observer ? 1.0 / (app->privacy_style_fps > 0 ? app->privacy_style_fps : 5) : 1.0;
+    if (app->privacy_cache && app->privacy_cache_w == frame->width && app->privacy_cache_h == frame->height &&
+        app->privacy_cache_time > 0 && now - app->privacy_cache_time < interval) {
+        for (y = 0; y < frame->height; y++)
+            memcpy(frame->data + (size_t)y * frame->stride, app->privacy_cache + (size_t)y * row, row);
+        app->privacy_reuses++;
+        return;
+    }
+    if (!app->privacy_scratch) app->privacy_scratch = privacy_scratch_create();
+    {
+        double t0 = platform_monotonic_seconds(), dt;
+        int rc = privacy_style_apply(app->privacy_scratch, frame->data, frame->width, frame->height,
+                                     frame->stride, &app->privacy_params);
+        dt = platform_monotonic_seconds() - t0;
+        app->privacy_render_seconds += dt;
+        app->privacy_renders++;
+        if (rc != 0) {
+            /* privacy_style_apply 는 실패 시 이미 단색으로 덮었다. 캐시는 무효화해 다음 프레임에 다시 시도한다. */
+            event_log_write(&app->event_log, LOG_ERROR, "access",
+                            "privacy_style 렌더 실패 — 단색으로 대체 (메모리 부족 또는 프레임이 너무 작음)");
+            app->privacy_cache_time = 0;
+            return;
+        }
+        if (app->privacy_renders == 1 || app->privacy_renders % 600 == 0) {
+            char m[200];
+            snprintf(m, sizeof(m), "privacy_style 렌더 %lux 평균 %.1fms (최근 %.1fms) 캐시 재사용 %lux",
+                     app->privacy_renders, app->privacy_render_seconds / (double)app->privacy_renders * 1000.0,
+                     dt * 1000.0, app->privacy_reuses);
+            event_log_write(&app->event_log, LOG_INFO, "access", m);
+        }
+    }
+    if (!app->privacy_cache || app->privacy_cache_size < need) {
+        uint8_t *nb = (uint8_t *)realloc(app->privacy_cache, need);
+        if (!nb) { app->privacy_cache_time = 0; return; }   /* 캐시만 못 만든다: 이번 프레임은 이미 가려져 있다 */
+        app->privacy_cache = nb;
+        app->privacy_cache_size = need;
+    }
+    for (y = 0; y < frame->height; y++)
+        memcpy(app->privacy_cache + (size_t)y * row, frame->data + (size_t)y * frame->stride, row);
+    app->privacy_cache_w = frame->width;
+    app->privacy_cache_h = frame->height;
+    app->privacy_cache_time = now;
+}
+
 static void capture_fall_events(AppContext *app, const RgbFrame *frame) {
     int i;
     if (app->rules.fall_fired_count <= 0) return;
@@ -2946,9 +3046,9 @@ static int process_frame(RgbFrame *frame, void *opaque,
             app->privacy_was_active = privacy;
         }
         if (privacy) {
-            int y;
-            for (y = 0; y < frame->height; y++)
-                memset(frame->data + (size_t)y * frame->stride, 0x24, (size_t)frame->width * 3);
+            int observed = app->preview || app->has_output ||
+                           (app->stream_port > 0 && stream_client_count() > 0);
+            apply_privacy_mask(app, frame, observed);
         }
     }
 
@@ -3626,6 +3726,7 @@ int main(int argc, char **argv) {
                 snprintf(cap_msg, sizeof(cap_msg), "capture 비활성 — %s", cap_err);
                 event_log_write(&app.event_log, LOG_ERROR, "startup", cap_msg);
             } else {
+                capture_set_privacy_style(&app.capture, &app.privacy_params); /* capture_init 이 memset 으로 초기화했으므로 다시 넣는다 */
                 snprintf(cap_msg, sizeof(cap_msg),
                          "capture_fall=%s dir=%s quality=%d privacy=%s",
                          app.capture_fall ? "on" : "off", capture_dir,
@@ -3881,6 +3982,8 @@ done:
     residue_destroy(&app.residue);
     calib_destroy(&app.calib);
     capture_destroy(&app.capture);
+    privacy_scratch_destroy(app.privacy_scratch);   /* NULL 안전 */
+    free(app.privacy_cache);
     slot_monitor_destroy(&app.slot_mon);
     rules_destroy(&app.rules);
     tracks_destroy(&app.tracks);
