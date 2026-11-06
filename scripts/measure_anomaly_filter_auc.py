@@ -152,10 +152,14 @@ def main():
     ap.add_argument("--threads", type=int, default=2)
     ap.add_argument("--fps", type=float, default=3.0)
     ap.add_argument("--margin-seconds", type=float, default=2.0)
+    ap.add_argument("--cached-only", action="store_true", help="추론 캐시가 있는 클립만 사용(HDD 재추론 방지)")
     a = ap.parse_args()
     if a.split == "test":
         sys.exit("test 분할은 측정에 쓰지 않습니다(최종 확인 전용).")
     rows = [r for r in csv.DictReader(open(a.index, encoding="utf-8-sig")) if r["split"] == a.split]
+    if a.cached_only:
+        have = {p.stem for p in Path(a.cache_dir).glob("*.bin")}
+        rows = [r for r in rows if r["clip"] in have]
     pos_rows, seen = [], Counter()
     for r in sorted((r for r in rows if r["class_code"] == a.pos_class), key=lambda r: (r["scene_key"], r["clip"])):
         if seen[r["scene_key"]] < 1:

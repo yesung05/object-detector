@@ -179,3 +179,45 @@ svg.i { width: 1em; height: 1em; stroke: currentColor; fill: none; stroke-width:
 
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
 @media (max-width: 768px) { header { padding: 0 12px; } .mode-panel { padding: 12px 10px 24px; } }
+
+/* ── 시스템 상태 줄 · 알림 줄 판단 버튼 · 알림 관리 표 ─────────────────────────────
+   설명 문구 없이 색(초록 정상 · 주황 확인 · 빨강 문제 · 회색 꺼짐)과 짧은 값만 쓴다. */
+.health-strip { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 12px; margin-bottom: 12px; }
+.health-chip {
+  display: inline-flex; align-items: center; gap: 6px; font: inherit; font-size: 12px; font-weight: 600;
+  padding: 5px 10px; border: 0; border-radius: 999px; background: var(--fill); color: var(--text); cursor: default;
+}
+.health-chip[onclick] { cursor: pointer; }
+.health-chip b { font-weight: 600; color: var(--muted); font-variant-numeric: tabular-nums; }
+.health-chip .hd { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: none; }
+.health-chip[data-state="ok"] .hd   { background: var(--green); }
+.health-chip[data-state="warn"] .hd { background: var(--orange); }
+.health-chip[data-state="bad"] .hd  { background: var(--red); }
+.health-chip[data-state="bad"] b, .health-chip[data-state="warn"] b { color: var(--text); }
+
+.alerts-header { gap: 10px; }
+.alerts-header h2 { flex: 1; }
+.alert-today { font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 999px; background: var(--fill); color: var(--muted); font-variant-numeric: tabular-nums; }
+.alert-today.over { background: var(--red); color: #fff; }
+.alert-n { margin-left: 6px; font-size: 11px; font-weight: 700; color: var(--muted); font-variant-numeric: tabular-nums; }
+.alert-fbs { display: inline-flex; gap: 4px; flex: none; }
+.alert-fb {
+  font: inherit; font-size: 11px; font-weight: 600; padding: 2px 8px; border: 0; border-radius: 999px;
+  background: var(--fill); color: var(--muted); cursor: pointer; transition: background .2s, color .2s;
+}
+.alert-fb:hover { color: var(--accent); }
+.alert-fb.done[data-label="false"]   { background: var(--orange); color: #fff; }
+.alert-fb.done[data-label="correct"] { background: var(--green); color: #fff; }
+.alert-fb.failed { background: var(--red); color: #fff; }
+
+.mode-table { display: flex; flex-direction: column; margin-top: 8px; }
+.mode-row { display: grid; grid-template-columns: minmax(84px, 1.2fr) 52px 44px minmax(0, auto) 84px; align-items: center; gap: 8px; padding: 8px 0; border-bottom: 1px solid var(--hair); font-size: 13px; }
+.mode-row:last-child { border-bottom: 0; }
+.mode-name { font-weight: 600; }
+.mode-num, .mode-prec { text-align: right; font-variant-numeric: tabular-nums; color: var(--muted); }
+.mode-num em { font-style: normal; font-size: 11px; opacity: .7; }
+.mode-rec { font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 999px; background: var(--fill); color: var(--muted); white-space: nowrap; }
+.mode-rec[data-k="bad"]  { background: var(--orange); color: #fff; }
+.mode-rec[data-k="good"] { background: var(--green); color: #fff; }
+.mode-row .neu-select { padding: 5px 8px; font-size: 12px; }
+@media (max-width: 480px) { .mode-row { grid-template-columns: minmax(70px, 1fr) 40px 38px 78px; } .mode-rec { display: none; } }

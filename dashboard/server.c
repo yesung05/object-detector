@@ -235,7 +235,7 @@ static void json_str(const char *in, char *out, int outsz) {
 /* SQLite 행 하나를 JSON 오브젝트 문자열로 변환합니다.
  * message 열의 첫 공백 이전 토큰을 event 로 추출합니다.
  * 반환: 기록된 문자 수 (0이면 건너뜀) */
-static int db_row_to_json(const char *ts, const char *level,
+static int db_row_to_json(sqlite3_int64 id, const char *ts, const char *level,
                           const char *module, const char *message,
                           char *out, int outsz) {
     char event[64] = {0};
@@ -250,9 +250,10 @@ static int db_row_to_json(const char *ts, const char *level,
     json_str(event,   ev_j,  sizeof(ev_j));
     json_str(message, msg_j, sizeof(msg_j));
 
+    /* id: 점주가 알림 한 건에 "오탐이에요"를 누를 때 어느 이벤트인지 식별한다(POST /api/alerts/feedback). */
     int n = snprintf(out, outsz,
-        "{\"ts\":%s,\"level\":%s,\"module\":%s,\"event\":%s,\"message\":%s}",
-        ts_j, lv_j, mo_j, ev_j, msg_j);
+        "{\"id\":%lld,\"ts\":%s,\"level\":%s,\"module\":%s,\"event\":%s,\"message\":%s}",
+        (long long)id, ts_j, lv_j, mo_j, ev_j, msg_j);
     return (n > 0 && n < outsz) ? n : 0;
 }
 
@@ -444,7 +445,7 @@ static void serve_history(SOCKET s, const char *filename) {
      * 별도 *_perf.db에 기록하므로 events 테이블에 perf 항목이 없습니다.
      * 어느 경우든 이벤트 피드에는 이상 감지 이벤트만 표시합니다. */
     const char *sql =
-        "SELECT ts_iso, level, module, message FROM events"
+        "SELECT ts_iso, level, module, message, id FROM events"
         " WHERE module != 'perf' AND message NOT LIKE '% mode=shadow' ORDER BY id";
     if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) {
         sqlite3_close(db);
@@ -467,7 +468,7 @@ static void serve_history(SOCKET s, const char *filename) {
         if (!ts || !level || !module || !message) continue;
 
         char obj[800];
-        int n = db_row_to_json(ts, level, module, message, obj, sizeof(obj));
+        int n = db_row_to_json(sqlite3_column_int64(stmt, 4), ts, level, module, message, obj, sizeof(obj));
         if (!n) continue;
 
         if (pos + n + 4 > cap) {
@@ -552,7 +553,7 @@ static void serve_stream(SOCKET s, const char *filename) {
                     if (!ts || !level || !module || !message) continue;
 
                     char obj[800];
-                    int n = db_row_to_json(ts, level, module, message,
+                    int n = db_row_to_json(row_id, ts, level, module, message,
                                           obj, sizeof(obj));
                     if (n > 0) {
                         char sse[832];
@@ -738,6 +739,41 @@ static void config_diff(const Config *before, const Config *after, char *out, si
     if (!changes) snprintf(out, size, "(no value changes)");
 }
 
+/* 병합할 때 보존하는 기존 키를 ,"key":value 로 이어 붙인다. Config 파서는 문자열 값의 따옴표를 벗겨서 저장하므로
+ * 그대로 쓰면 "restart_time":04:00 처럼 깨진 JSON 이 되어 대시보드가 /api/config 를 읽지 못한다(알림 모드 alert_<token> 같은
+ * 문자열 키를 UI 가 모르는 채 보존할 때 드러났다). 숫자·true·false·null 이 아니면 다시 따옴표로 감싼다.
+ * 반환: 쓴 바이트 수(널 제외), 공간이 모자라면 0. */
+static int json_pair_append(char *dst, size_t cap, const char *key, const char *value) {
+    char *end = NULL;
+    int literal, n = 0;
+    size_t pos = 0;
+    const char *p;
+    if (!key || !value) return 0;
+    (void)strtod(value, &end);
+    literal = (*value && end && *end == '\0') || strcmp(value, "true") == 0 || strcmp(value, "false") == 0 ||
+              strcmp(value, "null") == 0;
+    n = snprintf(dst, cap, ",\"%s\":", key);
+    if (n < 0 || (size_t)n >= cap) return 0;
+    pos = (size_t)n;
+    if (literal) {
+        n = snprintf(dst + pos, cap - pos, "%s", value);
+        if (n < 0 || (size_t)n >= cap - pos) return 0;
+        return (int)(pos + (size_t)n);
+    }
+    if (pos + 1 >= cap) return 0;
+    dst[pos++] = '"';
+    for (p = value; *p; ++p) {
+        if (*p == '"' || *p == '\\') { if (pos + 2 >= cap) return 0; dst[pos++] = '\\'; }
+        else if (pos + 1 >= cap) return 0;
+        if ((unsigned char)*p < 32) continue;   /* 제어 문자는 버린다(설정 값에 있을 이유가 없다) */
+        dst[pos++] = *p;
+    }
+    if (pos + 2 >= cap) return 0;
+    dst[pos++] = '"';
+    dst[pos] = '\0';
+    return (int)pos;
+}
+
 /* POST /api/config body: { ... } → config.json 저장 */
 static void serve_config_post(SOCKET s, const char *body, int body_len, const NetAccess *acc) {
     if (!body || body_len <= 0) {
@@ -788,13 +824,10 @@ static void serve_config_post(SOCKET s, const char *body, int body_len, const Ne
                     if (!existing.keys[i] || !existing.values[i]) continue;
                     snprintf(probe, sizeof(probe), "\"%s\"", existing.keys[i]);
                     if (strstr(body, probe)) continue;  /* 본문에 이미 있음 */
-                    n = snprintf(NULL, 0, ",\"%s\":%s",
-                                 existing.keys[i], existing.values[i]);
-                    if (n <= 0 || (size_t)(merged_len + n + 2) >= cap) continue;
-                    merged_len += snprintf(merged + merged_len,
-                                           cap - (size_t)merged_len,
-                                           ",\"%s\":%s",
-                                           existing.keys[i], existing.values[i]);
+                    n = json_pair_append(merged + merged_len, cap - (size_t)merged_len - 2,
+                                         existing.keys[i], existing.values[i]);
+                    if (n <= 0) continue;
+                    merged_len += n;
                 }
                 if ((size_t)(merged_len + 2) < cap) {
                     merged[merged_len++] = '}';
@@ -882,6 +915,7 @@ done:
     free(data);ReleaseSRWLockExclusive(&g_surface_config_lock);
 }
 #include "replay_api.h"
+#include "alerts_api.h"
 #include "announce_api.h"
 
 static DWORD WINAPI client_thread(LPVOID arg) {
@@ -983,6 +1017,8 @@ static DWORD WINAPI client_thread(LPVOID arg) {
             serve_page(s,"replay.html");
         } else if (strcmp(path,"/api/replay/events")==0 || strcmp(path,"/api/replay/frames")==0) {
             serve_replay(s,path,query,NULL,0,0);
+        } else if (strcmp(path,"/api/alerts/summary")==0) {
+            serve_alerts_summary(s,query);
         } else if (strcmp(path,"/surfaces")==0) {
             serve_page(s,"surfaces.html");
         } else if (strcmp(path,"/research")==0) {
@@ -1014,6 +1050,10 @@ static DWORD WINAPI client_thread(LPVOID arg) {
         const char *body = extract_body(buf, n, &body_len);
         if (strcmp(path,"/api/replay/review")==0) {
             serve_replay(s,path,query,body,body_len,1);
+        } else if (strcmp(path,"/api/alerts/feedback")==0) {
+            serve_alerts_feedback(s,query,&acc);
+        } else if (strcmp(path,"/api/alerts/mode")==0) {
+            serve_alerts_mode(s,query,&acc);
         } else if (strcmp(path, "/api/surfaces") == 0) {
             serve_surfaces(s,body,content_length(buf),&acc);
         } else if (strcmp(path, "/api/announce/upload") == 0) {

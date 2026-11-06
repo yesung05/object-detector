@@ -987,10 +987,15 @@ details.dev-accordion[open] > summary { color: var(--red) !important; }
     </div>
   </div>
 
+  <!-- 시스템 상태 한눈에: renderHealth() 가 /status 로 채웁니다(초록 정상 · 주황 확인 필요 · 빨강 문제) -->
+  <div class="health-strip neu-raised" id="health-strip" role="status"></div>
+
   <!-- 최근 알림 -->
   <div class="alerts-section neu-raised">
     <div class="alerts-header">
       <h2>최근 알림</h2>
+      <span class="alert-today" id="alert-today" title="오늘 점주에게 보이는 알림 / 하루 권장 10건"></span>
+      <span class="alerts-clear" id="sound-btn" onclick="toggleAlertSound()"><svg class="i"><use href="#i-speaker"/></svg></span>
       <span class="alerts-clear" onclick="clearAlerts()">지우기</span>
     </div>
     <div id="alert-list">
@@ -1065,6 +1070,7 @@ details.dev-accordion[open] > summary { color: var(--red) !important; }
 
     <!-- ── 현황 탭 ── -->
     <div class="adv-panel active" id="adv-monitor">
+      <div class="health-strip neu-raised" role="status"></div>
       <p class="setting-desc">추정 주문 <strong id="probable-orders">0</strong></p>
       <p class="setting-desc" id="tier2-timing"></p>
       <div class="stats-row">
@@ -1138,7 +1144,7 @@ details.dev-accordion[open] > summary { color: var(--red) !important; }
 
     <!-- ─ 간단 설정 ─ -->
     <div id="simple-settings" class="simple-settings">
-<nav class="setup-nav" aria-label="설정 분류"><button type="button" class="neu-btn" onclick="openSettingsGroup('place')">감시 장소</button><button type="button" class="neu-btn" onclick="openSettingsGroup('alerts')">알림 조건</button><button type="button" class="neu-btn" onclick="openSettingsGroup('privacy')">영상·개인정보</button><button type="button" class="neu-btn" onclick="openSettingsGroup('automation')">자동 관리</button></nav><details class="setup-group" id="settings-place" open><summary><strong>감시 장소</strong></summary><div class="setup-group-body"><div class="preset-card neu-raised">
+<nav class="setup-nav" aria-label="설정 분류"><button type="button" class="neu-btn" onclick="openSettingsGroup('place')">감시 장소</button><button type="button" class="neu-btn" onclick="openSettingsGroup('alerts')">알림 조건</button><button type="button" class="neu-btn" onclick="openSettingsGroup('privacy')">영상·개인정보</button><button type="button" class="neu-btn" onclick="openSettingsGroup('automation')">자동 관리</button><button type="button" class="neu-btn" onclick="openSettingsGroup('modes')">알림 관리</button></nav><details class="setup-group" id="settings-place" open><summary><strong>감시 장소</strong></summary><div class="setup-group-body"><div class="preset-card neu-raised">
         <div>
           <div class="preset-title"><svg class="i"><use href="#i-door"/></svg> 출입문 감지</div>
         </div>
@@ -1174,7 +1180,7 @@ details.dev-accordion[open] > summary { color: var(--red) !important; }
 <p class="preset-desc" id="settings-table-state" role="status"></p>
 <div class="setup-actions"><a class="neu-btn" href="/surfaces?view=1">영역·감지 상태 확인</a><a class="neu-btn" href="/surfaces">다시 찾기·수동 수정</a></div></div>
 <div class="preset-card neu-raised"><div class="preset-title">배경 움직임 보정</div>
-<p class="preset-desc" id="settings-calibration-state" role="status"></p></div><div class="preset-card neu-raised"><div class="preset-title">장소 변경</div><div class="setup-actions"><button class="neu-btn" type="button" onclick="resetLocationSetup()">장소 초기화·다시 학습</button></div></div></div></details><details class="setup-group" id="settings-alerts"><summary><strong>알림 조건</strong></summary><div class="setup-group-body"><div class="preset-card neu-raised"><div class="preset-title">감지 신뢰도 기준</div><div class="time-setting"><label class="time-setting-head" for="cfg-person_confidence"><span>사람 감지</span><output id="confidence-person_confidence">20%</output></label><input class="setting-input" type="range" id="cfg-person_confidence" min="0.01" max="0.99" step="0.01" value="0.2" oninput="renderConfidenceSettings()" style="width:100%"></div><div class="time-setting"><label class="time-setting-head" for="cfg-object_confidence"><span>물체 감지</span><output id="confidence-object_confidence">20%</output></label><input class="setting-input" type="range" id="cfg-object_confidence" min="0.01" max="0.99" step="0.01" value="0.2" oninput="renderConfidenceSettings()" style="width:100%"></div><details class="manual-options"><summary>추가 기준 · 새 사람과 테이블 등록</summary><div class="time-setting"><label class="time-setting-head" for="cfg-new_person_confidence"><span>새 사람 등록</span><output id="confidence-new_person_confidence">30%</output></label><input class="setting-input" type="range" id="cfg-new_person_confidence" min="0.01" max="0.99" step="0.01" value="0.3" oninput="renderConfidenceSettings()" style="width:100%"></div><div class="time-setting"><label class="time-setting-head" for="cfg-table_confidence"><span>테이블 자동 위치</span><output id="confidence-table_confidence">55%</output></label><input class="setting-input" type="range" id="cfg-table_confidence" min="0.01" max="0.99" step="0.01" value="0.55" oninput="renderConfidenceSettings()" style="width:100%"></div></details><p class="preset-desc" id="confidence-effective">현재 적용값 확인 중…</p></div><div class="preset-card neu-raised">
+<p class="preset-desc" id="settings-calibration-state" role="status"></p></div><div class="preset-card neu-raised"><div class="preset-title">장소 변경</div><div class="setup-actions"><button class="neu-btn" type="button" onclick="resetLocationSetup()">장소 초기화·다시 학습</button></div></div></div></details><details class="setup-group" id="settings-alerts"><summary><strong>알림 조건</strong></summary><div class="setup-group-body"><div class="preset-card neu-raised"><div class="preset-title">감지 신뢰도 기준</div><div class="time-setting"><label class="time-setting-head" for="cfg-person_confidence"><span>사람 감지</span><output id="confidence-person_confidence">20%</output></label><input class="setting-input" type="range" id="cfg-person_confidence" min="0.01" max="0.99" step="0.01" value="0.2" oninput="renderConfidenceSettings()" style="width:100%"></div><div class="time-setting"><label class="time-setting-head" for="cfg-object_confidence"><span>물체 감지</span><output id="confidence-object_confidence">20%</output></label><input class="setting-input" type="range" id="cfg-object_confidence" min="0.01" max="0.99" step="0.01" value="0.2" oninput="renderConfidenceSettings()" style="width:100%"></div><details class="manual-options"><summary>추가 기준 · 새 사람과 테이블 등록</summary><div class="time-setting"><label class="time-setting-head" for="cfg-new_person_confidence"><span>새 사람 등록</span><output id="confidence-new_person_confidence">30%</output></label><input class="setting-input" type="range" id="cfg-new_person_confidence" min="0.01" max="0.99" step="0.01" value="0.3" oninput="renderConfidenceSettings()" style="width:100%"></div><div class="time-setting"><label class="time-setting-head" for="cfg-table_confidence"><span>테이블 자동 위치</span><output id="confidence-table_confidence">28%</output></label><input class="setting-input" type="range" id="cfg-table_confidence" min="0.01" max="0.99" step="0.01" value="0.28" oninput="renderConfidenceSettings()" style="width:100%"></div></details><p class="preset-desc" id="confidence-effective">현재 적용값 확인 중…</p></div><div class="preset-card neu-raised">
         <div>
           <div class="preset-title">체류·착석 관리</div>
         </div>
@@ -1244,7 +1250,15 @@ details.dev-accordion[open] > summary { color: var(--red) !important; }
           <button class="preset-btn active" onclick="applyPreset('camera',1)">보통</button>
           <button class="preset-btn" onclick="applyPreset('camera',2)">민감</button>
         </div>
-      </div></div></details><details class="setup-group" id="settings-privacy"><summary><strong>영상·개인정보</strong></summary><div class="setup-group-body"><div class="preset-card neu-raised">
+      </div></div></details><details class="setup-group" id="settings-modes"><summary><strong>알림 관리</strong></summary><div class="setup-group-body"><div class="preset-card neu-raised">
+  <!-- 알림 종류별 켜짐/그림자/끔 + 점주가 누른 "오탐이에요/맞아요"의 집계(최근 7일). 모드는 PIN이 필요합니다. -->
+  <div class="setup-actions" id="mode-presets">
+    <button class="neu-btn sm" type="button" onclick="applyModePreset('launch')">출시 프로파일</button>
+    <button class="neu-btn sm" type="button" onclick="applyModePreset('all_on')">전부 켜짐</button>
+    <button class="neu-btn sm" type="button" onclick="loadAlertModes()">새로고침</button>
+  </div>
+  <div id="mode-table" class="mode-table"></div>
+</div></div></details><details class="setup-group" id="settings-privacy"><summary><strong>영상·개인정보</strong></summary><div class="setup-group-body"><div class="preset-card neu-raised">
         <div>
           <div class="preset-title">개인정보 보호</div>
         </div>
@@ -1957,6 +1971,17 @@ const EVENT_MSG = {
   camera_frozen:     { text: "카메라 정지 — 연결 확인 필요",    sev: "danger" },
   camera_stalled:    { text: "카메라 신호 없음",                sev: "danger" },
   camera_ok:         { text: "카메라 정상 복구",                sev: "info" },
+  /* 그림자에서 켜는 순간 화면에 안 뜨는 일이 없도록 모든 알림 토큰에 문구를 둔다(src/main.c ALERT_TOKENS 와 같은 목록) */
+  person_unaccounted:         { text: "사람이 사라짐 — 위치 확인",         sev: "warn" },
+  person_unaccounted_residue: { text: "사라진 자리에 물체가 남음 — 확인", sev: "danger" },
+  occupancy_exceeded:         { text: "인원 초과",                          sev: "warn" },
+  person_motionless:          { text: "오래 움직이지 않는 사람",            sev: "warn" },
+  external_drink:             { text: "외부 음료 반입 의심",                sev: "warn" },
+  external_food:              { text: "외부 음식 반입 의심",                sev: "warn" },
+  animal_on_chair:            { text: "반려동물이 의자 위에 있음",          sev: "warn" },
+  animal_on_table:            { text: "반려동물이 테이블 위에 있음",        sev: "warn" },
+  no_cup_seated:              { text: "컵 없이 착석한 손님",                sev: "warn" },
+  slot_item_urgent:           { text: "테이블 청결 확인 필요",              sev: "warn" },
 };
 
 let currentFile  = "";
@@ -2054,27 +2079,76 @@ function updateEasyCards() {
 
 /* ── 간단 모드 알림 목록 ──────────────────────────────────────────────────── */
 let alertItems = [];
-function appendAlert(e) {
+/* 같은 종류·같은 트랙의 알림은 한 줄로 묶고 ×N 으로 센다(같은 손님의 반복 알림이 목록을 밀어내지 않게).
+   묶음에는 이벤트 id 를 모아 두었다가 "오탐/맞아요"를 누르면 묶음 전체에 같은 판단을 저장한다. */
+function alertGroupKey(e) {
+  const m = /track=(\d+)/.exec(e.message || "");
+  return (e.event || "") + (m ? "#" + m[1] : "");
+}
+function appendAlert(e, live) {
   const info = EVENT_MSG[e.event || ""] || null;
   if (!info || info.sev === "info") return; /* 해소 이벤트는 표시 안 함 */
   const empty = document.getElementById("alert-empty");
   if (empty) empty.remove();
 
   const ts = (e.ts || "").replace("T", " ").substring(5, 16); /* MM-DD HH:MM */
-  const item = document.createElement("div");
-  item.className = "alert-item";
-  item.innerHTML = `
-    <div class="alert-dot ${info.sev}"></div>
-    <div class="alert-msg">${info.text}</div>
-    <div class="alert-ts">${ts}</div>`;
-
   const al = document.getElementById("alert-list");
-  al.insertBefore(item, al.firstChild);
-  alertItems.unshift(item);
-  if (alertItems.length > MAX_ALERTS) {
-    const old = alertItems.pop();
-    if (old.parentNode) old.parentNode.removeChild(old);
+  const key = alertGroupKey(e);
+  const same = alertItems.find(it => it.dataset.key === key);
+  if (same) {
+    const ids = JSON.parse(same.dataset.ids);
+    if (e.id && ids.length < 50) ids.push(e.id);
+    same.dataset.ids = JSON.stringify(ids);
+    same.dataset.n = String(+same.dataset.n + 1);
+    same.querySelector(".alert-n").textContent = "×" + same.dataset.n;
+    same.querySelector(".alert-ts").textContent = ts;
+    same.dataset.fb = "";                      /* 새 건이 합류했으니 판단 표시를 다시 받는다 */
+    same.querySelectorAll(".alert-fb").forEach(b => b.classList.remove("done"));
+    al.insertBefore(same, al.firstChild);
+    alertItems.splice(alertItems.indexOf(same), 1);
+    alertItems.unshift(same);
+  } else {
+    const item = document.createElement("div");
+    item.className = "alert-item";
+    item.dataset.key = key;
+    item.dataset.ids = JSON.stringify(e.id ? [e.id] : []);
+    item.dataset.n = "1";
+    item.innerHTML = `
+      <div class="alert-dot ${info.sev}"></div>
+      <div class="alert-msg">${info.text}<span class="alert-n"></span></div>
+      <div class="alert-fbs">
+        <button type="button" class="alert-fb" data-label="false" title="오탐이에요">오탐</button>
+        <button type="button" class="alert-fb" data-label="correct" title="맞아요">맞아요</button>
+      </div>
+      <div class="alert-ts">${ts}</div>`;
+    item.querySelectorAll(".alert-fb").forEach(b => b.addEventListener("click", () => sendAlertFeedback(item, b)));
+    al.insertBefore(item, al.firstChild);
+    alertItems.unshift(item);
+    if (alertItems.length > MAX_ALERTS) {
+      const old = alertItems.pop();
+      if (old.parentNode) old.parentNode.removeChild(old);
+    }
   }
+  if (live) notifyAlert(info);
+}
+
+async function sendAlertFeedback(item, btn) {
+  const label = btn.dataset.label;
+  const ids = JSON.parse(item.dataset.ids || "[]");
+  if (!ids.length || !currentFile) return;
+  btn.disabled = true;
+  try {
+    for (const id of ids) {
+      const r = await authFetch(`/api/alerts/feedback?file=${encodeURIComponent(currentFile)}&event=${id}&label=${label}`, { method: "POST" });
+      if (!r.ok) throw new Error("HTTP " + r.status);
+    }
+    item.querySelectorAll(".alert-fb").forEach(b => b.classList.toggle("done", b === btn));
+    refreshAlertSummary();
+  } catch (_) {
+    btn.classList.add("failed");
+    setTimeout(() => btn.classList.remove("failed"), 2000);
+  }
+  btn.disabled = false;
 }
 
 function clearAlerts() {
@@ -2082,6 +2156,48 @@ function clearAlerts() {
   al.innerHTML = '<div class="alert-empty" id="alert-empty">감지된 알림이 없습니다.</div>';
   alertItems = [];
 }
+
+/* ── 알림 소리·브라우저 알림(위험·경고만, 이 기기 안에서만) ─────────────────────── */
+let alertSound = localStorage.getItem("dashSound") === "1";
+function renderSoundBtn() {
+  const b = document.getElementById("sound-btn");
+  if (b) { b.style.opacity = alertSound ? "1" : ".35"; b.title = alertSound ? "알림 소리 켜짐" : "알림 소리 꺼짐"; }
+}
+function toggleAlertSound() {
+  alertSound = !alertSound;
+  localStorage.setItem("dashSound", alertSound ? "1" : "0");
+  renderSoundBtn();
+  /* 브라우저 알림은 사용자가 켠 순간에만 권한을 요청한다(외부 푸시 없음 — 이 탭이 열려 있을 때만 동작) */
+  if (alertSound && window.Notification && Notification.permission === "default") Notification.requestPermission();
+}
+function notifyAlert(info) {
+  if (!alertSound || info.sev === "info") return;
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.frequency.value = info.sev === "danger" ? 880 : 520; g.gain.value = 0.08;
+    o.connect(g); g.connect(ctx.destination); o.start(); o.stop(ctx.currentTime + (info.sev === "danger" ? 0.5 : 0.25));
+    setTimeout(() => ctx.close(), 800);
+  } catch (_) {}
+  if (window.Notification && Notification.permission === "granted") new Notification(info.text);
+}
+renderSoundBtn();
+
+/* ── 오늘 알림 수와 하루 10건 예산 ─────────────────────────────────────────────── */
+async function refreshAlertSummary() {
+  try {
+    const r = await fetch("/api/alerts/summary?days=7");
+    const s = await r.json();
+    const el = document.getElementById("alert-today");
+    if (el) {
+      el.textContent = `${s.today_visible}/10`;
+      el.className = "alert-today" + (s.today_visible > 10 ? " over" : "");
+    }
+    alertSummary = s;
+    if (document.getElementById("mode-table")) renderModeTable();
+  } catch (_) {}
+}
+let alertSummary = null;
 
 /* ── 이벤트 카운트 ──────────────────────────────────────────────────────────── */
 function updateCounts() {
@@ -2211,7 +2327,8 @@ function connect(file) {
     try {
       const e = JSON.parse(ev.data);
       if (!e.ts) return;
-      countEvent(e); updateCamState(e); appendEvent(e); appendAlert(e); scrollToBottom();
+      countEvent(e); updateCamState(e); appendEvent(e); appendAlert(e, true); scrollToBottom();
+      if (EVENT_MSG[e.event || ""]) refreshAlertSummary();
     } catch (_) {}
   };
   eventSource.addEventListener("heartbeat", () => {});
@@ -2695,6 +2812,129 @@ function applyPrivacyState(p) {
     unlockBtn.style.display = "none"; lockBtn.style.display = "";
   }
 }
+/* ── 시스템 상태 한눈에 (/status → 초록 정상 · 주황 확인 필요 · 빨강 문제 · 회색 꺼짐) ─────────────── */
+let cfgCache = {}, cfgFetchedAt = 0, surfaceCount = null, surfaceFetchedAt = 0;
+async function refreshHealthSources() {
+  const now = Date.now();
+  if (now - cfgFetchedAt > 30000) {
+    cfgFetchedAt = now;
+    try { cfgCache = await (await fetch("/api/config")).json(); } catch (_) {}
+  }
+  if (now - surfaceFetchedAt > 30000) {
+    surfaceFetchedAt = now;
+    try { const j = await (await fetch("/api/surfaces")).json(); surfaceCount = (j.surfaces || []).length; } catch (_) {}
+  }
+}
+function healthChip(label, state, value, onclick) {
+  return `<button type="button" class="health-chip" data-state="${state}" ${onclick ? `onclick="${onclick}"` : ""}>` +
+         `<i class="hd"></i><span>${label}</span>${value ? `<b>${value}</b>` : ""}</button>`;
+}
+function renderHealth(st) {
+  refreshHealthSources();
+  const chips = [];
+  if (!st) {
+    chips.push(healthChip("감지기", "bad", "응답 없음", ""));
+  } else {
+    const d = st.door || {}, r = st.residue || {}, c = st.calibration || {}, rec = st.recording || {}, p = st.privacy || {};
+    chips.push(healthChip("감지기", "ok", "", ""));
+    const camState = camDot.className.includes("error") ? "bad" : camDot.className.includes("warn") ? "warn" : "ok";
+    chips.push(healthChip("카메라", camState, camState === "ok" ? "" : "점검", ""));
+    /* 문: 영역 → 기준 수집 → 완료. 정체하면 빨강(원인은 설정 탭에서 확인) */
+    if (!d.enabled) chips.push(healthChip("문", "off", "꺼짐", ""));
+    else if (d.auto_stalled) chips.push(healthChip("문", "bad", "기준 안 잡힘", "openSettingsGroup('place')"));
+    else if (!d.roi_set) chips.push(healthChip("문", "warn", `영역 학습 ${d.map_samples || 0}회`, "openSettingsGroup('place')"));
+    else if (!d.closed_ready) chips.push(healthChip("문", "warn", "기준 수집", "openSettingsGroup('place')"));
+    else chips.push(healthChip("문", "ok", "", ""));
+    /* 테이블: 등록 개수, 탐색 중이면 점수/기준. 점수가 기준에 못 미치면 한 번에 낮출 값을 제안한다 */
+    const th = st.thresholds ? st.thresholds.table : null, tp = st.table_progress;
+    if (st.table_mapping === 2) chips.push(healthChip("테이블", "bad", "모델 없음", ""));
+    else if (st.table_mapping === 1 && tp) {
+      const low = tp.seen > 0 && th != null && tp.max_score < th;
+      const sug = low ? Math.max(0.15, Math.floor(tp.max_score * 100) / 100 - 0.02) : null;
+      chips.push(healthChip("테이블", low ? "bad" : "warn", `${tp.max_score.toFixed(2)}/${th != null ? th.toFixed(2) : "-"}`,
+                            sug ? `applyTableThreshold(${sug.toFixed(2)})` : "openSettingsGroup('place')"));
+      if (sug) chips.push(healthChip("기준", "warn", `${sug.toFixed(2)}로 낮추기`, `applyTableThreshold(${sug.toFixed(2)})`));
+    } else if (surfaceCount === 0) chips.push(healthChip("테이블", "warn", "미등록", "openSettingsGroup('place')"));
+    else chips.push(healthChip("테이블", "ok", surfaceCount != null ? `${surfaceCount}개` : "", ""));
+    if (!r.enabled) chips.push(healthChip("잔류물", "off", "꺼짐", ""));
+    else chips.push(healthChip("잔류물", r.ready ? "ok" : "warn", r.ready ? "" : "기준 없음", r.ready ? "" : "openSettingsGroup('place')"));
+    chips.push(healthChip("보정", c.active ? "warn" : "ok",
+                          c.active ? `${Math.floor((c.seconds || 0) / 60)}/${Math.round((c.total || 600) / 60)}분` : "", ""));
+    /* 미주문 착석은 키오스크 위치가 있어야 동작한다 — 알림이 켜져 있는데 위치가 없으면 알려 준다 */
+    if ((cfgCache.alert_unordered_seated || "on") !== "off" && cfgCache.roi_kiosk !== undefined && !String(cfgCache.roi_kiosk).trim())
+      chips.push(healthChip("키오스크", "warn", "미지정", "openSettingsGroup('place')"));
+    chips.push(healthChip("기록", rec.full || rec.active === 0 ? "bad" : rec.errors ? "warn" : "ok", rec.full ? "한도" : rec.active === 0 ? "꺼짐" : "", ""));
+    chips.push(healthChip("보호", p.active ? "ok" : p.mode ? "warn" : "off", p.active ? "" : p.mode ? "해제됨" : "꺼짐", "openSettingsGroup('privacy')"));
+  }
+  document.querySelectorAll(".health-strip").forEach(el => { el.innerHTML = chips.join(""); });
+}
+async function applyTableThreshold(v) {
+  try {
+    const r = await authFetch("/api/config", { method: "POST", headers: { "Content-Type": "application/json" },
+                                              body: JSON.stringify({ table_confidence: v }) });
+    if (r.ok) { setCfgVal("table_confidence", v); renderConfidenceSettings(); cfgFetchedAt = 0; pollStatus(); }
+  } catch (_) {}
+}
+
+/* ── 알림 관리: 종류별 켜짐/그림자/끔 + 점주 판단 집계 ─────────────────────────────── */
+const ALERT_ORDER = [
+  ["person_fallen", "쓰러짐"], ["overstay", "장기 체류"], ["unordered_seated", "미주문 착석"], ["door_open", "문 개방"],
+  ["person_unaccounted", "사람 소실"], ["person_unaccounted_residue", "소실+잔류"], ["external_drink", "외부 음료"],
+  ["external_food", "외부 음식"], ["no_cup_seated", "컵 없는 착석"], ["animal_on_chair", "동물·의자"],
+  ["animal_on_table", "동물·테이블"], ["residue_trash", "쓰레기"], ["residue_spill", "흘림"], ["residue_unknown", "바닥 변화"],
+  ["slot_item_urgent", "테이블 청결"], ["occupancy_exceeded", "인원 초과"], ["person_motionless", "무동작"],
+];
+/* 출시 프로파일(config/store-launch.ini): 켜는 4종, 그림자 11종, 끔 2종 */
+const LAUNCH_MODES = { person_fallen: "on", overstay: "on", unordered_seated: "on", door_open: "on",
+  occupancy_exceeded: "off", person_motionless: "off" };
+async function loadAlertModes() {
+  try { cfgCache = await (await fetch("/api/config")).json(); cfgFetchedAt = Date.now(); } catch (_) {}
+  await refreshAlertSummary();
+  renderModeTable();
+}
+function renderModeTable() {
+  const box = document.getElementById("mode-table");
+  if (!box) return;
+  const by = {};
+  ((alertSummary && alertSummary.tokens) || []).forEach(t => { by[t.t] = t; });
+  box.innerHTML = ALERT_ORDER.map(([tok, name]) => {
+    const mode = cfgCache["alert_" + tok] || "on";
+    const s = by[tok] || { total: 0, shadow: 0, correct: 0, false: 0 };
+    const reviewed = s.correct + s.false;
+    const prec = reviewed ? Math.round(s.correct / reviewed * 100) : null;
+    let rec = "<span></span>";   /* 칸을 비워 두어야 행마다 열이 맞는다 */
+    if (reviewed < 10) rec = reviewed ? `<span class="mode-rec" data-k="few">표본 ${reviewed}</span>` : rec;
+    else if (tok !== "person_fallen" && mode === "on" && prec < 60) rec = '<span class="mode-rec" data-k="bad">그림자 권장</span>';
+    else if (mode === "shadow" && prec >= 80) rec = '<span class="mode-rec" data-k="good">켜도 됨</span>';
+    const opt = (v, t) => `<option value="${v}"${mode === v ? " selected" : ""}>${t}</option>`;
+    return `<div class="mode-row"><span class="mode-name">${name}</span>` +
+      `<span class="mode-num">${s.total}${s.shadow ? ` <em>(${s.shadow})</em>` : ""}</span>` +
+      `<span class="mode-prec">${prec === null ? "—" : prec + "%"}</span>${rec}` +
+      `<select class="neu-select" onchange="setAlertMode('${tok}', this.value)">${opt("on", "켜짐")}${opt("shadow", "그림자")}${opt("off", "끔")}</select></div>`;
+  }).join("");
+}
+async function setAlertMode(tok, mode) {
+  let confirmed = "";
+  if (tok === "person_fallen" && mode === "off") {
+    if (!confirm("쓰러짐 알림을 끄면 응급 상황을 알 수 없습니다. 정말 끌까요?")) { renderModeTable(); return; }
+    confirmed = "&confirm=1";
+  }
+  try {
+    const r = await authFetch(`/api/alerts/mode?token=${tok}&mode=${mode}${confirmed}`, { method: "POST" });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    cfgCache["alert_" + tok] = mode;
+  } catch (_) {}
+  renderModeTable();
+}
+async function applyModePreset(name) {
+  for (const [tok] of ALERT_ORDER) {
+    const mode = name === "all_on" ? "on" : (LAUNCH_MODES[tok] || "shadow");
+    if ((cfgCache["alert_" + tok] || "on") === mode) continue;
+    await setAlertMode(tok, mode);
+  }
+  loadAlertModes();
+}
+
 async function pollStatus() {
   const port = getStreamPort();
   const badge = document.getElementById("door-state-badge");
@@ -2767,14 +3007,19 @@ async function pollStatus() {
       r.auto_wait || 0, parseFloat(document.getElementById("cfg-residue_auto_quiet_seconds")?.value) || 15);
     applyPrivacyState(st.privacy);
     if (st.access) accessTier = st.access.tier || "";
+    renderHealth(st);
   } catch (_) {
     badge.className = "door-pill unknown"; badge.textContent = "— 연결 안 됨";
-    updateCardState("door", "normal", "확인 중");
+    updateCardState("door", "normal", "");
     applyPrivacyState({ mode: 0 });
+    renderHealth(null);
   }
 }
 setInterval(pollStatus, 3000);
 pollStatus();
+refreshAlertSummary();
+setInterval(refreshAlertSummary, 60000);
+{ const mg = document.getElementById("settings-modes"); if (mg) mg.addEventListener("toggle", () => { if (mg.open) loadAlertModes(); }); }
 
 async function showDoorLocation() {
   let dialog = document.getElementById('door-location-dialog');
@@ -3262,6 +3507,8 @@ function updateDoorDesc() {}
 })();
 
 if(location.hash==='#settings-place')openSettingsGroup('place');
+/* 화면 점검용: ?group=modes 처럼 주소로 설정 그룹을 바로 연다(init 이 모드를 정한 뒤에 실행해야 덮어쓰이지 않는다) */
+{ const g = new URLSearchParams(location.search).get("group"); if (g) openSettingsGroup(g); }
 
 loadLogList();
 

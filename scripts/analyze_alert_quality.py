@@ -71,14 +71,23 @@ def collect(folder, window):
             if "events" not in tables:
                 continue
             has_replay = "replay_events" in tables and "replay_frames" in tables
+            has_fb = "alert_feedback" in tables   # 대시보드의 "오탐이에요/맞아요" 버튼(점주 판단)
+            has_review = "replay_events" in tables  # 리플레이 화면의 검토(expected/suspected_false)
             marks = ",".join("?" * len(ALERT_MODULES))
-            q = ("SELECT e.id, e.ts_iso, e.level, e.module, e.message" +
+            # 점주 판단이 있으면 우선하고, 없으면 리플레이 검토를 같은 뜻(correct/false)으로 쓴다
+            label_expr = ("COALESCE(f.label, CASE r2.review WHEN 'expected' THEN 'correct' WHEN 'suspected_false' THEN 'false' END)" if has_fb and has_review
+                          else "f.label" if has_fb
+                          else "CASE r2.review WHEN 'expected' THEN 'correct' WHEN 'suspected_false' THEN 'false' END" if has_review
+                          else "NULL")
+            q = ("SELECT e.id, e.ts_iso, e.level, e.module, e.message, " + label_expr +
                  (", r.session, r.mono" if has_replay else "") +
                  " FROM events e" + (" LEFT JOIN replay_events r ON r.event_id=e.id" if has_replay else "") +
+                 (" LEFT JOIN alert_feedback f ON f.event_id=e.id" if has_fb else "") +
+                 (" LEFT JOIN replay_events r2 ON r2.event_id=e.id" if has_review else "") +
                  " WHERE e.level IN ('WARN','ERROR') AND e.module IN (" + marks + ")")
             for row in con.execute(q, ALERT_MODULES):
-                eid, ts, level, module, msg = row[:5]
-                session, mono = (row[5], row[6]) if has_replay else (None, None)
+                eid, ts, level, module, msg, label = row[:6]
+                session, mono = (row[6], row[7]) if has_replay else (None, None)
                 tok = token_of(msg)
                 people = None
                 if tok in NEEDS_PERSON and session is not None and mono is not None:
@@ -86,7 +95,7 @@ def collect(folder, window):
                 tm = re.search(r"track=(\d+)", msg)
                 ev.append({"db": os.path.basename(db), "id": eid, "ts": ts, "level": level, "module": module,
                            "msg": msg, "token": tok, "shadow": msg.endswith(SHADOW_SUFFIX),
-                           "track": tm.group(1) if tm else None, "people": people,
+                           "track": tm.group(1) if tm else None, "people": people, "label": label,
                            "linked": session is not None})
             con.close()
         except sqlite3.DatabaseError as e:
@@ -125,8 +134,8 @@ def main():
     linked = sum(1 for e in ev if e["linked"])
     p(f"- 리플레이와 시각 연결 가능: {linked}/{len(ev)}건 (연결 불가는 무인 시간대 판정에서 제외)\n")
     p("## 알림 종류별\n")
-    p("| 알림 | 건수 | 시간당 | 그림자 | 고유 트랙 | 트랙당 반복 | 무인 시간대 발화 | 판정 가능 |")
-    p("|---|---|---|---|---|---|---|---|")
+    p("| 알림 | 건수 | 시간당 | 그림자 | 고유 트랙 | 트랙당 반복 | 무인 시간대 발화 | 판정 가능 | 점주 판단(맞아요/오탐) | 정밀도 |")
+    p("|---|---|---|---|---|---|---|---|---|---|")
     by = defaultdict(list)
     for e in ev:
         by[e["token"]].append(e)
@@ -140,8 +149,11 @@ def main():
             jtxt = f"{len(judged)}/{len(es)}"
         else:
             unatt, jtxt = "해당 없음", "-"
+        ok = sum(1 for e in es if e["label"] == "correct")
+        bad = sum(1 for e in es if e["label"] == "false")
+        prec = f"{ok / (ok + bad):.0%}" if ok + bad else "-"
         p(f"| {tok} | {len(es)} | {len(es) / hours:.2f} | {sum(1 for e in es if e['shadow'])} | "
-          f"{len(tracks) if tracks else '-'} | {repeat} | {unatt} | {jtxt} |")
+          f"{len(tracks) if tracks else '-'} | {repeat} | {unatt} | {jtxt} | {ok}/{bad} | {prec}{' (표본 부족)' if 0 < ok + bad < 10 else ''} |")
     p("\n## 날짜별 알림 합계 (그림자 제외 = 점주가 실제로 보는 양)\n")
     p("| 날짜 | 점주에게 보이는 WARN/ERROR | 그림자 | 합계 |")
     p("|---|---|---|---|")

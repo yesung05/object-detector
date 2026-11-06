@@ -21,7 +21,9 @@ run() {  # name fps json_extra
   local name="$1" fps="$2" extra="$3" i port
   for i in $(seq 1 "$REPS"); do
     port=$((19100 + RANDOM % 800))
-    printf '{"stream_port":%d,"stream_privacy_style":1%s}\n' "$port" "$extra" > "$OUT/c.json"
+    # 스타일 키는 각 호출의 $extra 에만 둔다. 템플릿에 한 번 더 넣으면 같은 키가 두 번 생겨 파서가 앞의 값을 써서
+    # solid 측정이 사실은 엣지 스타일로 돌았다(첫 측정에서 solid 가 엣지보다 느리게 나온 원인).
+    printf '{"stream_port":%d%s}\n' "$port" "$extra" > "$OUT/c.json"
     "$EXE" --model "$MODEL" --provider cpu --threads 2 --input "$CLIP" --video-clock --config "$OUT/c.json" \
         --stream-port "$port" --output "$OUT/o.mp4" > "$OUT/r.log" 2>&1
     # 예: "done: 180 frames, 180 inference runs, 9.67 s (18.62 fps), CPU 11.72 s (65.10 ms/frame)"
@@ -30,12 +32,13 @@ run() {  # name fps json_extra
     printf '%s\t%s\t%s\t%s\t%s\n' "$name" "$fps" "$secs" "$fpsv" "$cpu" >> "$OUT/results.tsv"
   done
 }
-run off 0      ',"stream_privacy_mode":0'
-run solid 0    ',"stream_privacy_mode":1,"stream_privacy_style":0'
+want() { [ -z "${ONLY:-}" ] || [ "$ONLY" = "$1" ]; }   # ONLY=solid 처럼 한 설정만 다시 잴 수 있다
+want off && run off 0      ',"stream_privacy_style":0,"stream_privacy_mode":0'
+want solid && run solid 0  ',"stream_privacy_mode":1,"stream_privacy_style":0'
 for f in 30 5; do
-  run edge_v1 $f ",\"stream_privacy_mode\":1,\"privacy_style_fps\":$f,\"privacy_edge_blur\":1,\"privacy_edge_soft\":0,\"privacy_edge_opacity\":100"
-  run edge_v2 $f ",\"stream_privacy_mode\":1,\"privacy_style_fps\":$f,\"privacy_edge_blur\":3,\"privacy_edge_soft\":0,\"privacy_edge_opacity\":100"
-  run edge_v3 $f ",\"stream_privacy_mode\":1,\"privacy_style_fps\":$f,\"privacy_edge_blur\":8,\"privacy_edge_soft\":1,\"privacy_edge_opacity\":70"
+  want edge_v1 && run edge_v1 $f ",\"stream_privacy_mode\":1,\"stream_privacy_style\":1,\"privacy_style_fps\":$f,\"privacy_edge_blur\":1,\"privacy_edge_soft\":0,\"privacy_edge_opacity\":100"
+  want edge_v2 && run edge_v2 $f ",\"stream_privacy_mode\":1,\"stream_privacy_style\":1,\"privacy_style_fps\":$f,\"privacy_edge_blur\":3,\"privacy_edge_soft\":0,\"privacy_edge_opacity\":100"
+  want edge_v3 && run edge_v3 $f ",\"stream_privacy_mode\":1,\"stream_privacy_style\":1,\"privacy_style_fps\":$f,\"privacy_edge_blur\":8,\"privacy_edge_soft\":1,\"privacy_edge_opacity\":70"
 done
 # 중앙값 요약
 sort -t$'\t' -k1,1 -k2,2n "$OUT/results.tsv" | awk -F'\t' '

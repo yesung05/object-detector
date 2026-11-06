@@ -23,7 +23,7 @@ import urllib.request
 
 EDGE = r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"
 # (이름, 경로). index 의 고급 모드·다크는 URL 파라미터로 지정한다(새 디자인이 지원; 기존 코드는 무시하고 기본 화면).
-PAGES = [("index", "/"), ("index-adv", "/?mode=advanced"), ("surfaces", "/surfaces"),
+PAGES = [("index", "/"), ("index-adv", "/?mode=advanced"), ("index-modes", "/?mode=advanced&group=modes"), ("surfaces", "/surfaces"),
          ("announce", "/announce"), ("replay", "/replay"), ("research", "/research")]
 UNUSED_STREAM_PORT = 18899
 SIZES = {"desktop": (1440, 1800), "mobile": (390, 2600)}
@@ -40,7 +40,11 @@ def make_root(html_dir, config_src):
             ("ERROR", "rules", "person_fallen track=3 hold=3.0s score=0.66 match=0.66 samples=10 evidence=upright_to_horizontal"),
             ("WARN", "door", "door_open: 30초 이상 개방 상태 지속"),
             ("INFO", "camera", "state=ok"),
-            ("WARN", "rules", "unordered_seated track=5 dwell=412s grace=300s")]
+            ("WARN", "rules", "unordered_seated track=5 dwell=412s grace=300s"),
+            ("WARN", "rules", "overstay track=2 dwell=3800s limit=3600s"),
+            ("WARN", "rules", "overstay track=2 dwell=3900s limit=3600s"),
+            ("WARN", "rules", "external_drink track=7 mode=shadow"),
+            ("WARN", "rules", "external_drink track=8 mode=shadow")]
     for i, (lv, mod, msg) in enumerate(rows):
         con.execute("INSERT INTO events VALUES(?,?,?,?,?,?)", (i + 1, 1.0 * i, "2026-11-05T10:00:%02d" % i, lv, mod, msg))
     con.commit()
