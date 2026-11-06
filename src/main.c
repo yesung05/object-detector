@@ -418,6 +418,308 @@ static void surface_process(AppContext *app,RgbFrame *frame,double now) {
     if(now-app->surface_status_at>=0.5){surface_monitor_status(app->surface_monitor,now,status,sizeof(status));
         stream_surface_status(status);app->surface_status_at=now;}
 }
+/*
+ * Tier1 추론 한 번(워커 스레드 또는 동기 모드에서 호출). AppContext 를 읽지 않고 InferJob 만 씁니다 —
+ * 비동기일 때 main 스레드와 공유하는 상태가 이 구조체(state 로 소유권 이전)와 detector 하나뿐이도록.
+ * 순서는 예전 process_frame 과 같습니다: 컷 적용 → 추론 → 낮은 박스 분리 → 통계 → (놓쳤으면) 회전 재탐지.
+ */
+static int infer_job_run(void *ctx, char *error, size_t error_size) {
+    InferJob *j = (InferJob *)ctx;
+    detector_set_confidence(j->detector, j->conf);
+    if (detector_run(j->detector, j->rgb, j->width, j->height, j->stride, j->dets,
+                     error, error_size) != 0)
+        return -1;
+    /* 다른 모든 소비자보다 먼저 나눠, 낮은 박스는 트랙 잇기에만 쓰이게 합니다. */
+    split_low_list(j->dets, j->low, j->keep_score, 1);
+    detector_get_last_stats(j->detector, &j->stats);
+    /* ── 회전 프레임 재탐지 (쓰러짐 보조) ─────────────────────────
+     * YOLO가 사람을 놓쳤고 최근 10초 이내에 사람이 있었으면,
+     * 90° CW / CCW 두 방향으로 프레임을 회전해 다시 탐지합니다.
+     * 누운 사람은 회전하면 서있는 사람처럼 보여 탐지율이 높아집니다.
+     * 카메라 비율(4:3/16:9 등)과 무관하게 좌표 역변환으로 원복합니다. */
+    if (j->dets->count == 0
+        && j->last_person_time > 0
+        && (j->now - j->last_person_time) < 10.0) {
+
+        int rw = j->height, rh = j->width; /* 회전 후 크기 */
+        int need = rw * rh * 3;
+        if (!j->rotated_rgb || j->rotated_rgb_size < need) {
+            free(j->rotated_rgb);
+            j->rotated_rgb = (uint8_t *)malloc((size_t)need);
+            j->rotated_rgb_size = j->rotated_rgb ? need : 0;
+        }
+        if (j->rotated_rgb && j->rotated_dets.items) {
+            int dir, x, y;
+            for (dir = 0; dir < 2 && j->dets->count == 0; dir++) {
+                /* dir=0: 90° CW,  dir=1: 90° CCW */
+                for (y = 0; y < j->height; y++) {
+                    for (x = 0; x < j->width; x++) {
+                        int dx, dy;
+                        if (dir == 0) { dx = j->height-1-y; dy = x; }
+                        else          { dx = y;                  dy = j->width-1-x; }
+                        j->rotated_rgb[(dy*rw + dx)*3+0] =
+                            j->rgb[y*j->stride + x*3+0];
+                        j->rotated_rgb[(dy*rw + dx)*3+1] =
+                            j->rgb[y*j->stride + x*3+1];
+                        j->rotated_rgb[(dy*rw + dx)*3+2] =
+                            j->rgb[y*j->stride + x*3+2];
+                    }
+                }
+                j->rotated_dets.count = 0;
+                if (detector_run(j->detector,
+                                 j->rotated_rgb, rw, rh, rw*3,
+                                 &j->rotated_dets,
+                                 error, error_size) == 0
+                    && j->rotated_dets.count > 0) {
+                    /* 좌표를 원본 공간으로 역변환 후 detections에 합산 */
+                    size_t di;
+                    for (di = 0; di < j->rotated_dets.count
+                         && j->dets->count < j->dets->capacity; di++) {
+                        Detection d = j->rotated_dets.items[di];
+                        float ox1, oy1, ox2, oy2;
+                        int ki;
+                        if (dir == 0) { /* CW 역변환 */
+                            ox1 = d.y1;
+                            oy1 = (float)j->height - 1.0f - d.x2;
+                            ox2 = d.y2;
+                            oy2 = (float)j->height - 1.0f - d.x1;
+                        } else {        /* CCW 역변환 */
+                            ox1 = (float)j->width - 1.0f - d.y2;
+                            oy1 = d.x1;
+                            ox2 = (float)j->width - 1.0f - d.y1;
+                            oy2 = d.x2;
+                        }
+                        d.x1 = ox1; d.y1 = oy1; d.x2 = ox2; d.y2 = oy2;
+                        /* 키포인트도 역변환 */
+                        for (ki = 0; ki < d.keypoint_count; ki++) {
+                            float kx = d.kp[ki].x, ky = d.kp[ki].y;
+                            if (dir == 0) {
+                                d.kp[ki].x = ky;
+                                d.kp[ki].y = (float)j->height - 1.0f - kx;
+                            } else {
+                                d.kp[ki].x = (float)j->width - 1.0f - ky;
+                                d.kp[ki].y = kx;
+                            }
+                        }
+                        j->dets->items[j->dets->count++] = d;
+                    }
+                }
+            }
+        }
+        /* 회전 프레임 결과에도 낮은 박스가 섞이므로 같은 기준으로 나눕니다(목록은 이어 붙임). */
+        split_low_list(j->dets, j->low, j->keep_score, 0);
+    }
+    return 0;
+}
+
+/* 추론을 "시작한" 시점의 기록: INF FPS, 마지막 추론 시각(detect_fps 상한·게이트 idle 판정), 게이트 기준 프레임,
+ * 표면 감시의 사람 근거 시각. 비동기에서 결과 도착 시점에 하면 워커가 바쁜 동안 같은 요청이 계속 쌓입니다. */
+static void note_detection(AppContext *app, double now) {
+    /* INF FPS EMA 업데이트 — 이전 추론 이후 경과 시간의 역수.
+     * α=0.3으로 약 3회 추론 반응폭. 첫 추론은 건너뜁니다. */
+    if (app->last_detection_time > 0.0) {
+        double det_interval = now - app->last_detection_time;
+        if (det_interval > 0.001) {
+            double inst = 1.0 / det_interval;
+            app->realtime_inf_fps = app->realtime_inf_fps * 0.7 + inst * 0.3;
+        }
+    }
+    app->last_detection_time = now;
+    app->surface_people_at = now;
+    /* 게이트 기준 프레임을 이번 추론 시점으로 갱신합니다.
+     * 이 시점 이후의 변화만 "새로 볼 이유"가 됩니다. */
+    if (app->gray.data && app->gray_ref) {
+        memcpy(app->gray_ref, app->gray.data,
+               (size_t)app->gray.width * app->gray.height);
+        app->gray_ref_ready = 1;
+    }
+}
+
+/*
+ * 추론 결과를 반영합니다. inf = 추론한 프레임(동기: 현재 프레임, 비동기: job 사본), inf_now = 그 프레임 시각,
+ * cur = 지금 처리 중인 프레임. 트랙·룰·증거 사진·Tier 2 는 inf 의 픽셀과 시각으로 평가합니다(박스와 픽셀이
+ * 같은 순간이어야 재식별 히스토그램·증거 사진이 맞음). 비동기에서는 마지막에 추적기로 박스를 inf → cur 로 옮깁니다.
+ */
+static int consume_inference(AppContext *app, RgbFrame *inf, double inf_now,
+                             RgbFrame *cur, char *error, size_t error_size) {
+    double started;
+    if (app->job.dets != &app->detections) {
+        /* 비동기: job 소유 목록 → app 목록 복사(용량은 둘 다 max_candidates). */
+        app->detections.count = app->job.dets->count;
+        memcpy(app->detections.items, app->job.dets->items, app->job.dets->count * sizeof(Detection));
+        app->low_detections.count = app->job.low->count;
+        memcpy(app->low_detections.items, app->job.low->items, app->job.low->count * sizeof(Detection));
+    }
+    app->detector_stats.preprocess_seconds += app->job.stats.preprocess_seconds;
+    app->detector_stats.inference_seconds += app->job.stats.inference_seconds;
+    app->detector_stats.postprocess_seconds += app->job.stats.postprocess_seconds;
+    /* 링 버퍼 백분위는 누적이 아니라 최신값을 그대로 씁니다. */
+    app->detector_stats.inference_p50_ms = app->job.stats.inference_p50_ms;
+    app->detector_stats.inference_p95_ms = app->job.stats.inference_p95_ms;
+    app->detector_stats.inference_max_ms = app->job.stats.inference_max_ms;
+    app->inference_runs++;
+
+    tracks_update_ex(&app->tracks, &app->detections,
+                     app->keep_score > 0.0f ? &app->low_detections : NULL,
+                  inf->data, inf->width, inf->height, inf->stride,
+                  inf_now);
+    if (app->tracks.reid_dwell_resets != app->reid_resets_logged) {
+        char rm[160];
+        snprintf(rm, sizeof(rm), "track_reid_dwell_reset count=%lu keep=%.0fs — 오래 떠났다 돌아온 트랙의 체류를 처음부터 셉니다",
+                 app->tracks.reid_dwell_resets, app->tracks.reid_dwell_keep_seconds);
+        event_log_write(&app->event_log, LOG_INFO, "rules", rm);
+        app->reid_resets_logged = app->tracks.reid_dwell_resets;
+    }
+    if (app->fight) fight_step(app, inf_now);   /* 폭행 2단계(기본 꺼짐): 사람 검출·관절이 갱신된 프레임에서만 */
+    /* full_luma 준비: 원본 해상도 그레이스케일.
+     * luma 평면이 있으면 그대로, 없으면 RGB→Gray(BT.601) 변환합니다. */
+    {
+        int need = inf->width * inf->height;
+        if (!app->full_luma || app->full_luma_size < need) {
+            free(app->full_luma);
+            app->full_luma = (uint8_t *)malloc((size_t)need);
+            app->full_luma_size = app->full_luma ? need : 0;
+        }
+        if (app->full_luma) {
+            if (inf->luma) {
+                /* luma 평면이 stride 포함이면 행마다 복사 */
+                int row;
+                for (row = 0; row < inf->height; row++)
+                    memcpy(app->full_luma + row * inf->width,
+                           inf->luma + row * inf->luma_stride,
+                           (size_t)inf->width);
+            } else {
+                /* RGB → Gray: Y ≈ (R*77 + G*150 + B*29) >> 8  (BT.601) */
+                int px, total = inf->width * inf->height;
+                const uint8_t *src = inf->data;
+                uint8_t *dst = app->full_luma;
+                for (px = 0; px < total; px++, src += 3)
+                    dst[px] = (uint8_t)((src[0]*77u + src[1]*150u + src[2]*29u) >> 8);
+            }
+            tracks_update_heads(&app->tracks, app->full_luma,
+                                inf->width, inf->height,
+                                inf->width, inf_now);
+        }
+    }
+    /* last_person_time 갱신 */
+    if (app->detections.count > 0)
+        app->last_person_time = inf_now;
+    /* 쓰러짐 판정이 bbox 잘림을 확인할 수 있도록 프레임 크기를 알려 줍니다. */
+    rules_set_frame_size(&app->rules, inf->width, inf->height);
+    rules_evaluate(&app->rules, &app->tracks, inf_now, &app->event_log);
+    if (app->fall_trace) {
+        /* 추론한 프레임에서만 한 번 호출되므로 프레임당 트랙 수만큼만 쓴다. 룰 상태는 읽기만 한다. */
+        size_t ti, si;
+        for (ti = 0; ti < app->tracks.count; ++ti) {
+            const Track *t = &app->tracks.items[ti];
+            const TrackRuleState *s = NULL; /* RulesEngine 소유, 이 블록 안에서만 읽음 */
+            if (t->id <= 0 || !t->active) continue;
+            for (si = 0; si < app->rules.capacity; ++si)
+                if (app->rules.states[si].track_id == t->id) { s = &app->rules.states[si]; break; }
+            if (!s) continue;
+            fprintf(app->fall_trace,
+                    "%lld,%d,%d,%.3f,%.3f,%.1f,%.1f,%.1f,%.1f,%d,%d,%d,%.2f,%u,%.2f,%d\n",
+                    (long long)inf->index, t->id, t->misses, t->box.score, t->match_score,
+                    t->box.x1, t->box.y1, t->box.x2, t->box.y2, s->fall_gate, s->dbg_pose,
+                    s->dbg_horizontal, s->upright_last > 0 ? inf_now - s->upright_last : -1.0,
+                    s->fall_samples, s->fall_start > 0 ? inf_now - s->fall_start : 0.0,
+                    s->fall_latched);
+        }
+    }
+    capture_fall_events(app, inf);
+
+    /* Tier 2: detect_every_obj 주기마다 실행.
+     * 이전 코드는 && (frame->index % detect_every != 0) 조건 때문에
+     * detect_every_obj/2가 detect_every의 배수일 때 Tier 2가 영원히 실행되지
+     * 않는 버그가 있었다(detect_every=5, detect_every_obj=90 → 45%5==0).
+     * 조건을 단순 주기로 변경한다. ORT는 내부적으로 직렬 실행되므로 경합 없음. */
+    int tier2_mul = throttle_tier2_multiplier(app->throttle.level);
+    /* 표면 감시가 켜져 있으면 전체 프레임 Tier 2 는 건너뛰던 것이 기존 정책(CPU 절감).
+     * 대신 동물 정책이 필요한 경우만 예외로 둔다: 출입 금지(animal_present)는 전체 프레임을,
+     * 가구 위 금지는 테이블 크롭만 돌려 비용을 최소화한다. */
+    int full_t2 = app->tier2_always || app->animal_present_on ||
+                  !surface_monitor_enabled(app->surface_monitor);
+    int crop_t2 = app->animal_crop && app->table_box_count > 0;
+    if (app->obj_detector && tier2_mul > 0 && (full_t2 || crop_t2)) {
+        /* 비동기에서는 결과가 도착하는 프레임 번호가 들쭉날쭉해 나머지 조건이 거의 맞지 않는다 →
+         * "주기만큼 지난 첫 결과"에서 실행하는 래치. 동기는 이전과 같은 나머지 조건(평가 재현성). */
+        int64_t period = (int64_t)app->detect_every_obj * tier2_mul;
+        int run_obj = app->infer_async ? inf->index >= app->obj_next_index
+                                       : (inf->index % period == 0);
+        if (run_obj && app->infer_async) app->obj_next_index = inf->index + period;
+        if (run_obj) {
+            if (full_t2) {
+                int rc = detector_run(app->obj_detector,
+                                      inf->data, inf->width, inf->height,
+                                      inf->stride,
+                                      &app->obj_detections, error, error_size);
+                if (rc != 0) return -1;
+                record_tier2_run(app);
+            } else {
+                app->obj_detections.count = 0;  /* 크롭 결과만 담는다 */
+            }
+            if (crop_t2) tier2_table_crops(app, inf);
+            app->replay_tier2_at=inf_now;
+            obj_hide_filter(app, inf);
+            rules_evaluate_objects(&app->rules, &app->obj_detections,
+                                   &app->tracks, inf_now, &app->event_log);
+        }
+    }
+
+    if (app->tracking) {
+        started = platform_monotonic_seconds();
+        /* 추적기 기준을 추론 프레임으로. make_gray 는 tracker->luma 를 우선 쓰므로 luma 를 먼저 맞춘다 —
+         * 순서를 바꾸면 현재 프레임 luma 로 기준을 잡아 이동량이 0 이 된다. */
+        tracker_set_luma(app->tracker, inf->luma, inf->luma_stride);
+        if (tracker_reset(app->tracker, inf->data, inf->width,
+                          inf->height, inf->stride,
+                          error, error_size) != 0)
+            return -1;
+        if (inf != cur) {
+            /* 비동기: inf → cur 로 박스를 한 번에 옮긴다. 이때의 재추론 요청은 무시한다 — 여러 프레임치
+             * 이동은 탐색 반경을 자주 넘어 매번 재추론을 부르고, 다음 프레임의 일반 추적이 필요하면 다시 요청한다. */
+            int ignored = 0;
+            tracker_set_luma(app->tracker, cur->luma, cur->luma_stride);
+            if (tracker_update(app->tracker, cur->data, cur->width, cur->height,
+                               cur->stride, &app->detections, &ignored,
+                               error, error_size) != 0)
+                return -1;
+        }
+        app->tracking_seconds += platform_monotonic_seconds() - started;
+    }
+    return 0;
+}
+
+/* 비동기 제출: 현재 프레임을 job 버퍼로 복사(워커 idle 일 때만 호출). 반환 -1 = 메모리 부족.
+ * 버퍼는 job 소유(malloc) — 해상도가 커질 때만 다시 할당하고, 해제는 main 의 done: 에서 워커 stop 뒤에 free. */
+static int infer_job_copy_frame(InferJob *j, const RgbFrame *frame) {
+    size_t rgb_need = (size_t)frame->width * 3 * (size_t)frame->height;
+    size_t luma_need = frame->luma ? (size_t)frame->width * (size_t)frame->height : 0;
+    int y;
+    if (j->buf_rgb_size < rgb_need) {
+        free(j->buf_rgb);
+        j->buf_rgb = (uint8_t *)malloc(rgb_need);
+        j->buf_rgb_size = j->buf_rgb ? rgb_need : 0;
+        if (!j->buf_rgb) return -1;
+    }
+    if (luma_need && j->buf_luma_size < luma_need) {
+        free(j->buf_luma);
+        j->buf_luma = (uint8_t *)malloc(luma_need);
+        j->buf_luma_size = j->buf_luma ? luma_need : 0;
+        if (!j->buf_luma) return -1;
+    }
+    for (y = 0; y < frame->height; ++y)
+        memcpy(j->buf_rgb + (size_t)y * frame->width * 3,
+               frame->data + (size_t)y * frame->stride, (size_t)frame->width * 3);
+    for (y = 0; luma_need && y < frame->height; ++y)
+        memcpy(j->buf_luma + (size_t)y * frame->width,
+               frame->luma + (size_t)y * frame->luma_stride, (size_t)frame->width);
+    j->rgb = j->buf_rgb; j->stride = frame->width * 3;
+    j->luma = luma_need ? j->buf_luma : NULL; j->luma_stride = frame->width;
+    j->width = frame->width; j->height = frame->height; j->index = frame->index;
+    return 0;
+}
+
 static int process_frame(RgbFrame *frame, void *opaque,
                          char *error, size_t error_size) {
     AppContext *app = (AppContext *)opaque;
@@ -846,7 +1148,9 @@ static int process_frame(RgbFrame *frame, void *opaque,
     if (app->tracker)
         tracker_set_luma(app->tracker, frame->luma, frame->luma_stride);
 
-    if (!run_detector && app->tracking) {
+    if (app->tracking && (app->infer_async || !run_detector)) {
+        /* 비동기에서는 추론을 요청하는 프레임도 추적한다 — 결과가 몇 프레임 뒤에 오므로 그동안 박스를 움직여야 한다. */
+        int was_scheduled = run_detector;
         started = platform_monotonic_seconds();
         if (tracker_update(app->tracker, frame->data, frame->width,
                            frame->height, frame->stride, &app->detections,
@@ -854,9 +1158,10 @@ static int process_frame(RgbFrame *frame, void *opaque,
             return -1;
         app->tracking_seconds += platform_monotonic_seconds() - started;
         if (requested && !gate_hard_block) {
+            if (!was_scheduled) app->adaptive_runs++;
             run_detector = 1;
-            app->adaptive_runs++;
-        } else {
+        }
+        if (app->infer_async || !run_detector) {
             tracked = 1;
             app->tracked_frames++;
             kind = "tracked";
@@ -867,231 +1172,63 @@ static int process_frame(RgbFrame *frame, void *opaque,
     /* MINIMAL 단계에서는 위 강제 추론까지 막습니다 — 키오스크 보호가 감지보다 우선입니다.
        카메라 상태 감시는 gray 기반이라 계속 동작합니다. */
     if (detect_mul == 0) run_detector = 0;
-    if (run_detector) {
-        DetectorRunStats run_stats;
-        if (detector_run(app->detector, frame->data, frame->width,
-                         frame->height, frame->stride, &app->detections,
-                         error, error_size) != 0)
-            return -1;
-        /* 다른 모든 소비자보다 먼저 나눠, 낮은 박스는 트랙 잇기에만 쓰이게 합니다. */
-        split_low_detections(app, 1);
-        detector_get_last_stats(app->detector, &run_stats);
-        app->detector_stats.preprocess_seconds += run_stats.preprocess_seconds;
-        app->detector_stats.inference_seconds += run_stats.inference_seconds;
-        app->detector_stats.postprocess_seconds += run_stats.postprocess_seconds;
-        /* 링 버퍼 백분위는 누적이 아니라 최신값을 그대로 씁니다. */
-        app->detector_stats.inference_p50_ms = run_stats.inference_p50_ms;
-        app->detector_stats.inference_p95_ms = run_stats.inference_p95_ms;
-        app->detector_stats.inference_max_ms = run_stats.inference_max_ms;
-        app->inference_runs++;
-        app->surface_people_at=now;
-        kind = requested ? "adaptive" : "inference";
-        if (app->tracking) {
-            started = platform_monotonic_seconds();
-            if (tracker_reset(app->tracker, frame->data, frame->width,
-                              frame->height, frame->stride,
-                              error, error_size) != 0)
+    if (!app->infer_async) {
+        if (run_detector) {
+            InferJob *j = &app->job;
+            j->rgb = frame->data; j->stride = frame->stride;          /* 콜백 동안만 빌림 */
+            j->luma = frame->luma; j->luma_stride = frame->luma_stride;
+            j->width = frame->width; j->height = frame->height; j->index = frame->index;
+            j->now = now; j->last_person_time = app->last_person_time; j->requested = requested;
+            j->conf = app->person_det_conf; j->keep_score = app->keep_score;
+            if (infer_job_run(j, error, error_size) != 0)
                 return -1;
-            app->tracking_seconds += platform_monotonic_seconds() - started;
+            kind = requested ? "adaptive" : "inference";
+            note_detection(app, now);
+            if (consume_inference(app, frame, now, frame, error, error_size) != 0)
+                return -1;
+        } else if (!tracked) {
+            app->reused_frames++;
         }
-        /* INF FPS EMA 업데이트 — 이전 추론 이후 경과 시간의 역수.
-         * α=0.3으로 약 3회 추론 반응폭. 첫 추론은 건너뜁니다. */
-        if (app->last_detection_time > 0.0) {
-            double det_interval = now - app->last_detection_time;
-            if (det_interval > 0.001) {
-                double inst = 1.0 / det_interval;
-                app->realtime_inf_fps = app->realtime_inf_fps * 0.7 + inst * 0.3;
+    } else {
+        /* 1) 끝난 결과가 있으면 반영. 2) 요청이 있으면(지금 또는 대기 중) 워커가 idle 일 때 최신 프레임으로 제출. */
+        int polled = infer_worker_poll(&app->worker, error, error_size);
+        if (polled < 0) return -1;
+        if (polled > 0) {
+            InferJob *j = &app->job;
+            if (j->width != frame->width || j->height != frame->height) {
+                char m[160];
+                app->infer_dropped_results++;
+                snprintf(m, sizeof(m), "infer_async result dropped: frame size %dx%d -> %dx%d (카메라 재연결)",
+                         j->width, j->height, frame->width, frame->height);
+                event_log_write(&app->event_log, LOG_WARN, "inference", m);
+            } else {
+                RgbFrame inf = *frame;
+                inf.data = j->buf_rgb; inf.stride = j->stride; inf.index = j->index;
+                inf.luma = j->luma; inf.luma_stride = j->luma_stride;
+                kind = j->requested ? "adaptive" : "inference";
+                if (consume_inference(app, &inf, j->now, frame, error, error_size) != 0)
+                    return -1;
             }
         }
-        app->last_detection_time = now;
-        /* 게이트 기준 프레임을 이번 추론 시점으로 갱신합니다.
-         * 이 시점 이후의 변화만 "새로 볼 이유"가 됩니다. */
-        if (app->gray.data && app->gray_ref) {
-            memcpy(app->gray_ref, app->gray.data,
-                   (size_t)app->gray.width * app->gray.height);
-            app->gray_ref_ready = 1;
-        }
-        /* ── 회전 프레임 재탐지 (쓰러짐 보조) ─────────────────────────
-         * YOLO가 사람을 놓쳤고 최근 10초 이내에 사람이 있었으면,
-         * 90° CW / CCW 두 방향으로 프레임을 회전해 다시 탐지합니다.
-         * 누운 사람은 회전하면 서있는 사람처럼 보여 탐지율이 높아집니다.
-         * 카메라 비율(4:3/16:9 등)과 무관하게 좌표 역변환으로 원복합니다. */
-        if (app->detections.count == 0
-            && app->last_person_time > 0
-            && (now - app->last_person_time) < 10.0) {
-
-            int rw = frame->height, rh = frame->width; /* 회전 후 크기 */
-            int need = rw * rh * 3;
-            if (!app->rotated_rgb || app->rotated_rgb_size < need) {
-                free(app->rotated_rgb);
-                app->rotated_rgb = (uint8_t *)malloc((size_t)need);
-                app->rotated_rgb_size = app->rotated_rgb ? need : 0;
-            }
-            if (app->rotated_rgb && app->rotated_dets.items) {
-                int dir, x, y;
-                for (dir = 0; dir < 2 && app->detections.count == 0; dir++) {
-                    /* dir=0: 90° CW,  dir=1: 90° CCW */
-                    for (y = 0; y < frame->height; y++) {
-                        for (x = 0; x < frame->width; x++) {
-                            int dx, dy;
-                            if (dir == 0) { dx = frame->height-1-y; dy = x; }
-                            else          { dx = y;                  dy = frame->width-1-x; }
-                            app->rotated_rgb[(dy*rw + dx)*3+0] =
-                                frame->data[y*frame->stride + x*3+0];
-                            app->rotated_rgb[(dy*rw + dx)*3+1] =
-                                frame->data[y*frame->stride + x*3+1];
-                            app->rotated_rgb[(dy*rw + dx)*3+2] =
-                                frame->data[y*frame->stride + x*3+2];
-                        }
-                    }
-                    app->rotated_dets.count = 0;
-                    if (detector_run(app->detector,
-                                     app->rotated_rgb, rw, rh, rw*3,
-                                     &app->rotated_dets,
-                                     error, error_size) == 0
-                        && app->rotated_dets.count > 0) {
-                        /* 좌표를 원본 공간으로 역변환 후 detections에 합산 */
-                        size_t di;
-                        for (di = 0; di < app->rotated_dets.count
-                             && app->detections.count < app->detections.capacity; di++) {
-                            Detection d = app->rotated_dets.items[di];
-                            float ox1, oy1, ox2, oy2;
-                            int ki;
-                            if (dir == 0) { /* CW 역변환 */
-                                ox1 = d.y1;
-                                oy1 = (float)frame->height - 1.0f - d.x2;
-                                ox2 = d.y2;
-                                oy2 = (float)frame->height - 1.0f - d.x1;
-                            } else {        /* CCW 역변환 */
-                                ox1 = (float)frame->width - 1.0f - d.y2;
-                                oy1 = d.x1;
-                                ox2 = (float)frame->width - 1.0f - d.y1;
-                                oy2 = d.x2;
-                            }
-                            d.x1 = ox1; d.y1 = oy1; d.x2 = ox2; d.y2 = oy2;
-                            /* 키포인트도 역변환 */
-                            for (ki = 0; ki < d.keypoint_count; ki++) {
-                                float kx = d.kp[ki].x, ky = d.kp[ki].y;
-                                if (dir == 0) {
-                                    d.kp[ki].x = ky;
-                                    d.kp[ki].y = (float)frame->height - 1.0f - kx;
-                                } else {
-                                    d.kp[ki].x = (float)frame->width - 1.0f - ky;
-                                    d.kp[ki].y = kx;
-                                }
-                            }
-                            app->detections.items[app->detections.count++] = d;
-                        }
-                    }
+        if (detect_mul == 0) app->infer_pending = 0;
+        if (run_detector) app->infer_pending = 1;
+        if (app->infer_pending) {
+            if (!infer_worker_busy(&app->worker)) {
+                InferJob *j = &app->job;
+                if (infer_job_copy_frame(j, frame) != 0) {
+                    snprintf(error, error_size, "infer_async: out of memory copying frame");
+                    return -1;
                 }
-            }
-            /* 회전 프레임 결과에도 낮은 박스가 섞이므로 같은 기준으로 나눕니다(목록은 이어 붙임). */
-            split_low_detections(app, 0);
-        }
-
-        tracks_update_ex(&app->tracks, &app->detections,
-                         app->keep_score > 0.0f ? &app->low_detections : NULL,
-                      frame->data, frame->width, frame->height, frame->stride,
-                      now);
-        if (app->tracks.reid_dwell_resets != app->reid_resets_logged) {
-            char rm[160];
-            snprintf(rm, sizeof(rm), "track_reid_dwell_reset count=%lu keep=%.0fs — 오래 떠났다 돌아온 트랙의 체류를 처음부터 셉니다",
-                     app->tracks.reid_dwell_resets, app->tracks.reid_dwell_keep_seconds);
-            event_log_write(&app->event_log, LOG_INFO, "rules", rm);
-            app->reid_resets_logged = app->tracks.reid_dwell_resets;
-        }
-        if (app->fight) fight_step(app, now);   /* 폭행 2단계(기본 꺼짐): 사람 검출·관절이 갱신된 프레임에서만 */
-        /* full_luma 준비: 원본 해상도 그레이스케일.
-         * luma 평면이 있으면 그대로, 없으면 RGB→Gray(BT.601) 변환합니다. */
-        {
-            int need = frame->width * frame->height;
-            if (!app->full_luma || app->full_luma_size < need) {
-                free(app->full_luma);
-                app->full_luma = (uint8_t *)malloc((size_t)need);
-                app->full_luma_size = app->full_luma ? need : 0;
-            }
-            if (app->full_luma) {
-                if (frame->luma) {
-                    /* luma 평면이 stride 포함이면 행마다 복사 */
-                    int row;
-                    for (row = 0; row < frame->height; row++)
-                        memcpy(app->full_luma + row * frame->width,
-                               frame->luma + row * frame->luma_stride,
-                               (size_t)frame->width);
-                } else {
-                    /* RGB → Gray: Y ≈ (R*77 + G*150 + B*29) >> 8  (BT.601) */
-                    int px, total = frame->width * frame->height;
-                    const uint8_t *src = frame->data;
-                    uint8_t *dst = app->full_luma;
-                    for (px = 0; px < total; px++, src += 3)
-                        dst[px] = (uint8_t)((src[0]*77u + src[1]*150u + src[2]*29u) >> 8);
-                }
-                tracks_update_heads(&app->tracks, app->full_luma,
-                                    frame->width, frame->height,
-                                    frame->width, now);
+                j->now = now; j->last_person_time = app->last_person_time; j->requested = requested;
+                j->conf = app->person_det_conf; j->keep_score = app->keep_score;
+                note_detection(app, now);
+                infer_worker_submit(&app->worker);
+                app->infer_pending = 0;
+            } else {
+                app->infer_wait_frames++;
             }
         }
-        /* last_person_time 갱신 */
-        if (app->detections.count > 0)
-            app->last_person_time = now;
-        /* 쓰러짐 판정이 bbox 잘림을 확인할 수 있도록 프레임 크기를 알려 줍니다. */
-        rules_set_frame_size(&app->rules, frame->width, frame->height);
-        rules_evaluate(&app->rules, &app->tracks, now, &app->event_log);
-        if (app->fall_trace) {
-            /* 추론한 프레임에서만 한 번 호출되므로 프레임당 트랙 수만큼만 쓴다. 룰 상태는 읽기만 한다. */
-            size_t ti, si;
-            for (ti = 0; ti < app->tracks.count; ++ti) {
-                const Track *t = &app->tracks.items[ti];
-                const TrackRuleState *s = NULL; /* RulesEngine 소유, 이 블록 안에서만 읽음 */
-                if (t->id <= 0 || !t->active) continue;
-                for (si = 0; si < app->rules.capacity; ++si)
-                    if (app->rules.states[si].track_id == t->id) { s = &app->rules.states[si]; break; }
-                if (!s) continue;
-                fprintf(app->fall_trace,
-                        "%lld,%d,%d,%.3f,%.3f,%.1f,%.1f,%.1f,%.1f,%d,%d,%d,%.2f,%u,%.2f,%d\n",
-                        (long long)frame->index, t->id, t->misses, t->box.score, t->match_score,
-                        t->box.x1, t->box.y1, t->box.x2, t->box.y2, s->fall_gate, s->dbg_pose,
-                        s->dbg_horizontal, s->upright_last > 0 ? now - s->upright_last : -1.0,
-                        s->fall_samples, s->fall_start > 0 ? now - s->fall_start : 0.0,
-                        s->fall_latched);
-            }
-        }
-        capture_fall_events(app, frame);
-
-        /* Tier 2: detect_every_obj 주기마다 실행.
-         * 이전 코드는 && (frame->index % detect_every != 0) 조건 때문에
-         * detect_every_obj/2가 detect_every의 배수일 때 Tier 2가 영원히 실행되지
-         * 않는 버그가 있었다(detect_every=5, detect_every_obj=90 → 45%5==0).
-         * 조건을 단순 주기로 변경한다. ORT는 내부적으로 직렬 실행되므로 경합 없음. */
-        int tier2_mul = throttle_tier2_multiplier(app->throttle.level);
-        /* 표면 감시가 켜져 있으면 전체 프레임 Tier 2 는 건너뛰던 것이 기존 정책(CPU 절감).
-         * 대신 동물 정책이 필요한 경우만 예외로 둔다: 출입 금지(animal_present)는 전체 프레임을,
-         * 가구 위 금지는 테이블 크롭만 돌려 비용을 최소화한다. */
-        int full_t2 = app->tier2_always || app->animal_present_on ||
-                      !surface_monitor_enabled(app->surface_monitor);
-        int crop_t2 = app->animal_crop && app->table_box_count > 0;
-        if (app->obj_detector && tier2_mul > 0 && (full_t2 || crop_t2)) {
-            int run_obj = (frame->index % (app->detect_every_obj * tier2_mul) == 0);
-            if (run_obj) {
-                if (full_t2) {
-                    int rc = detector_run(app->obj_detector,
-                                          frame->data, frame->width, frame->height,
-                                          frame->stride,
-                                          &app->obj_detections, error, error_size);
-                    if (rc != 0) return -1;
-                    record_tier2_run(app);
-                } else {
-                    app->obj_detections.count = 0;  /* 크롭 결과만 담는다 */
-                }
-                if (crop_t2) tier2_table_crops(app, frame);
-                app->replay_tier2_at=now;
-                obj_hide_filter(app, frame);
-                rules_evaluate_objects(&app->rules, &app->obj_detections,
-                                       &app->tracks, now, &app->event_log);
-            }
-        }
-    } else if (!tracked) {
-        app->reused_frames++;
+        if (!tracked && polled == 0) app->reused_frames++;
     }
 
     if (log_detections(app, frame->index, kind, error, error_size) != 0)
@@ -1649,7 +1786,7 @@ int main(int argc, char **argv) {
         goto done;
     }
     /* 회전 프레임 탐지 결과 버퍼 */
-    if (detection_list_init(&app.rotated_dets,
+    if (detection_list_init(&app.job.rotated_dets,
                             args.detector.max_candidates) != 0) {
         fprintf(stderr, "failed to allocate rotated detection buffer\n");
         goto done;
@@ -2239,6 +2376,28 @@ int main(int argc, char **argv) {
      * 실제 반복문은 media_process() 안에 있습니다. 프레임이 준비될 때마다 위의
      * process_frame 함수가 호출되고, 수정된 RGB 프레임이 곧바로 저장됩니다.
      */
+    /* Tier1 추론 작업. 동기는 app 목록에 바로 쓰고(이전과 바이트 동일), 비동기는 job 소유 목록에 받아 복사한다. */
+    app.job.detector = app.detector;
+    app.job.dets = &app.detections;
+    app.job.low = &app.low_detections;
+    app.infer_async = args.async_infer;
+    if (app.infer_async) {
+        if (detection_list_init(&app.job.own_dets, args.detector.max_candidates) != 0 ||
+            detection_list_init(&app.job.own_low, args.detector.max_candidates) != 0 ||
+            infer_worker_start(&app.worker, infer_job_run, &app.job, error, sizeof(error)) != 0) {
+            fprintf(stderr, "infer_async start failed: %s\n", error[0] ? error : "out of memory");
+            goto done;
+        }
+        app.job.dets = &app.job.own_dets;
+        app.job.low = &app.job.own_low;
+    }
+    {
+        char m[200];
+        snprintf(m, sizeof(m), "infer_async=%s reason=%s threads=%d",
+                 app.infer_async ? "on" : "off",
+                 args.camera ? "camera" : (app.infer_async ? "flag" : "file"), args.detector.threads);
+        event_log_write(&app.event_log, LOG_INFO, "startup", m);
+    }
     if (media_process(args.input, args.output, &args.media, process_frame, &app,
                       error, sizeof(error)) != 0) {
         char fail_msg[640];
@@ -2281,20 +2440,23 @@ int main(int argc, char **argv) {
         /* captured(카메라가 보낸 프레임) 대비 processed(처리·변환한 프레임)가 작을수록
          * 추론이 밀려 최신 프레임만 가져갔다는 뜻입니다. 현장에서 "추론이 카메라를
          * 못 따라가는가"를 이 한 줄로 판단할 수 있습니다. */
-        char bye[240];
+        char bye[320];
         snprintf(bye, sizeof(bye),
                  "exit=%d reason=%s reconnects=%lld disconnected=%.0fs "
-                 "captured=%lld processed=%lld convert=%.2fs",
+                 "captured=%lld processed=%lld convert=%.2fs infer_async=%d infer_wait_frames=%lld infer_dropped=%lld",
                  restart_requested ? EXIT_RESTART_REQUESTED : 0,
                  restart_requested ? "scheduled_restart"
                                    : (stop_requested ? "operator_stop" : "input_finished"),
                  (long long)media_stats.reconnects, media_stats.disconnected_seconds,
                  (long long)media_stats.frames, (long long)app.frames,
-                 media_stats.input_convert_seconds);
+                 media_stats.input_convert_seconds, app.infer_async,
+                 (long long)app.infer_wait_frames, (long long)app.infer_dropped_results);
         event_log_write(&app.event_log, LOG_INFO, "shutdown", bye);
     }
 
 done:
+    /* 워커가 detector·job 버퍼를 쓰고 있을 수 있으므로 가장 먼저 멈춘다(실행 중이면 추론 한 번 기다림). */
+    infer_worker_stop(&app.worker);
     if (app.stream_port > 0) stream_stop();
     /*
      * C에는 자동 자원 정리가 없으므로 성공/실패 모두 이 지점을 거치게 합니다.
@@ -2329,9 +2491,13 @@ done:
     detection_list_destroy(&app.obj_detections);
     detection_list_destroy(&app.surface_detections);
     surface_monitor_destroy(app.surface_monitor);
-    detection_list_destroy(&app.rotated_dets);
+    detection_list_destroy(&app.job.rotated_dets);
+    detection_list_destroy(&app.job.own_dets);
+    detection_list_destroy(&app.job.own_low);
     detection_list_destroy(&app.low_detections);
-    free(app.rotated_rgb);
+    free(app.job.rotated_rgb);
+    free(app.job.buf_rgb);
+    free(app.job.buf_luma);
     free(app.full_luma);
     /* 예약 재시작은 "실패"가 아니라 "다시 띄워 달라"는 뜻입니다. 감시 루프가 비정상
      * 종료와 구분해 백오프 없이 즉시 재기동하도록 전용 코드를 돌려줍니다. */

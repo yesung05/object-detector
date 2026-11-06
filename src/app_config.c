@@ -45,19 +45,19 @@ void apply_camera_health_config(AppContext *app, const Config *cfg) {
  * reset=1 이면 low 목록을 비우고 시작합니다(추론 직후 첫 호출). 회전 재탐지가 박스를
  * 덧붙인 뒤에는 reset=0 으로 다시 불러 그 박스들도 나눕니다.
  */
-void split_low_detections(AppContext *app, int reset) {
+void split_low_list(DetectionList *dets, DetectionList *low, float keep_score, int reset) {
     size_t i, kept = 0;
-    if (app->keep_score <= 0.0f) return;
-    if (reset) app->low_detections.count = 0;
-    for (i = 0; i < app->detections.count; ++i) {
-        const Detection *d = &app->detections.items[i];
-        if (d->score >= app->keep_score) {
-            app->detections.items[kept++] = *d;
-        } else if (app->low_detections.count < app->low_detections.capacity) {
-            app->low_detections.items[app->low_detections.count++] = *d;
+    if (keep_score <= 0.0f) return;
+    if (reset) low->count = 0;
+    for (i = 0; i < dets->count; ++i) {
+        const Detection *d = &dets->items[i];
+        if (d->score >= keep_score) {
+            dets->items[kept++] = *d;
+        } else if (low->count < low->capacity) {
+            low->items[low->count++] = *d;
         }
     }
-    app->detections.count = kept;
+    dets->count = kept;
 }
 
 void rebuild_ignore_roi(AppContext *app) {
@@ -79,7 +79,8 @@ void apply_gate_config(AppContext *app, const Config *cfg) {
     app->object_confidence=config_float(cfg,"object_confidence",app->object_confidence,.01f,.99f);
     app->new_person_confidence=config_float(cfg,"new_person_confidence",.30f,.01f,.99f);
     app->keep_score=low>0 && low<app->person_confidence ? app->person_confidence : 0;
-    detector_set_confidence(app->detector,app->keep_score>0?low:app->person_confidence);
+    /* 워커가 추론 중일 수 있어 감지기에 직접 쓰지 않고, 다음 추론 작업이 실행 직전에 적용한다. */
+    app->person_det_conf=app->keep_score>0?low:app->person_confidence;
     detector_set_confidence(app->obj_detector,app->object_confidence);
     app->tracks.new_track_min_score=fmaxf(app->person_confidence,app->new_person_confidence);
     app->reid_dwell_keep=(double)config_float(cfg,"reid_dwell_keep_seconds",300.0f,0.0f,86400.0f);

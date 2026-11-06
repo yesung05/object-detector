@@ -33,6 +33,7 @@
 #include "tracker.h"
 #include "tracks.h"
 #include "yolo11.h"
+#include "infer_worker.h"
 
 #include <errno.h>
 #include <limits.h>
@@ -51,6 +52,39 @@
 #define popen _popen
 #define pclose _pclose
 #endif
+
+/*
+ * Tier1(사람·자세) 추론 한 번의 입력과 출력. 동기 모드와 비동기 모드가 같은 infer_job_run 을 써서 결과가 같습니다.
+ *
+ * 입력 뷰(rgb/luma):
+ *   동기   — process_frame 의 frame 을 빌림. 콜백이 반환하면 무효. 해제 금지.
+ *   비동기 — buf_rgb/buf_luma(이 구조체 소유, malloc)를 가리킴. 워커 idle 일 때만 main 이 다시 씀.
+ * 출력 목록(dets/low):
+ *   동기   — app->detections / app->low_detections 를 직접 가리킴(복사 없음 → 이전과 바이트 동일).
+ *   비동기 — own_dets/own_low(이 구조체 소유). consume 시점에 app 목록으로 복사(포인터 교환이 아니라 복사:
+ *            app 목록의 items 를 붙잡고 있는 코드가 있어도 영향이 없도록).
+ * detector 는 AppContext 소유를 빌려 씀 — 비동기에서는 워커만 만지고, 해제는 워커 stop 이후 main.
+ */
+typedef struct {
+    Detector      *detector;
+    const uint8_t *rgb, *luma;
+    int            width, height, stride, luma_stride;
+    int64_t        index;
+    double         now;               /* 추론 프레임 시각 — 룰은 이 시각으로 평가 */
+    double         last_person_time;  /* 제출 시점 사본(워커가 AppContext 를 읽지 않게) */
+    int            requested;         /* 추적기 요청(adaptive)으로 생긴 추론인가 — CSV kind 용 */
+    float          conf, keep_score;
+    DetectionList *dets, *low;
+    DetectionList  own_dets, own_low;
+    /* 회전 프레임 재탐지(쓰러짐 보조): 사람을 놓쳤고 10초 안에 사람이 있었으면 90° 돌려 다시 탐지.
+     * 회전 버퍼는 처음 필요할 때 1회 할당, 이후 재사용. */
+    uint8_t       *rotated_rgb;
+    int            rotated_rgb_size;
+    DetectionList  rotated_dets;
+    uint8_t       *buf_rgb, *buf_luma;     /* 비동기 전용 프레임 사본. infer_job_free 가 free */
+    size_t         buf_rgb_size, buf_luma_size;
+    DetectorRunStats stats;
+} InferJob;
 
 /*
  * 프로그램 전체에서 한 번만 만들고 모든 프레임이 함께 쓰는 상태입니다.
@@ -287,12 +321,15 @@ typedef struct {
     int    surface_auto_capture;
     double surface_auto_quiet;
 
-    /* 회전 프레임 쓰러짐 감지: YOLO가 수평 자세를 놓쳤을 때 90° 회전 프레임으로
-     * 재탐지합니다. 회전된 누운 사람이 서있는 사람처럼 보여 탐지됩니다.
-     * 회전 버퍼는 첫 프레임에서 1회 할당, 이후 재사용합니다. */
-    uint8_t       *rotated_rgb;       /* H×W×3 회전 버퍼 (원본 전치) */
-    int            rotated_rgb_size;  /* 할당 크기 (바이트) */
-    DetectionList  rotated_dets;      /* 회전 프레임 탐지 결과 */
+    /* Tier1 추론 작업과 비동기 워커(--async-infer). 회전 재탐지 버퍼도 job 안에 있습니다. */
+    InferJob       job;
+    InferWorker    worker;
+    int            infer_async;       /* 1 = 워커 스레드에서 추론, 0 = 프레임 콜백 안에서(파일 평가 재현성) */
+    int            infer_pending;     /* 추론 요청이 왔는데 워커가 바빠 아직 못 넘김 — idle 되면 최신 프레임으로 */
+    int64_t        infer_wait_frames; /* 요청이 대기한 프레임 수(워커가 따라가지 못하는 정도) */
+    int64_t        infer_dropped_results; /* 해상도가 바뀌어 버린 결과 수(재연결) */
+    int64_t        obj_next_index;    /* 비동기 Tier 2 주기 래치: 이 프레임 번호 이상인 추론 결과에서 실행 */
+    float          person_det_conf;   /* 다음 추론에 쓸 Tier1 컷. hot-reload 가 여기만 쓰고 job 이 적용(워커와 경합 방지) */
     double         last_person_time;  /* 마지막으로 사람을 탐지한 시각 */
     /* luma 평면 없는 입력(RGB fallback) 대응: 원본 해상도 그레이스케일 버퍼.
      * frame->luma가 있으면 그대로 사용하고, 없으면 RGB→Gray 변환 결과를 씁니다. */
@@ -361,6 +398,7 @@ typedef struct {
     /* 오프라인 평가 전용(기본 꺼짐). 라이브 카메라 동작에는 영향이 없다. */
     int video_clock;           /* --video-clock: 룰 시간을 영상 시간(frame/fps)으로 */
     const char *infer_cache;   /* --infer-cache PATH: 추론 결과 기록·재생, NULL=꺼짐 */
+    int async_infer;           /* --async-infer 0|1, -1 = 자동(카메라 1, 파일 0) */
 } Arguments;
 
 
@@ -393,7 +431,7 @@ void rebuild_ignore_roi(AppContext *app);
 void reload_config(AppContext *app);
 void reload_door_references(AppContext *app);
 void reload_residue_reference(AppContext *app);
-void split_low_detections(AppContext *app, int reset);
+void split_low_list(DetectionList *dets, DetectionList *low, float keep_score, int reset);
 /* app_output.c */
 void apply_privacy_mask(AppContext *app, RgbFrame *frame, int has_observer);
 void capture_fall_events(AppContext *app, const RgbFrame *frame);

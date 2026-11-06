@@ -77,6 +77,7 @@ void usage(const char *program) {
         "  --fall-trace PATH       offline diagnosis: per-frame fall-rule gate CSV\n"
         "  --video-clock           offline evaluation: rule time = video time (frame/fps), not wall clock\n"
         "  --infer-cache PATH      offline evaluation: record/replay model outputs (PATH.obj for Tier 2)\n"
+        "  --async-infer 0|1       run person inference on a worker thread (default: 1 for camera, 0 for files)\n"
         "\n",
         program, program);
 }
@@ -138,6 +139,7 @@ int parse_arguments(int argc, char **argv, Arguments *args) {
     memset(args, 0, sizeof(*args));
     args->detector.confidence = 0.25f;
     args->detector.iou = 0.45f;
+    args->async_infer = -1;
     /*
      * NMS 이전 후보 상한입니다. 1024는 7~10평 매장에서 도달할 수 없는 값이고,
      * DetectionList(후보당 224바이트)를 229KB로 만들어 i5-4200U의 L2 256KB를
@@ -324,6 +326,11 @@ int parse_arguments(int argc, char **argv, Arguments *args) {
         } else if (strcmp(argv[i], "--infer-cache") == 0) {
             if (require_value(argc, argv, &i, &args->infer_cache) != 0)
                 return -1;
+        } else if (strcmp(argv[i], "--async-infer") == 0) {
+            if (require_value(argc, argv, &i, &value) != 0 ||
+                parse_long(value, 0, 1, &parsed) != 0)
+                return -1;
+            args->async_infer = (int)parsed;
         } else {
             fprintf(stderr, "unknown option: %s\n", argv[i]);
             return -1;
@@ -347,6 +354,14 @@ int parse_arguments(int argc, char **argv, Arguments *args) {
         fprintf(stderr, "--video-clock cannot be used with --camera (live input has no video timeline)\n");
         return -1;
     }
+    /* 추론 캐시는 모델 출력을 실행 순서대로 재생하는데, 비동기는 어느 프레임을 추론할지가 실행마다 달라
+     * 순서가 어긋난다. --video-clock 과는 같이 쓸 수 있다(결과마다 추론 프레임의 영상 시각을 들고 다님) —
+     * 비동기 지연이 판정에 주는 영향을 오프라인으로 볼 때 쓴다. 결과는 실행마다 조금씩 다르다. */
+    if (args->async_infer == 1 && args->infer_cache) {
+        fprintf(stderr, "--async-infer 1 cannot be used with --infer-cache (cache replays outputs in run order)\n");
+        return -1;
+    }
+    if (args->async_infer < 0) args->async_infer = args->camera && !args->infer_cache;
     if (args->camera) {
         args->media.input_format = args->camera_format
                                        ? args->camera_format

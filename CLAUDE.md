@@ -144,6 +144,7 @@ media_process()          — FFmpeg 디코딩 루프, 프레임마다 FrameCallb
 - `frame.index % detect_every == 0` 인 프레임에서 YOLO 실행
 - 나머지 프레임에서 `--track` 활성화 시: `tracker_update()`로 박스 이동 보정
 - `tracker_update()`가 `request_detection=1`을 반환하면(박스 밖 움직임 또는 추적 실패) 즉시 YOLO 재실행 (adaptive run)
+- **비동기 추론 (`--async-infer`, 카메라 기본 on / 파일 기본 off)**: Tier1 추론(`infer_job_run`)을 워커 스레드 하나(`include/infer_worker.h`)에서 돌리고, 프레임 루프는 그동안 매 프레임 추적합니다. 결과가 도착하면 `consume_inference`가 **추론한 프레임의 사본과 그 시각**으로 트랙·룰·증거 사진·Tier 2를 평가한 뒤 추적기로 박스를 현재 프레임까지 옮깁니다. 워커가 바쁠 때 온 요청은 버리지 않고 대기(`infer_pending`)했다가 idle 이 되면 그때의 최신 프레임으로 제출합니다. 판정이 추론 한 번만큼 늦게 나오고, CPU 총량은 줄지 않습니다(프레임 루프가 놀지 않음) — 끊김을 줄이는 기능입니다. 동기 모드는 같은 함수를 인라인으로 불러 이전과 결과가 바이트 동일하며, 오프라인 평가(`--infer-cache`)는 동기만 허용합니다.
 
 ### 출력 포맷 처리 (`detector_ort.c: detector_run`)
 

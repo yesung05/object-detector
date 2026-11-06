@@ -21,6 +21,7 @@
 #include "reconnect.h"
 #include "../third_party/sqlite/sqlite3.h" /* count_events: 룰 발화 횟수 검증 */
 #include "infer_cache.h"
+#include "infer_worker.h"
 
 #if defined(_WIN32)
 #include <direct.h>
@@ -1036,6 +1037,44 @@ static void test_fall_false_positive_regressions(void) {
         }
         rules_destroy(&re);tracks_destroy(&tl);event_log_close(&log);
     }
+}
+
+/* ── 추론 워커(infer_worker.h): 가짜 작업으로 상태 전환·에러 전달·종료를 확인 ── */
+typedef struct { int value; int fail; } FakeInferJob;
+static int fake_infer_job(void *ctx, char *error, size_t error_size) {
+    FakeInferJob *j = (FakeInferJob *)ctx;
+    platform_sleep_milliseconds(20);
+    if (j->fail) { snprintf(error, error_size, "fake failure %d", j->value); return -1; }
+    j->value++;
+    return 0;
+}
+static int wait_infer_poll(InferWorker *w, char *error, size_t size) {
+    int i, r = 0;
+    for (i = 0; i < 300 && r == 0; ++i) { r = infer_worker_poll(w, error, size); if (!r) platform_sleep_milliseconds(5); }
+    return r;
+}
+static void test_infer_worker_roundtrip(void) {
+    InferWorker w; FakeInferJob job = {41, 0}; char error[128] = {0};
+    memset(&w, 0, sizeof(w));
+    infer_worker_stop(&w);                    /* 시작 안 한 워커 종료는 안전 */
+    infer_worker_stop(NULL);
+    ASSERT_INT_EQ(infer_worker_start(&w, fake_infer_job, &job, error, sizeof(error)), 0);
+    EXPECT_INT_EQ(infer_worker_busy(&w), 0);
+    EXPECT_INT_EQ(infer_worker_poll(&w, error, sizeof(error)), 0); /* 제출 전엔 결과 없음 */
+    infer_worker_submit(&w);
+    EXPECT_INT_EQ(infer_worker_busy(&w), 1);
+    EXPECT_INT_EQ(wait_infer_poll(&w, error, sizeof(error)), 1);
+    EXPECT_INT_EQ(job.value, 42);
+    EXPECT_INT_EQ(infer_worker_busy(&w), 0);  /* poll 이 idle 로 되돌림 */
+    job.fail = 1;                             /* idle 이라 호출자가 작업 데이터를 바꿔도 됨 */
+    infer_worker_submit(&w);
+    EXPECT_INT_EQ(wait_infer_poll(&w, error, sizeof(error)), -1);
+    EXPECT_TRUE(strstr(error, "fake failure 42") != NULL);
+    job.fail = 0;
+    infer_worker_submit(&w);                  /* 제출 직후 종료: 시작 전이면 버리고, 실행 중이면 마친 뒤 join */
+    infer_worker_stop(&w);
+    EXPECT_TRUE(job.value == 42 || job.value == 43);
+    EXPECT_INT_EQ(w.started, 0);
 }
 
 /* fall_hold_max_misses: 누운 사람 9관측(100~108초, hold 5초) 중 일부를 결손(점수 .29)이나 직립으로 바꾼다.
@@ -4468,6 +4507,7 @@ int main(void) {
     RUN_TEST(test_fall_wide_box_evidence);
     RUN_TEST(test_fall_false_positive_regressions);
     RUN_TEST(test_fall_hold_tolerates_missed_observations);
+    RUN_TEST(test_infer_worker_roundtrip);
     RUN_TEST(test_rules_fall_requires_hold);
     RUN_TEST(test_rules_unordered_seated);
     RUN_TEST(test_rules_unordered_suppressed_by_probable_order);

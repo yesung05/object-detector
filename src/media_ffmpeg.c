@@ -545,40 +545,8 @@ static int drain_decoder(AVCodecContext *decoder, AVFrame *frame,
  *   처리 스레드: fresh ↔ read 스왑 (lock 보호) → buf[read] 읽음
  * write ≠ read 이므로 캡처는 처리 중인 버퍼를 절대 덮어쓰지 않습니다.
  */
-#ifdef _WIN32
-#  include <windows.h>
-   typedef CRITICAL_SECTION   lc_mutex_t;
-   typedef CONDITION_VARIABLE lc_cond_t;
-#  define lc_mutex_init(m)     InitializeCriticalSection(m)
-#  define lc_mutex_lock(m)     EnterCriticalSection(m)
-#  define lc_mutex_unlock(m)   LeaveCriticalSection(m)
-#  define lc_mutex_destroy(m)  DeleteCriticalSection(m)
-#  define lc_cond_init(c)      InitializeConditionVariable(c)
-#  define lc_cond_signal(c)    WakeConditionVariable(c)
-#  define lc_cond_destroy(c)   ((void)0)
-static int lc_cond_timedwait(lc_cond_t *c, lc_mutex_t *m, int ms) {
-    return SleepConditionVariableCS(c, m, (DWORD)ms) ? 0 : -1;
-}
-#else
-#  include <pthread.h>
-#  include <time.h>
-   typedef pthread_mutex_t lc_mutex_t;
-   typedef pthread_cond_t  lc_cond_t;
-#  define lc_mutex_init(m)     pthread_mutex_init(m, NULL)
-#  define lc_mutex_lock(m)     pthread_mutex_lock(m)
-#  define lc_mutex_unlock(m)   pthread_mutex_unlock(m)
-#  define lc_mutex_destroy(m)  pthread_mutex_destroy(m)
-#  define lc_cond_init(c)      pthread_cond_init(c, NULL)
-#  define lc_cond_signal(c)    pthread_cond_signal(c)
-#  define lc_cond_destroy(c)   pthread_cond_destroy(c)
-static int lc_cond_timedwait(lc_cond_t *c, lc_mutex_t *m, int ms) {
-    struct timespec ts;
-    clock_gettime(CLOCK_REALTIME, &ts);
-    ts.tv_nsec += (long)ms * 1000000L;
-    if (ts.tv_nsec >= 1000000000L) { ts.tv_sec++; ts.tv_nsec -= 1000000000L; }
-    return pthread_cond_timedwait(c, m, &ts) == 0 ? 0 : -1;
-}
-#endif
+/* 잠금·조건변수 매크로(lc_mutex_*, lc_cond_*)는 추론 워커와 공용 — thread_compat.h */
+#include "thread_compat.h"
 
 /*
  * 입력 감시 문맥 — FFmpeg interrupt 콜백이 읽는 값들입니다.
