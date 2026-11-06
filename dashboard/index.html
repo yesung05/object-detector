@@ -1339,6 +1339,9 @@ details.dev-accordion[open] > summary { color: var(--red) !important; }
           <input type="time" class="setting-input" id="pcfg-restart_time" style="width:auto"
                  onchange="syncSimpleToCfg('restart_time', this.value)">
         </div>
+      </div><div class="preset-card neu-raised"><strong>설정 초기화</strong>
+        <!-- 일반 설정을 기본값으로(확인 창 2번). 문 위치·기준 사진·테이블은 "장소 초기화", 로그·증거 사진은 건드리지 않는다. 서버가 config.json 을 먼저 백업한다 -->
+        <div class="setup-actions"><button class="neu-btn" type="button" onclick="resetAllSettings()">설정 전체 초기화</button></div>
       </div><div class="preset-card neu-raised"><strong>매장 음성 안내</strong>
         <div class="setup-actions"><a class="neu-btn" href="/announce">음성 안내 열기</a></div>
       </div></div></details></div><!-- /simple-settings -->
@@ -2661,6 +2664,20 @@ async function saveSettings() {
 
 /* 집/학교처럼 카메라가 보는 장소가 바뀔 때 쓰는 단일 초기화 흐름입니다.
    감지 민감도 같은 일반 설정은 남기고, 화면 좌표와 기준 이미지만 버립니다. */
+/* 일반 설정 전체를 기본값으로. 알림 모드·PIN 은 유지할지 묻는다. 서버가 config.json.bak-<시각> 으로 백업한 뒤 비운다. */
+async function resetAllSettings() {
+  if (!confirm("감지 민감도·체류 시간·가림 화면·자동 캡처·재시작 등 모든 일반 설정을 기본값으로 되돌립니다.\n\n문 위치·기준 사진·테이블 영역, 로그, 증거 사진은 유지됩니다. 설정 파일은 먼저 백업됩니다.\n\n계속할까요?")) return;
+  const keep = confirm("알림 모드(켜짐/알림 X/끔)와 접근 PIN은 그대로 둘까요?\n\n확인 = 유지, 취소 = 함께 초기화");
+  try {
+    const r = await authFetch(`/api/config/reset?keep_alerts=${keep ? 1 : 0}&keep_pin=${keep ? 1 : 0}`, { method: "POST" });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    location.reload();   /* 입력창이 이전 값을 들고 있지 않도록 새로 읽는다 */
+  } catch (_) {
+    const st = document.getElementById("save-status");
+    if (st) { st.textContent = "초기화 실패"; st.style.color = "var(--red)"; }
+  }
+}
+
 async function resetLocationSetup() {
   if (!confirm("현재 장소의 문 위치, 테이블·벽 감시 영역, 청결/문 기준 이미지와 자동 안정화 결과를 초기화할까요?\n\n감지 민감도와 일반 설정은 유지됩니다.")) return;
   const st = document.getElementById("save-status");

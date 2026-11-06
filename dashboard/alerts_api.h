@@ -221,3 +221,67 @@ static void serve_alerts_mode(SOCKET s, const char *query, const NetAccess *acc)
     n = snprintf(body, sizeof(body), "{\"alert_%s\":\"%s\"}", token, mode);
     serve_config_post(s, body, n, acc);
 }
+
+/* POST /api/config/reset[?keep_alerts=1][&keep_pin=1]
+ * 일반 설정(감지 민감도·체류 시간·보호 화면 모양·자동 캡처·재시작 등)을 기본값으로 되돌린다: config.json 을 비우고
+ * 반드시 지켜야 하는 키만 다시 쓴다. 지우기 전에 config.json 을 config.json.bak-<시각> 으로 복사해 되돌릴 수 있게 한다.
+ *   - 항상 유지: stream_port(대시보드가 detector 에 접속하는 주소가 사라지면 화면이 먹통이 된다)
+ *   - 선택 유지: alert_<이름>(알림 모드), access_pin
+ * 문 위치·기준 사진·테이블 영역 같은 "장소" 데이터는 건드리지 않는다(그건 "장소 초기화"의 몫). 로그·증거 사진도 지우지 않는다.
+ * detector 는 config.json 을 2초 안에 다시 읽으므로 재시작은 필요 없다. PIN 규칙은 다른 POST 와 같다(client_thread 에서 통과한 요청만 온다). */
+static void serve_config_reset(SOCKET s, const char *query, const NetAccess *acc) {
+    char keep_alerts[4], keep_pin[4], backup[MAX_PATH], stamp[24], *out;
+    Config existing;
+    size_t i, cap = 8192, len = 0;
+    time_t now = time(NULL);
+    struct tm tmv;
+    int ka, kp, wrote;
+    FILE *f;
+    query_get(query, "keep_alerts", keep_alerts, sizeof(keep_alerts));
+    query_get(query, "keep_pin", keep_pin, sizeof(keep_pin));
+    ka = strcmp(keep_alerts, "1") == 0;
+    kp = strcmp(keep_pin, "1") == 0;
+    localtime_s(&tmv, &now);
+    strftime(stamp, sizeof(stamp), "%Y%m%d_%H%M%S", &tmv);
+    /* 같은 초에 두 번 눌러도 백업이 겹치지 않도록 밀리초를 붙인다 */
+    snprintf(backup, sizeof(backup), "%s.bak-%s_%03lu", g_config_path, stamp, (unsigned long)(GetTickCount64() % 1000));
+    if (!CopyFileA(g_config_path, backup, TRUE)) {       /* 백업이 안 되면 지우지 않는다 */
+        if (GetFileAttributesA(g_config_path) != INVALID_FILE_ATTRIBUTES) { replay_api_error(s, 500, "backup_failed"); return; }
+        backup[0] = '\0';                                /* 설정 파일이 아직 없으면 백업할 것도 없다 */
+    }
+    out = (char *)malloc(cap);
+    if (!out) { replay_api_error(s, 500, "out_of_memory"); return; }
+    out[len++] = '{';
+    out[len] = '\0';
+    wrote = 0;
+    if (config_load(&existing, g_config_path, NULL, 0) == 0) {
+        for (i = 0; i < existing.count; ++i) {
+            const char *k = existing.keys[i], *v = existing.values[i];
+            int keep, n;
+            if (!k || !v) continue;
+            keep = strcmp(k, "stream_port") == 0 || (ka && strncmp(k, "alert_", 6) == 0) || (kp && strcmp(k, "access_pin") == 0);
+            if (!keep) continue;
+            n = json_pair_append(out + len, cap - len - 2, k, v);   /* ,"key":value */
+            if (n <= 0) continue;
+            if (!wrote) { memmove(out + len, out + len + 1, (size_t)n - 1); n -= 1; }   /* 첫 항목은 앞의 쉼표를 뺀다 */
+            len += (size_t)n;
+            wrote = 1;
+        }
+        config_destroy(&existing);
+    }
+    out[len++] = '}';
+    out[len] = '\0';
+    f = fopen(g_config_path, "w");
+    if (!f) { free(out); replay_api_error(s, 500, "write_failed"); return; }
+    fwrite(out, 1, len, f);
+    fclose(f);
+    free(out);
+    {
+        char msg[700];
+        snprintf(msg, sizeof(msg), "config reset by %s (%s): keep_alerts=%d keep_pin=%d backup=%s",
+                 acc ? acc->ip : "?", acc ? netaccess_tier_name(acc->tier) : "?", ka, kp, backup[0] ? backup : "(none)");
+        access_log_write(1, msg);
+    }
+    send_header(s, 200, "application/json", 11);
+    send_all(s, "{\"ok\":true}", 11);
+}

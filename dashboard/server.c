@@ -744,14 +744,27 @@ static void config_diff(const Config *before, const Config *after, char *out, si
  * 문자열 키를 UI 가 모르는 채 보존할 때 드러났다). 숫자·true·false·null 이 아니면 다시 따옴표로 감싼다.
  * 반환: 쓴 바이트 수(널 제외), 공간이 모자라면 0. */
 static int json_pair_append(char *dst, size_t cap, const char *key, const char *value) {
-    char *end = NULL;
     int literal, n = 0;
     size_t pos = 0;
     const char *p;
     if (!key || !value) return 0;
-    (void)strtod(value, &end);
-    literal = (*value && end && *end == '\0') || strcmp(value, "true") == 0 || strcmp(value, "false") == 0 ||
-              strcmp(value, "null") == 0;
+    /* JSON 숫자는 "0" 이거나 0 으로 시작하지 않는 정수부만 허용한다. strtod 로 판정하면 PIN "0123" 이 숫자 0123 이 되어
+       깨진 JSON 이 된다. access_pin·restart_time 은 숫자처럼 보여도 항상 문자열로 쓴다(앞자리 0 보존). */
+    {
+        const char *q = value;
+        int digits = 0;
+        if (*q == '-') q++;
+        if (*q == '0') { q++; digits = 1; }
+        else if (*q >= '1' && *q <= '9') { while (*q >= '0' && *q <= '9') { q++; digits = 1; } }
+        if (digits && *q == '.') { q++; digits = 0; while (*q >= '0' && *q <= '9') { q++; digits = 1; } }
+        if (digits && (*q == 'e' || *q == 'E')) {
+            q++; if (*q == '+' || *q == '-') q++;
+            digits = 0; while (*q >= '0' && *q <= '9') { q++; digits = 1; }
+        }
+        literal = (digits && *q == '\0') || strcmp(value, "true") == 0 || strcmp(value, "false") == 0 ||
+                  strcmp(value, "null") == 0;
+        if (strcmp(key, "access_pin") == 0 || strcmp(key, "restart_time") == 0) literal = 0;
+    }
     n = snprintf(dst, cap, ",\"%s\":", key);
     if (n < 0 || (size_t)n >= cap) return 0;
     pos = (size_t)n;
@@ -1054,6 +1067,8 @@ static DWORD WINAPI client_thread(LPVOID arg) {
             serve_alerts_feedback(s,query,&acc);
         } else if (strcmp(path,"/api/alerts/mode")==0) {
             serve_alerts_mode(s,query,&acc);
+        } else if (strcmp(path,"/api/config/reset")==0) {
+            serve_config_reset(s,query,&acc);
         } else if (strcmp(path, "/api/surfaces") == 0) {
             serve_surfaces(s,body,content_length(buf),&acc);
         } else if (strcmp(path, "/api/announce/upload") == 0) {
