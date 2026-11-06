@@ -167,6 +167,11 @@ void draw_detections(uint8_t *rgb, int width, int height, int stride,
 void draw_obj_detections(uint8_t *rgb, int width, int height, int stride,
                          const DetectionList *detections, uint32_t obj_vis_mask);
 
+/* 잔류물 ROI 테두리(보라). alert=0 후보 1px, 1 확정 2px + 레이블. 구현은 draw.c.
+ * 예전엔 선언이 없어 main.c 가 암묵적 int 선언으로 호출했다(C4013). */
+void draw_residue_roi(uint8_t *rgb, int w, int h, int stride,
+                      int x, int y, int rw, int rh, int alert);
+
 /* 왼쪽 상단에 추론 FPS / 카메라 FPS / CPU 사용률 / 온도를 표시합니다.
  * cpu_percent < 0이면 CPU 줄을 건너뜁니다. temperature_celsius < 0이면 온도 줄을 건너뜁니다. */
 void draw_hud(uint8_t *rgb, int width, int height, int stride,

@@ -106,6 +106,10 @@ if(ORT_INCLUDE_DIR AND ORT_LIBRARY AND FFMPEG_INCLUDE_DIR AND FFMPEG_FOUND)
 
     add_executable(yolo11-person
         src/main.c
+        src/app_args.c
+        src/app_config.c
+        src/app_calib.c
+        src/app_output.c
         src/postprocess.c
         src/draw.c
         src/detector_ort.c

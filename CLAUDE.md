@@ -135,6 +135,8 @@ media_process()          — FFmpeg 디코딩 루프, 프레임마다 FrameCallb
 | `include/netaccess.h` | `NetTier`, `NetAccess`, `netaccess_evaluate()` — 8080/8081 두 서버가 공유하는 접근 판정 |
 | `include/stream.h` | MJPEG 서버 + `StreamStatus`, privacy/PIN setter, 접근 로그 mailbox (`stream_pop_access_log`) |
 
+`src/app.h`는 실행 파일 내부 헤더(공개 API 아님)로, `AppContext`와 `main.c`에서 나눈 `app_args.c`(명령줄)·`app_config.c`(설정 적용·hot-reload)·`app_calib.c`(안정화)·`app_output.c`(가림·증거 사진·CSV·metrics) 함수 선언을 담습니다.
+
 `Detector`와 `LightTracker`는 opaque 타입입니다. 내부 멤버는 각각 `detector_ort.c`와 `tracker.c`에만 노출됩니다.
 
 ### 추론 주기 정책 (`main.c: process_frame`)
