@@ -155,7 +155,7 @@ YOLO 출력 텐서 형태가 고정(`output_value` 미리 생성)이면 재사�
 
 ### 보안 주의사항
 
-`--output`과 `--input` 경로에 대한 로컬 파일 검증이 없습니다. FFmpeg는 `rtmp://`, `rtsp://`, `http://` 등 네트워크 URL을 투명하게 처리하므로, URL을 넘기면 영상이 외부로 전송될 수 있습니다. 이 소프트웨어는 실제 업체 기기에 설치되므로 경로 검증 로직 추가가 필요합니다.
+**파일 입출력은 로컬 파일만 허용 (`src/media_ffmpeg.c`, `MEDIA_LOCAL_PROTOCOLS`)**: FFmpeg는 `rtmp://`, `rtsp://`, `http://` 등 네트워크 URL을 투명하게 처리하므로, 파일 입력(`--input`, `media_probe`)과 출력(`--output`, image2 포함)에 FFmpeg `protocol_whitelist=file`을 걸어 둡니다. 문자열 검사가 아니라 FFmpeg 계층에서 막으므로 `concat:`·`tcp://` 같은 우회도 거부되고 에러에 `(로컬 파일만 허용)`이 붙습니다. 카메라 장치 입력은 프로토콜을 쓰지 않아 영향이 없습니다.
 
 **네트워크 접근 제어 (`src/netaccess.c`, 8080/8081 공용)**: 두 HTTP 서버는 `INADDR_ANY`에 바인드합니다. 요청은 `localhost`(무제한, 개발 환경) / `lan`(연결된 인터페이스와 같은 서브넷 — 읽기 허용, POST는 `access_pin` 필요; 사설 대역 검사가 아니라 넷마스크 기준) / `denied`(403)로 판정되며, 허용된 변경과 거부는 이벤트 로그에 `module=access`로 남습니다(8081은 mailbox → main 스레드, 8080은 최신 `logs\*.db`에 직접 INSERT). PIN은 IP당 5회 실패 시 10분 잠금. `stream_privacy_mode=1`(기본)이면 `main.c`가 그리기 직전에 프레임을 단색으로 채워 스트림·스냅샷·출력 파일에는 박스·스켈레톤만 나가고, 저장된 기준 사진(`/door/preview`, `/surface/reference`)은 403, `door/save`·`residue/save`는 409로 막힙니다. 설정 작업은 `POST /privacy/unlock?seconds=N`으로 시간 제한 해제하며 타임아웃은 서버가 강제합니다. 전부 평문 HTTP이므로 같은 LAN의 스니핑은 막지 못합니다 — 매장 Wi-Fi를 손님용과 분리하는 것이 실질적 방어선입니다.
 

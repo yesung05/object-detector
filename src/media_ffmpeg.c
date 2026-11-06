@@ -17,6 +17,15 @@
 #include <string.h>
 
 /*
+ * 영상 외부 전송 금지(CLAUDE.md). FFmpeg 는 경로 자리에 rtmp:// http:// 등을 받으면 투명하게 네트워크로
+ * 보내므로, 파일 입출력은 FFmpeg 자체의 protocol_whitelist 로 "file" 만 허용한다.
+ * 경로 문자열 검사("://" 거부 등) 대신 이 방식을 고른 이유: concat:·subfile:·대소문자·file: 접두 같은
+ * 우회 경로를 문자열로 다 막을 수 없고, 화이트리스트는 중첩 프로토콜(concat 내부, image2 io_open)까지
+ * FFmpeg 가 같은 목록으로 검사한다. 카메라(dshow/v4l2/avfoundation)는 프로토콜을 쓰지 않아 영향 없음.
+ */
+#define MEDIA_LOCAL_PROTOCOLS "file"
+
+/*
  * 이 파일의 전체 흐름
  *
  * 압축 입력 파일
@@ -188,6 +197,13 @@ static int writer_open(MediaWriter *writer, const char *path, int width,
                      ret < 0 ? ret : AVERROR_UNKNOWN);
         return -1;
     }
+    /* image2 처럼 AVFMT_NOFILE 인 muxer 는 아래 avio_open 을 거치지 않고 내부 io_open 으로 파일을 열므로
+     * 컨텍스트에도 같은 화이트리스트를 걸어 둔다. */
+    ret = av_opt_set(writer->format, "protocol_whitelist", MEDIA_LOCAL_PROTOCOLS, 0);
+    if (ret < 0) {
+        set_av_error(error, error_size, "protocol_whitelist", ret);
+        return -1;
+    }
     codec_id = codec_from_name(options->codec);
     if (codec_id == AV_CODEC_ID_NONE) codec_id = writer->format->oformat->video_codec;
     if (options->codec && strcmp(options->codec, "h264_qsv") == 0)
@@ -279,9 +295,12 @@ static int writer_open(MediaWriter *writer, const char *path, int width,
 
     /* AVFMT_NOFILE이 아닌 일반 파일 컨테이너만 실제 파일 핸들을 엽니다. */
     if (!(writer->format->oformat->flags & AVFMT_NOFILE)) {
-        ret = avio_open(&writer->format->pb, path, AVIO_FLAG_WRITE);
+        AVDictionary *io_options = NULL;  /* 이 블록 소유 — 바로 아래 av_dict_free */
+        av_dict_set(&io_options, "protocol_whitelist", MEDIA_LOCAL_PROTOCOLS, 0);
+        ret = avio_open2(&writer->format->pb, path, AVIO_FLAG_WRITE, NULL, &io_options);
+        av_dict_free(&io_options);
         if (ret < 0) {
-            set_av_error(error, error_size, "avio_open", ret);
+            set_av_error(error, error_size, "avio_open (로컬 파일만 허용)", ret);
             return -1;
         }
     }
@@ -1057,6 +1076,8 @@ static int open_input_utf8(MediaInput *in, const char *input_path,
              * 충분한 버퍼 여유를 확보합니다. */
             av_dict_set(&input_options, "rtbufsize", "60M", 0);
         }
+    } else {
+        av_dict_set(&input_options, "protocol_whitelist", MEDIA_LOCAL_PROTOCOLS, 0);
     }
 
     /* 카메라 읽기가 블로킹 중이어도 Ctrl+C 요청을 감지할 수 있게 미리 설정합니다. */
@@ -1130,7 +1151,7 @@ static int open_input_utf8(MediaInput *in, const char *input_path,
                       MEDIA_OPEN_GRACE_SECONDS);
             result = -2;
         } else {
-            set_av_error(error, error_size, "avformat_open_input", ret);
+            set_av_error(error, error_size, options->input_format ? "avformat_open_input" : "avformat_open_input (로컬 파일만 허용)", ret);
         }
         goto done;
     }
@@ -1654,12 +1675,14 @@ int media_probe(const char *input_path, const MediaOptions *options,
             av_dict_set(&opts, "video_size", options->video_size, 0);
         if (options->framerate)
             av_dict_set(&opts, "framerate", options->framerate, 0);
+    } else {
+        av_dict_set(&opts, "protocol_whitelist", MEDIA_LOCAL_PROTOCOLS, 0);
     }
 
     ret = avformat_open_input(&fmt, input_path, ifmt, &opts);
     av_dict_free(&opts);
     if (ret < 0) {
-        set_av_error(error, error_size, "media_probe: avformat_open_input", ret);
+        set_av_error(error, error_size, ifmt ? "media_probe: avformat_open_input" : "media_probe: avformat_open_input (로컬 파일만 허용)", ret);
         return -1;
     }
 
