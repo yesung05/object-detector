@@ -139,7 +139,7 @@ int capture_save(EventCapture *cap, const char *kind, int track_id,
         /* 보호 모드: 원본 픽셀을 한 바이트도 남기지 않는다. SOLID 는 main.c 화면과 비슷한 어두운 회색(0x30, 박스 선이
          * 잘 보이는 밝기)이고, EDGE_GRAY 는 rgb 사본을 가려진 화면으로 바꾼다. 가공 실패 시 privacy_style_apply 가
          * 단색으로 덮으므로 어느 경우에도 원본이 저장되지 않는다. */
-        if (cap->privacy_params.style == PRIVACY_STYLE_EDGE_GRAY) {
+        if (cap->privacy_params.style != PRIVACY_STYLE_SOLID) {
             if (!cap->privacy_scratch) cap->privacy_scratch = privacy_scratch_create();
             for (y = 0; y < height; ++y)
                 memcpy(cap->buf + (size_t)y * row_bytes, rgb + (size_t)y * (size_t)stride, row_bytes);

@@ -3649,6 +3649,57 @@ static void test_privacy_style_soft_edges_are_dimmer_and_wider(void) {
     privacy_scratch_destroy(s);
 }
 
+static void test_privacy_style_thermal_colors_depend_only_on_luma(void) {
+    enum { W = 160, H = 96 };
+    static uint8_t a[W * H * 3], b[W * H * 3];
+    PrivacyScratch *s = privacy_scratch_create();
+    PrivacyParams p = privacy_params_default();
+    int colored = 0, differs_from_gray = 0;
+    p.style = PRIVACY_STYLE_THERMAL;
+    /* 휘도(77R+150G+29B)가 같도록 맞춘 서로 다른 색 두 장: 왼쪽 밝은 칸 (R,G,B) 대 (G만 강한 색), 오른쪽 어두운 칸.
+       열화상 색이 휘도에서만 나온다면 두 결과는 비트 단위로 같아야 한다(원본 색상이 새지 않는다는 증명). */
+    for (int y = 0; y < H; ++y)
+        for (int x = 0; x < W; ++x) {
+            uint8_t *pa = a + ((size_t)y * W + x) * 3, *pb = b + ((size_t)y * W + x) * 3;
+            if (x < 80) { pa[0] = 200; pa[1] = 200; pa[2] = 200;   /* 휘도 200 */
+                          pb[0] = 120; pb[1] = 256 - 56; pb[2] = 200; /* 휘도 ≈ 200 근처가 되도록 구성 */
+                          { int l = (77 * pb[0] + 150 * pb[1] + 29 * pb[2]) >> 8; int d = 200 - l; pb[1] = (uint8_t)(pb[1] + d * 256 / 150); } }
+            else        { pa[0] = pa[1] = pa[2] = 30;
+                          pb[0] = 60; pb[1] = 20; pb[2] = 10;
+                          { int l = (77 * pb[0] + 150 * pb[1] + 29 * pb[2]) >> 8; int d = 30 - l; pb[1] = (uint8_t)(pb[1] + d * 256 / 150); } }
+        }
+    ASSERT_INT_EQ(privacy_style_apply(s, a, W, H, W * 3, &p), 0);
+    ASSERT_INT_EQ(privacy_style_apply(s, b, W, H, W * 3, &p), 0);
+    /* 휘도를 ±1 이내로 맞추기 어려워 완전 일치 대신 "거의 같음"(차이 ≤ 6)으로 검사한다. 색상 정보가 새면 수십 이상 벌어진다. */
+    int maxdiff = 0;
+    for (size_t i = 0; i < sizeof(a); ++i) { int d = abs((int)a[i] - (int)b[i]); if (d > maxdiff) maxdiff = d; }
+    EXPECT_TRUE(maxdiff <= 6);
+    for (int i = 0; i < W * H; ++i) {
+        if (a[i * 3] != a[i * 3 + 1] || a[i * 3 + 1] != a[i * 3 + 2]) ++colored;
+        if (a[i * 3] != 200 && a[i * 3] != 30) ++differs_from_gray;
+    }
+    EXPECT_TRUE(colored > W * H / 2);                    /* 열화상은 대부분의 픽셀이 회색이 아닌 색이다 */
+    EXPECT_TRUE(differs_from_gray > 0);
+    privacy_scratch_destroy(s);
+}
+
+static void test_privacy_style_thermal_bright_is_warmer_than_dark(void) {
+    enum { W = 160, H = 96 };
+    static uint8_t f[W * H * 3];
+    PrivacyScratch *s = privacy_scratch_create();
+    PrivacyParams p = privacy_params_default();
+    p.style = PRIVACY_STYLE_THERMAL;
+    p.edge_opacity = 10;                                   /* 엣지 영향 최소화 */
+    for (int y = 0; y < H; ++y)
+        for (int x = 0; x < W; ++x) memset(f + ((size_t)y * W + x) * 3, x < 80 ? 40 : 220, 3);
+    ASSERT_INT_EQ(privacy_style_apply(s, f, W, H, W * 3, &p), 0);
+    const uint8_t *dark = f + ((size_t)(H / 2) * W + 10) * 3, *bright = f + ((size_t)(H / 2) * W + 150) * 3;
+    EXPECT_TRUE(bright[0] > dark[0]);                      /* 밝은 쪽이 더 붉고 */
+    EXPECT_TRUE(bright[1] > dark[1]);                      /* 더 노랗다(팔레트: 검정 → 보라 → 주황 → 노랑) */
+    EXPECT_TRUE(dark[1] < 60);                             /* 어두운 쪽은 초록 성분이 거의 없다 */
+    privacy_scratch_destroy(s);
+}
+
 static void test_privacy_style_speed_report(void) {
     /* 통과/실패 기준 없음: 이 PC 에서 1280x720 한 장을 가리는 데 걸리는 시간을 출력한다(i5-4200U 실측 아님). */
     enum { W = 1280, H = 720 };
@@ -4196,6 +4247,8 @@ int main(void) {
     RUN_TEST(test_capture_privacy_edge_style_writes_gray_copy);
     RUN_TEST(test_privacy_style_edge_blur_reduces_fine_edges);
     RUN_TEST(test_privacy_style_soft_edges_are_dimmer_and_wider);
+    RUN_TEST(test_privacy_style_thermal_colors_depend_only_on_luma);
+    RUN_TEST(test_privacy_style_thermal_bright_is_warmer_than_dark);
     RUN_TEST(test_privacy_style_speed_report);
     RUN_TEST(test_tracker_invalid_create);
     RUN_TEST(test_tracker_null_args);

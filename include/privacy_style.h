@@ -17,7 +17,11 @@
  */
 typedef enum {
     PRIVACY_STYLE_SOLID = 0,
-    PRIVACY_STYLE_EDGE_GRAY = 1
+    PRIVACY_STYLE_EDGE_GRAY = 1,
+    /* 열화상: EDGE_GRAY 와 같은 배경(강한 모자이크 + 가우시안)·엣지를 만든 뒤, 배경 밝기를 열화상 팔레트(어두움=검정·보라 →
+     * 밝음=주황·노랑)의 색으로 바꿔 보여 준다. 색은 오직 "흐려진 배경 밝기"에서만 나오므로 원본의 색상 정보는 남지 않고,
+     * 비식별 수준(얼굴 윤곽선 등)은 EDGE_GRAY 와 같다 — 원본을 그대로 재채색하는 것이 아니다. */
+    PRIVACY_STYLE_THERMAL = 2
 } PrivacyStyle;
 
 typedef struct {

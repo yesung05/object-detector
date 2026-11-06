@@ -1277,6 +1277,7 @@ details.dev-accordion[open] > summary { color: var(--red) !important; }
           <select class="neu-select" id="pcfg-stream_privacy_style" onchange="syncSimpleToCfg('stream_privacy_style', this.value)">
             <option value="0">단색</option>
             <option value="1">엣지 그레이</option>
+            <option value="2">열화상</option>
           </select>
         </div>
       </div><div class="preset-card neu-raised">
@@ -1667,6 +1668,7 @@ details.dev-accordion[open] > summary { color: var(--red) !important; }
             <select class="neu-select" id="cfg-stream_privacy_style">
               <option value="0">단색</option>
               <option value="1">엣지 그레이</option>
+              <option value="2">열화상</option>
             </select>
             <span></span>
           </div>
@@ -2904,13 +2906,14 @@ function renderModeTable() {
     const prec = reviewed ? Math.round(s.correct / reviewed * 100) : null;
     let rec = "<span></span>";   /* 칸을 비워 두어야 행마다 열이 맞는다 */
     if (reviewed < 10) rec = reviewed ? `<span class="mode-rec" data-k="few">표본 ${reviewed}</span>` : rec;
-    else if (tok !== "person_fallen" && mode === "on" && prec < 60) rec = '<span class="mode-rec" data-k="bad">그림자 권장</span>';
-    else if (mode === "shadow" && prec >= 80) rec = '<span class="mode-rec" data-k="good">켜도 됨</span>';
+    else if (tok !== "person_fallen" && mode === "on" && prec < 60) rec = '<span class="mode-rec" data-k="bad">알림 X 권장</span>';
+    else if (mode === "shadow" && prec >= 80) rec = '<span class="mode-rec" data-k="good">알림 O 가능</span>';
+    /* 모드 이름: 켜짐(알림 O) = on, 켜짐(알림 X) = shadow(감지·기록은 하되 알림 화면에는 안 뜸), 끔 = off */
     const opt = (v, t) => `<option value="${v}"${mode === v ? " selected" : ""}>${t}</option>`;
     return `<div class="mode-row"><span class="mode-name">${name}</span>` +
       `<span class="mode-num">${s.total}${s.shadow ? ` <em>(${s.shadow})</em>` : ""}</span>` +
       `<span class="mode-prec">${prec === null ? "—" : prec + "%"}</span>${rec}` +
-      `<select class="neu-select" onchange="setAlertMode('${tok}', this.value)">${opt("on", "켜짐")}${opt("shadow", "그림자")}${opt("off", "끔")}</select></div>`;
+      `<select class="neu-select" onchange="setAlertMode('${tok}', this.value)">${opt("on", "켜짐 (알림 O)")}${opt("shadow", "켜짐 (알림 X)")}${opt("off", "끔")}</select></div>`;
   }).join("");
 }
 async function setAlertMode(tok, mode) {

@@ -996,7 +996,7 @@ static void apply_security_config(AppContext *app, const Config *cfg) {
     {
         /* 화면 모양: 기본은 단색(SOLID). 엣지 스타일은 얼굴 윤곽선이 일부 남으므로(privacy_style.h) 명시적으로 켠다. */
         PrivacyParams pp = privacy_params_default();
-        pp.style      = (int)config_long(cfg, "stream_privacy_style", PRIVACY_STYLE_SOLID, 0, 1);
+        pp.style      = (int)config_long(cfg, "stream_privacy_style", PRIVACY_STYLE_SOLID, 0, 2);
         pp.cell       = (int)config_long(cfg, "privacy_mosaic_cell", 24, 8, 64);
         pp.edge_low   = (int)config_long(cfg, "privacy_edge_low", 40, 5, 250);
         pp.edge_high  = (int)config_long(cfg, "privacy_edge_high", 110, 5, 255);
@@ -1011,7 +1011,7 @@ static void apply_security_config(AppContext *app, const Config *cfg) {
             pp.edge_opacity != app->privacy_params.edge_opacity) {
             char smsg[200];
             snprintf(smsg, sizeof(smsg), "privacy_style=%s cell=%d edge=%d/%d blur=%d soft=%d opacity=%d fps<=%d",
-                     pp.style == PRIVACY_STYLE_EDGE_GRAY ? "edge_gray" : "solid", pp.cell, pp.edge_low,
+                     pp.style == PRIVACY_STYLE_THERMAL ? "thermal" : pp.style == PRIVACY_STYLE_EDGE_GRAY ? "edge_gray" : "solid", pp.cell, pp.edge_low,
                      pp.edge_high, pp.edge_blur, pp.edge_soft, pp.edge_opacity, app->privacy_style_fps);
             event_log_write(&app->event_log, LOG_INFO, "access", smsg);
             app->privacy_cache_time = 0; /* 새 모양이 바로 보이도록 캐시를 무효화 */
@@ -1433,7 +1433,7 @@ static void apply_privacy_mask(AppContext *app, RgbFrame *frame, int has_observe
     size_t row = (size_t)frame->width * 3, need = row * (size_t)frame->height;
     double now, interval;
     int y;
-    if (app->privacy_params.style != PRIVACY_STYLE_EDGE_GRAY) {
+    if (app->privacy_params.style == PRIVACY_STYLE_SOLID) {
         int gray = app->privacy_params.solid_gray > 0 ? app->privacy_params.solid_gray : 0x24;
         for (y = 0; y < frame->height; y++)
             memset(frame->data + (size_t)y * frame->stride, gray, row);

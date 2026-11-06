@@ -33,6 +33,7 @@ struct PrivacyScratch {
     int32_t *col_x0;          /* w 확대용 열 색인 */
     uint8_t *col_wx;          /* w 확대용 열 가중치(0~255) */
     uint8_t alpha_lut[256];   /* 엣지 알파 × edge_opacity 환산표(프레임마다 갱신) */
+    uint8_t thermal_lut[256][3]; /* 배경 밝기 → 열화상 색(THERMAL 일 때만, 프레임마다 갱신) */
 };
 
 static void scratch_free_buffers(PrivacyScratch *s) {
@@ -69,7 +70,7 @@ PrivacyParams privacy_params_default(void) {
 
 void privacy_params_sanitize(PrivacyParams *p) {
     if (!p) return;
-    if (p->style != PRIVACY_STYLE_EDGE_GRAY) p->style = PRIVACY_STYLE_SOLID;
+    if (p->style != PRIVACY_STYLE_EDGE_GRAY && p->style != PRIVACY_STYLE_THERMAL) p->style = PRIVACY_STYLE_SOLID;
     if (p->solid_gray <= 0 || p->solid_gray > 255) p->solid_gray = 0x24;
     if (p->cell < 8) p->cell = 8;
     if (p->cell > 64) p->cell = 64;
@@ -117,6 +118,24 @@ static int scratch_prepare(PrivacyScratch *s, int w, int h, int cell) {
     return 0;
 }
 
+/* 열화상 팔레트(inferno 계열): 검정 → 보라 → 빨강 → 주황 → 연노랑. 5개 조절점 사이를 선형 보간한 256단계 표.
+ * 외부 컬러맵을 쓰지 않는 이유는 위 파일 머리말과 같다(의존성 없음). 값은 항상 같아서 한 번만 만든다. */
+static uint8_t g_thermal_pal[256][3];
+static int g_thermal_pal_ready = 0;
+static void thermal_palette_init(void) {
+    static const int cp[5][3] = {{0, 0, 4}, {87, 16, 110}, {188, 55, 84}, {249, 142, 9}, {252, 255, 164}};
+    int i, c;
+    if (g_thermal_pal_ready) return;
+    for (i = 0; i < 256; ++i) {
+        int seg = i * 4 / 255, k;
+        int lo = seg * 255 / 4, hi = (seg + 1) * 255 / 4;
+        if (seg >= 4) { seg = 3; lo = 3 * 255 / 4; hi = 255; }
+        k = hi > lo ? (i - lo) * 256 / (hi - lo) : 0;
+        for (c = 0; c < 3; ++c) g_thermal_pal[i][c] = (uint8_t)((cp[seg][c] * (256 - k) + cp[seg + 1][c] * k) >> 8);
+    }
+    g_thermal_pal_ready = 1;
+}
+
 /* 5탭 가우시안 [1 4 6 4 1]/16 (시그마≈1). 가장자리는 가장 가까운 픽셀로 복제한다. */
 static void gaussian5(const uint8_t *src, uint8_t *tmp, uint8_t *dst, int w, int h) {
     int x, y;
@@ -149,7 +168,7 @@ int privacy_style_apply(PrivacyScratch *scratch, uint8_t *rgb, int width, int he
     if (!rgb || width <= 0 || height <= 0 || stride < width * 3) return -1;
     p = params ? *params : privacy_params_default();
     privacy_params_sanitize(&p);
-    if (p.style != PRIVACY_STYLE_EDGE_GRAY) {
+    if (p.style == PRIVACY_STYLE_SOLID) {
         fill_solid(rgb, width, height, stride, p.solid_gray);
         return 0;
     }
@@ -193,6 +212,24 @@ int privacy_style_apply(PrivacyScratch *scratch, uint8_t *rgb, int width, int he
         const uint8_t *c = s->small_b + (size_t)(sy + 1 < s->sh ? sy + 1 : s->sh - 1) * s->sw;
         uint8_t *o = s->small_a + (size_t)sy * s->sw;
         for (sx = 0; sx < s->sw; ++sx) o[sx] = (uint8_t)((a[sx] + 2 * b[sx] + c[sx] + 2) >> 2);
+    }
+    /* 열화상: 배경 밝기 범위를 팔레트 전체에 펼친다. 실내 장면은 중간 밝기에 몰려 그대로 대응시키면 한두 색으로만 보이기 때문이다.
+     * 범위는 흐려진 축소 이미지(수천 값)의 최솟값·최댓값이고, 평평한 장면에서 잡음이 증폭되지 않게 최소 폭을 80으로 둔다.
+     * 프레임마다 다시 계산하므로 사람이 들어오는 등 장면이 바뀌면 색 배치가 조금 달라질 수 있다(상태를 들고 있지 않은 렌더러의 한계). */
+    if (p.style == PRIVACY_STYLE_THERMAL) {
+        int lo_v = 255, hi_v = 0, v, i, span;
+        thermal_palette_init();
+        for (i = 0; i < s->sw * s->sh; ++i) { v = s->small_a[i]; if (v < lo_v) lo_v = v; if (v > hi_v) hi_v = v; }
+        span = hi_v - lo_v;
+        if (span < 80) { lo_v -= (80 - span) / 2; if (lo_v < 0) lo_v = 0; span = 80; }
+        for (v = 0; v < 256; ++v) {
+            int t = (v - lo_v) * 255 / span;
+            if (t < 0) t = 0;
+            if (t > 255) t = 255;
+            s->thermal_lut[v][0] = g_thermal_pal[t][0];
+            s->thermal_lut[v][1] = g_thermal_pal[t][1];
+            s->thermal_lut[v][2] = g_thermal_pal[t][2];
+        }
     }
     /* 확대용 열 색인·가중치(쌍선형, 1/256 고정소수점) */
     for (x = 0; x < width; ++x) {
@@ -280,7 +317,9 @@ int privacy_style_apply(PrivacyScratch *scratch, uint8_t *rgb, int width, int he
         for (ai = 0; ai < 256; ++ai) s->alpha_lut[ai] = (uint8_t)((ai * p.edge_opacity + 50) / 100);
     }
 
-    /* 5) 합성: 쌍선형 확대한 배경 위에 엣지 알파만큼 흰색을 섞는다. 한 행씩 만들어 rgb 에 직접 쓴다. */
+    /* 5) 합성: 쌍선형 확대한 배경 위에 엣지 알파만큼 흰색을 섞는다. 한 행씩 만들어 rgb 에 직접 쓴다.
+       THERMAL 이면 배경 밝기를 팔레트 색으로 바꾼 뒤 같은 방식으로 엣지를 섞는다. */
+    const int thermal = (p.style == PRIVACY_STYLE_THERMAL);
     for (y = 0; y < height; ++y) {
         long long v = ((long long)(2 * y + 1) * s->sh * 128) / height - 128;
         int y0, y1, wy;
@@ -300,6 +339,17 @@ int privacy_style_apply(PrivacyScratch *scratch, uint8_t *rgb, int width, int he
             unsigned bot = (unsigned)(rb[x0] * (256 - wx) + rb[x1] * wx);
             uint8_t val = (uint8_t)((top * (unsigned)(256 - wy) + bot * (unsigned)wy) >> 16);
             unsigned a = s->alpha_lut[al[x]];
+            if (thermal) {
+                /* 배경 밝기 → 팔레트 색, 그 위에 엣지를 흰색으로 섞는다(채널마다 같은 알파) */
+                unsigned r = s->thermal_lut[val][0], g = s->thermal_lut[val][1], b = s->thermal_lut[val][2];
+                if (a) {
+                    r += ((255u - r) * a + 127u) / 255u;
+                    g += ((255u - g) * a + 127u) / 255u;
+                    b += ((255u - b) * a + 127u) / 255u;
+                }
+                o[0] = (uint8_t)r; o[1] = (uint8_t)g; o[2] = (uint8_t)b;
+                continue;
+            }
             if (a) val = (uint8_t)(val + (((255u - val) * a + 127u) / 255u));
             o[0] = o[1] = o[2] = val;
         }
