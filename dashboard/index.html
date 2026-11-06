@@ -1668,7 +1668,17 @@ details.dev-accordion[open] > summary { color: var(--red) !important; }
           </div>
           <div class="setting-row">
             <div><div class="setting-label">엣지 블러 (1~8)</div></div>
-            <input type="number" class="setting-input" id="cfg-privacy_edge_blur" min="1" max="8" value="3">
+            <input type="number" class="setting-input" id="cfg-privacy_edge_blur" min="1" max="8" value="8">
+            <span></span>
+          </div>
+          <div class="setting-row">
+            <div><div class="setting-label">엣지 번짐 (0~4)</div></div>
+            <input type="number" class="setting-input" id="cfg-privacy_edge_soft" min="0" max="4" value="1">
+            <span></span>
+          </div>
+          <div class="setting-row">
+            <div><div class="setting-label">엣지 농도 (%)</div></div>
+            <input type="number" class="setting-input" id="cfg-privacy_edge_opacity" min="10" max="100" value="70">
             <span></span>
           </div>
           <div class="setting-row">
@@ -2389,7 +2399,7 @@ async function loadSettings() {
       "slot_warn_seconds","slot_urgent_seconds","slot_ttl_seconds",
       "slot_dirty_threshold","slot_min_dirty_blocks","perf_log_interval_seconds","log_max_total_mb",
       "show_animal","show_food","show_drink","show_furniture","tier2_always",
-      "stream_privacy_mode","stream_privacy_style","privacy_mosaic_cell","privacy_edge_low","privacy_edge_high","privacy_edge_blur",
+      "stream_privacy_mode","stream_privacy_style","privacy_mosaic_cell","privacy_edge_low","privacy_edge_high","privacy_edge_blur","privacy_edge_soft","privacy_edge_opacity",
       "privacy_style_fps","privacy_unlock_max_seconds","access_pin",
       "door_auto_capture","door_auto_quiet_seconds","door_auto_open_hold_seconds","door_auto_open_l1",
       "residue_auto_capture","residue_auto_quiet_seconds",
@@ -2478,6 +2488,8 @@ async function saveSettings() {
     privacy_edge_low:               cfgVal("privacy_edge_low"),
     privacy_edge_high:              cfgVal("privacy_edge_high"),
     privacy_edge_blur:              cfgVal("privacy_edge_blur"),
+    privacy_edge_soft:              cfgVal("privacy_edge_soft"),
+    privacy_edge_opacity:           cfgVal("privacy_edge_opacity"),
     privacy_style_fps:              cfgVal("privacy_style_fps"),
     privacy_unlock_max_seconds:     cfgVal("privacy_unlock_max_seconds"),
     access_pin:                     cfgVal("access_pin"),

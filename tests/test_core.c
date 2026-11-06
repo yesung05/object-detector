@@ -3491,6 +3491,7 @@ static void test_privacy_style_edge_gray_removes_color_keeps_structure(void) {
     int edge_found = 0;
     ASSERT_TRUE(s != NULL);
     p.style = PRIVACY_STYLE_EDGE_GRAY;
+    p.edge_soft = 0; p.edge_opacity = 100;   /* 선명한 흰 선(예전 동작): 정확한 255 를 검사하는 시험 */
     /* 왼쪽은 밝은 노랑 계열, 오른쪽은 어두운 파랑 계열: 휘도 차가 커서 x=80 에 강한 엣지가 생긴다. */
     for (int y = 0; y < H; ++y)
         for (int x = 0; x < W; ++x) {
@@ -3515,6 +3516,7 @@ static void test_privacy_style_edge_gray_flattens_fine_texture(void) {
     PrivacyParams p = privacy_params_default();
     int white = 0;
     p.style = PRIVACY_STYLE_EDGE_GRAY;
+    p.edge_soft = 0; p.edge_opacity = 100;   /* 선명한 흰 선(예전 동작): 정확한 255 를 검사하는 시험 */
     /* 1px 체커보드: 모자이크와 약한 가우시안이 평균(≈127)으로 만들어 엣지도 배경 변화도 남지 않아야 한다.
        "작은 디테일(글자·얼굴 질감)은 사라진다"는 성질의 회귀 시험. */
     for (int y = 0; y < H; ++y)
@@ -3596,6 +3598,7 @@ static void test_privacy_style_edge_blur_reduces_fine_edges(void) {
     PrivacyParams p = privacy_params_default();
     int white_weak = 0, white_strong = 0;
     p.style = PRIVACY_STYLE_EDGE_GRAY;
+    p.edge_soft = 0; p.edge_opacity = 100;   /* 선명한 흰 선(예전 동작): 정확한 255 를 검사하는 시험 */
     /* 거친 노이즈 위에 굵은 사각형: 사각형 윤곽은 남고 잔 노이즈 엣지는 블러가 셀수록 줄어야 한다. */
     for (int y = 0; y < H; ++y)
         for (int x = 0; x < W; ++x) {
@@ -3611,6 +3614,38 @@ static void test_privacy_style_edge_blur_reduces_fine_edges(void) {
     for (int i = 0; i < W * H; ++i) { if (a[i * 3] == 255) ++white_weak; if (b[i * 3] == 255) ++white_strong; }
     EXPECT_TRUE(white_strong < white_weak);             /* 블러가 셀수록 엣지 픽셀이 줄어든다 */
     EXPECT_TRUE(white_strong > 0);                      /* 굵은 윤곽은 그대로 남는다 */
+    privacy_scratch_destroy(s);
+}
+
+static void test_privacy_style_soft_edges_are_dimmer_and_wider(void) {
+    enum { W = 160, H = 96 };
+    static uint8_t src[W * H * 3], hard[W * H * 3], soft[W * H * 3];
+    PrivacyScratch *s = privacy_scratch_create();
+    PrivacyParams ph = privacy_params_default(), ps = privacy_params_default();
+    int peak_hard = 0, peak_soft = 0, wide_hard = 0, wide_soft = 0, row = H / 2;
+    for (int y = 0; y < H; ++y)
+        for (int x = 0; x < W; ++x) memset(src + ((size_t)y * W + x) * 3, x < 80 ? 220 : 20, 3);
+    ph.style = ps.style = PRIVACY_STYLE_EDGE_GRAY;
+    ph.edge_soft = 0; ph.edge_opacity = 100;              /* 예전 동작: 선명한 흰 선 */
+    memcpy(hard, src, sizeof(hard)); memcpy(soft, src, sizeof(soft));
+    ASSERT_INT_EQ(privacy_style_apply(s, hard, W, H, W * 3, &ph), 0);
+    ASSERT_INT_EQ(privacy_style_apply(s, soft, W, H, W * 3, &ps), 0);   /* 기본값: soft 1, opacity 70 */
+    /* 경계 근처(x 60~100)에서 배경(왼쪽 ≈220 쪽은 이미 밝아서 오른쪽 어두운 쪽 x 82~100 으로 비교) */
+    for (int x = 70; x < 100; ++x) {
+        int h = hard[((size_t)row * W + x) * 3], f = soft[((size_t)row * W + x) * 3];
+        if (h > peak_hard) peak_hard = h;
+        if (f > peak_soft) peak_soft = f;
+    }
+    for (int x = 82; x < 100; ++x) {
+        int bg = 20;                                       /* 오른쪽 배경 휘도 근처 */
+        if (hard[((size_t)row * W + x) * 3] > bg + 25) ++wide_hard;
+        if (soft[((size_t)row * W + x) * 3] > bg + 25) ++wide_soft;
+    }
+    EXPECT_INT_EQ(peak_hard, 255);                         /* 선명한 선은 순백 */
+    EXPECT_TRUE(peak_soft < peak_hard);                    /* 덜 선명한 선은 최대 밝기가 낮다 */
+    EXPECT_TRUE(peak_soft > 100);                          /* 그래도 선은 보인다 */
+    EXPECT_TRUE(wide_soft >= wide_hard);                   /* 번져서 같거나 더 넓게 퍼진다 */
+    EXPECT_TRUE(priv_all_gray(soft, W, H, W * 3));
     privacy_scratch_destroy(s);
 }
 
@@ -3630,7 +3665,16 @@ static void test_privacy_style_speed_report(void) {
         t0 = platform_monotonic_seconds() - t0;
         if (t0 < best) best = t0;
     }
-    printf("  [info] privacy_style EDGE_GRAY 1280x720: best %.1f ms/frame (dev PC)\n", best * 1000.0);
+    printf("  [info] privacy_style EDGE_GRAY 1280x720 (기본 soft=1 opacity=70): best %.1f ms/frame (dev PC)\n", best * 1000.0);
+    p.edge_soft = 0; p.edge_opacity = 100;                 /* 비교: 예전 선명한 선 */
+    best = 1e9;
+    for (int k = 0; k < 6; ++k) {
+        t0 = platform_monotonic_seconds();
+        ASSERT_INT_EQ(privacy_style_apply(s, frame, W, H, W * 3, &p), 0);
+        t0 = platform_monotonic_seconds() - t0;
+        if (t0 < best) best = t0;
+    }
+    printf("  [info] privacy_style EDGE_GRAY 1280x720 (soft=0 opacity=100, 예전): best %.1f ms/frame (dev PC)\n", best * 1000.0);
     privacy_scratch_destroy(s);
     free(frame);
 }
@@ -4151,6 +4195,7 @@ int main(void) {
     RUN_TEST(test_privacy_style_respects_stride_padding_and_sanitizes);
     RUN_TEST(test_capture_privacy_edge_style_writes_gray_copy);
     RUN_TEST(test_privacy_style_edge_blur_reduces_fine_edges);
+    RUN_TEST(test_privacy_style_soft_edges_are_dimmer_and_wider);
     RUN_TEST(test_privacy_style_speed_report);
     RUN_TEST(test_tracker_invalid_create);
     RUN_TEST(test_tracker_null_args);

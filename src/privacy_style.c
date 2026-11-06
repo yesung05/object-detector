@@ -32,6 +32,7 @@ struct PrivacyScratch {
     uint8_t *small_a, *small_b; /* sw*sh 축소 이미지와 블러 임시 */
     int32_t *col_x0;          /* w 확대용 열 색인 */
     uint8_t *col_wx;          /* w 확대용 열 가중치(0~255) */
+    uint8_t alpha_lut[256];   /* 엣지 알파 × edge_opacity 환산표(프레임마다 갱신) */
 };
 
 static void scratch_free_buffers(PrivacyScratch *s) {
@@ -60,7 +61,9 @@ PrivacyParams privacy_params_default(void) {
     p.cell = 24;
     p.edge_low = 40;
     p.edge_high = 110;
-    p.edge_blur = 3;
+    p.edge_blur = 8;
+    p.edge_soft = 1;
+    p.edge_opacity = 70;
     return p;
 }
 
@@ -76,6 +79,10 @@ void privacy_params_sanitize(PrivacyParams *p) {
     if (p->edge_high > 255) p->edge_high = 255;
     if (p->edge_blur < 1) p->edge_blur = 1;
     if (p->edge_blur > 8) p->edge_blur = 8;
+    if (p->edge_soft < 0) p->edge_soft = 0;
+    if (p->edge_soft > 4) p->edge_soft = 4;
+    if (p->edge_opacity < 10) p->edge_opacity = 10;
+    if (p->edge_opacity > 100) p->edge_opacity = 100;
 }
 
 static void fill_solid(uint8_t *rgb, int width, int height, int stride, int gray) {
@@ -256,11 +263,28 @@ int privacy_style_apply(PrivacyScratch *scratch, uint8_t *rgb, int width, int he
         }
     }
 
-    /* 4) 합성: 엣지(2x2 두께)는 흰색, 나머지는 쌍선형 확대한 배경. 한 행씩 만들어 rgb 에 직접 쓴다. */
+    /* 4) 엣지 알파: 확정 엣지를 2x2 로 두껍게 만든 0/255 마스크를 blur 버퍼에 만들고(Sobel 이 끝나 blur 는 더 쓰지 않는다),
+       edge_soft 번 5탭 가우시안으로 번지게 한다(tmp 는 NMS 결과였지만 이력 단계 뒤로는 안 쓴다). 선이 번지면 가장자리가
+       흐려져 덜 선명해지고, 번진 만큼 최대 밝기도 줄어든다. edge_opacity 는 그 위에 곱해 전체 선 농도를 낮춘다.
+       soft=0, opacity=100 이면 예전의 "선명한 흰 선"과 비트 단위로 같다(전후 성능·모양 비교용). */
+    for (y = 0; y < height; ++y) {
+        const uint8_t *em = s->mag + (size_t)y * width;
+        const uint8_t *ep = y > 0 ? s->mag + (size_t)(y - 1) * width : NULL;
+        uint8_t *al = s->blur + (size_t)y * width;
+        for (x = 0; x < width; ++x)
+            al[x] = (uint8_t)((em[x] || (x > 0 && em[x - 1]) || (ep && (ep[x] || (x > 0 && ep[x - 1])))) ? 255 : 0);
+    }
+    for (x = 0; x < p.edge_soft; ++x) gaussian5(s->blur, s->tmp, s->blur, width, height);
+    {
+        int ai;
+        for (ai = 0; ai < 256; ++ai) s->alpha_lut[ai] = (uint8_t)((ai * p.edge_opacity + 50) / 100);
+    }
+
+    /* 5) 합성: 쌍선형 확대한 배경 위에 엣지 알파만큼 흰색을 섞는다. 한 행씩 만들어 rgb 에 직접 쓴다. */
     for (y = 0; y < height; ++y) {
         long long v = ((long long)(2 * y + 1) * s->sh * 128) / height - 128;
         int y0, y1, wy;
-        const uint8_t *ra, *rb, *em, *ep;
+        const uint8_t *ra, *rb, *al;
         uint8_t *o = rgb + (size_t)y * (size_t)stride;
         if (v < 0) { y0 = 0; y1 = 0; wy = 0; }
         else {
@@ -269,15 +293,14 @@ int privacy_style_apply(PrivacyScratch *scratch, uint8_t *rgb, int width, int he
         }
         ra = s->small_a + (size_t)y0 * s->sw;
         rb = s->small_a + (size_t)y1 * s->sw;
-        em = s->mag + (size_t)y * width;
-        ep = y > 0 ? s->mag + (size_t)(y - 1) * width : NULL;
+        al = s->blur + (size_t)y * width;
         for (x = 0; x < width; ++x, o += 3) {
             int x0 = s->col_x0[x], x1 = x0 + 1 < s->sw ? x0 + 1 : x0, wx = s->col_wx[x];
             unsigned top = (unsigned)(ra[x0] * (256 - wx) + ra[x1] * wx);
             unsigned bot = (unsigned)(rb[x0] * (256 - wx) + rb[x1] * wx);
             uint8_t val = (uint8_t)((top * (unsigned)(256 - wy) + bot * (unsigned)wy) >> 16);
-            int edge = em[x] || (x > 0 && em[x - 1]) || (ep && (ep[x] || (x > 0 && ep[x - 1])));
-            if (edge) val = 255;
+            unsigned a = s->alpha_lut[al[x]];
+            if (a) val = (uint8_t)(val + (((255u - val) * a + 127u) / 255u));
             o[0] = o[1] = o[2] = val;
         }
     }
