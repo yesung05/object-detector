@@ -300,7 +300,9 @@ header {
   margin-bottom: 12px;
 }
 .alerts-header h2 { font-size: 14px; font-weight: 700; }
-.alerts-clear { font-size: 11px; color: var(--muted); cursor: pointer; }
+/* button 요소(키보드 포커스·스크린리더). 폰에서 누르기 쉽게 최소 44px 높이. */
+.alerts-clear { font: inherit; font-size: 12px; color: var(--muted); cursor: pointer;
+  background: none; border: 0; padding: 0 8px; min-height: 44px; min-width: 44px; }
 .alerts-clear:hover { color: var(--accent); }
 .alert-item {
   display: flex; align-items: flex-start; gap: 10px;
@@ -911,8 +913,8 @@ details.dev-accordion[open] > summary { color: var(--red) !important; }
     <img id="logo-img" class="logo-img" src="" alt="로고" style="display:none"
          onload="this.style.display=''" onerror="this.style.display='none'">
     <div class="brand-text">
-      <div class="brand-ko">unmanned_detector</div>
-      <div class="brand-en">0.1.0-alpha.5 · 무인 매장 모니터링</div>
+      <div class="brand-ko">무인 매장 모니터링</div>
+      <div class="brand-en">unmanned_detector 0.1.0-alpha.5</div>
     </div>
   </div>
   <div class="header-spacer"></div>
@@ -922,7 +924,7 @@ details.dev-accordion[open] > summary { color: var(--red) !important; }
       <span id="cam-label"></span>
     </div>
     <div class="header-sep"></div>
-    <button class="theme-btn" id="theme-btn" onclick="toggleTheme()" title="테마 전환"><svg class="i"><use href="#i-sun"/></svg></button>
+    <button class="theme-btn" id="theme-btn" onclick="toggleTheme()" title="테마 전환" aria-label="밝은/어두운 화면 전환"><svg class="i"><use href="#i-sun"/></svg></button>
     <div class="mode-toggle">
       <button class="mode-btn active" id="btn-easy" onclick="setMode('easy')">간단</button>
       <button class="mode-btn" id="btn-advanced" onclick="setMode('advanced')">고급</button>
@@ -938,7 +940,7 @@ details.dev-accordion[open] > summary { color: var(--red) !important; }
     <div class="camera-panel" id="stream-container">
       <div class="camera-offline" id="cam-offline">
         <span style="font-size:36px"><svg class="i"><use href="#i-camera"/></svg></span>
-        <span>detector 미실행 또는 스트림 포트 미설정</span>
+        <span>카메라 화면을 받지 못했습니다. 감지 프로그램이 켜져 있는지 확인해 주세요.</span>
         <button class="cam-reconnect" onclick="connectStream()">재연결</button>
       </div>
       <img id="stream-img" src="" alt="카메라 피드" style="display:none"
@@ -998,8 +1000,8 @@ details.dev-accordion[open] > summary { color: var(--red) !important; }
     <div class="alerts-header">
       <h2>최근 알림</h2>
       <span class="alert-today" id="alert-today" title="오늘 점주에게 보이는 알림 / 하루 권장 10건"></span>
-      <span class="alerts-clear" id="sound-btn" onclick="toggleAlertSound()"><svg class="i"><use href="#i-speaker"/></svg></span>
-      <span class="alerts-clear" onclick="clearAlerts()">지우기</span>
+      <button type="button" class="alerts-clear" id="sound-btn" onclick="toggleAlertSound()" aria-label="알림 소리 켜기/끄기" title="알림 소리 켜기/끄기"><svg class="i"><use href="#i-speaker"/></svg></button>
+      <button type="button" class="alerts-clear" onclick="clearAlerts()" title="목록에서만 숨깁니다. 기록은 남아 있습니다.">화면에서 숨기기</button>
     </div>
     <div id="alert-list">
       <div class="alert-empty" id="alert-empty">감지된 알림이 없습니다.</div>
@@ -1078,19 +1080,19 @@ details.dev-accordion[open] > summary { color: var(--red) !important; }
       <p class="setting-desc" id="tier2-timing"></p>
       <div class="stats-row">
         <div class="stat-card">
-          <div><div class="stat-label">체류 초과</div><div class="stat-sublabel">overstay</div></div>
+          <div><div class="stat-label">체류 초과</div></div>
           <div class="stat-value red"   id="cnt-overstay">0</div>
         </div>
         <div class="stat-card">
-          <div><div class="stat-label">미주문 착석</div><div class="stat-sublabel">unordered</div></div>
+          <div><div class="stat-label">미주문 착석</div></div>
           <div class="stat-value yellow" id="cnt-unordered">0</div>
         </div>
         <div class="stat-card">
-          <div><div class="stat-label">쓰러짐</div><div class="stat-sublabel">fallen</div></div>
+          <div><div class="stat-label">쓰러짐</div></div>
           <div class="stat-value red"   id="cnt-fallen">0</div>
         </div>
         <div class="stat-card">
-          <div><div class="stat-label">잔류물</div><div class="stat-sublabel">residue</div></div>
+          <div><div class="stat-label">잔류물</div></div>
           <div class="stat-value orange" id="cnt-residue">0</div>
         </div>
       </div>
@@ -1113,7 +1115,7 @@ details.dev-accordion[open] > summary { color: var(--red) !important; }
             <div class="stat-value blue" id="cnt-total">0</div>
             <!-- 열림 오탐 즉시 수정용. 카메라가 계속 열림으로 판정하면 confirm_frames 후 다시 열림으로 돌아옴 -->
             <button id="btn-force-closed" onclick="forceDoorClosed()"
-                    style="display:none;font-size:11px;padding:3px 9px;border-radius:6px;
+                    style="display:none;font-size:13px;padding:8px 14px;min-height:44px;border-radius:8px;
                            border:1px solid var(--muted);background:var(--bg);
                            color:var(--text);cursor:pointer;white-space:nowrap">
               닫힘으로 리셋
@@ -1917,18 +1919,18 @@ details.dev-accordion[open] > summary { color: var(--red) !important; }
   }
   async function capture(s,revision,endpoint){
     if(pending)return;
-    if(!confirm(`${s.id}: 평소 비치물만 남기고 쓰레기·오염을 치웠나요? 현재 모습을 정상 기준으로 등록합니다.`))return;
+    if(!confirm(`${place(s.id)}: 평소 비치물만 남기고 쓰레기·오염을 치웠나요? 현재 모습을 정상 기준으로 등록합니다.`))return;
     pending=true;message.textContent='';
     try{
       const config=await request('/api/surfaces');
       const live=await request(endpoint+'/surface/status');
       if(endpoint!==base()||!config.enabled||!live.enabled||config.revision!==revision||live.revision!==revision||!config.surfaces.some(v=>v.id===s.id))throw Error('설정이 변경되었거나 아직 적용 중입니다.');
       await request(endpoint+'/surface/capture?id='+encodeURIComponent(s.id)+'&empty=0',{method:'POST'});
-      message.textContent=`${s.id}: 등록 요청됨.`;
+      message.textContent=`${place(s.id)}: 등록 요청됨.`;
     }catch(e){message.textContent='등록하지 못했습니다: '+e.message;}finally{pending=false;poll();}
   }
   async function poll(){
-    if(loading)return;loading=true;const endpoint=base();
+    if(loading||document.hidden)return;loading=true;const endpoint=base();
     try{
       const data=await request(endpoint+'/surface/status');if(endpoint!==base())return;
       if(lastBase!==endpoint||lastFrame!==data.frame_time){lastFrame=data.frame_time;lastBase=endpoint;lastChange=Date.now();}
@@ -2457,9 +2459,13 @@ async function authFetch(url, opts = {}, retried = false) {
 }
 
 /* ── 카메라 스트림 ─────────────────────────────────────────────────────────── */
+/* 스트림이 끊기면 2초→4초→…최대 30초 간격으로 다시 붙는다. 점주가 "재연결"을 누르지 않아도 감지 프로그램
+   재시작 뒤 화면이 돌아오게 하려는 것. t= 는 같은 주소를 다시 넣으면 브라우저가 새로 요청하지 않는 것을 피하려는 값. */
+let streamRetryMs = 2000, streamRetryTimer = null, streamResumeOnShow = false;
 function connectStream() {
   const port = parseInt(portInput.value, 10) || 8081;
-  streamImg.src = `http://${window.location.hostname}:${port}/stream`;
+  clearTimeout(streamRetryTimer);
+  streamImg.src = `http://${window.location.hostname}:${port}/stream?t=${Date.now()}`;
   streamImg.style.display = "";
   camOffline.style.display = "none";
   streamActive = true;
@@ -2470,11 +2476,15 @@ function disconnectStream() {
 }
 function onStreamError() {
   if (!streamActive) return;
-  camOffline.innerHTML = '<span style="font-size:36px"><svg class="i"><use href="#i-camera"/></svg></span><span>스트림 연결 실패 — detector 실행 상태 확인</span><button class="cam-reconnect" onclick="connectStream()">재연결</button>';
+  camOffline.innerHTML = '<span style="font-size:36px"><svg class="i"><use href="#i-camera"/></svg></span><span>카메라 화면을 받지 못했습니다. 감지 프로그램이 꺼져 있거나 다시 시작하는 중입니다. 자동으로 다시 연결합니다.</span><button class="cam-reconnect" onclick="connectStream()">지금 다시 연결</button>';
   camOffline.style.display = "";
   streamImg.style.display = "none";
+  clearTimeout(streamRetryTimer);
+  streamRetryTimer = setTimeout(() => { if (streamActive && !document.hidden) connectStream(); }, streamRetryMs);
+  streamRetryMs = Math.min(streamRetryMs * 2, 30000);
 }
 function onStreamLoad() {
+  streamRetryMs = 2000;
   camOffline.style.display = "none";
   streamImg.style.display = "";
   camDot.className = "cam-dot";
@@ -2676,7 +2686,8 @@ async function saveSettings() {
 /* 일반 설정 전체를 기본값으로. 알림 모드·PIN 은 유지할지 묻는다. 서버가 config.json.bak-<시각> 으로 백업한 뒤 비운다. */
 async function resetAllSettings() {
   if (!confirm("감지 민감도·체류 시간·가림 화면·자동 캡처·재시작 등 모든 일반 설정을 기본값으로 되돌립니다.\n\n문 위치·기준 사진·테이블 영역, 로그, 증거 사진은 유지됩니다. 설정 파일은 먼저 백업됩니다.\n\n계속할까요?")) return;
-  const keep = confirm("알림 모드(켜짐/알림 X/끔)와 접근 PIN은 그대로 둘까요?\n\n확인 = 유지, 취소 = 함께 초기화");
+  /* 확인 = 더 지우는 쪽이어야 한다. 예전엔 "취소 = 함께 초기화"라 망설여 취소를 누르면 PIN 까지 지워졌다. */
+  const keep = !confirm("알림 모드(켜짐/알림 X/끔)와 접근 PIN도 함께 초기화할까요?\n\n확인 = 함께 초기화, 취소 = 그대로 유지");
   try {
     const r = await authFetch(`/api/config/reset?keep_alerts=${keep ? 1 : 0}&keep_pin=${keep ? 1 : 0}`, { method: "POST" });
     if (!r.ok) throw new Error("HTTP " + r.status);
@@ -2758,7 +2769,7 @@ async function captureDoorRef(state) {
     const json = await res.json();
     if (json.ok) { st.textContent = `${label} 기준 저장됨`; refreshDoorPreview(state); }
     else          { st.textContent = json.error || "캡처 실패"; }
-  } catch (_) { st.textContent = "detector 미실행 또는 포트 오류"; }
+  } catch (_) { st.textContent = "감지 프로그램이 응답하지 않습니다"; }
 }
 
 function refreshDoorPreview(state) {
@@ -2791,7 +2802,7 @@ async function captureResidueRef() {
     const json = await res.json();
     if (json.ok) { st.textContent = "청결 기준 저장됨"; refreshResiduePreview(); }
     else          { st.textContent = json.error || "캡처 실패"; }
-  } catch (_) { st.textContent = "detector 미실행 또는 포트 오류"; }
+  } catch (_) { st.textContent = "감지 프로그램이 응답하지 않습니다"; }
 }
 
 function refreshResiduePreview() {
@@ -2966,11 +2977,17 @@ async function applyModePreset(name) {
   loadAlertModes();
 }
 
+/* 감지 프로그램이 멈추면 응답 없는 요청이 3초마다 쌓였다 → 진행 중이면 건너뛰고 4초에 끊는다(표면 감시 poll 과 같은 방식).
+   탭이 숨겨져 있으면 건너뛴다(폰 배터리·서버 부하). 다시 보이면 visibilitychange 가 바로 한 번 부른다. */
+let statusLoading = false;
 async function pollStatus() {
+  if (statusLoading || document.hidden) return;
+  statusLoading = true;
   const port = getStreamPort();
   const badge = document.getElementById("door-state-badge");
+  const controller = new AbortController(), timer = setTimeout(() => controller.abort(), 4000);
   try {
-    const res = await fetch(`http://${location.hostname}:${port}/status`);
+    const res = await fetch(`http://${location.hostname}:${port}/status`, { signal: controller.signal });
     const st  = await res.json();
     document.getElementById("probable-orders").textContent=st.probable_orders ?? 0;
     document.getElementById("tier2-timing").textContent=st.tier2 ? `${st.tier2.mean_ms.toFixed(1)} ms · ${st.tier2.runs}` : "";
@@ -3044,9 +3061,19 @@ async function pollStatus() {
     updateCardState("door", "normal", "");
     applyPrivacyState({ mode: 0 });
     renderHealth(null);
-  }
+  } finally { clearTimeout(timer); statusLoading = false; }
 }
 setInterval(pollStatus, 3000);
+/* 탭 숨김: 영상 스트림과 상태 조회를 멈춘다. 알림 SSE 는 끄지 않는다 — PC 에서 다른 창을 보는 동안에도
+   알림 소리·브라우저 알림이 와야 하고, 이벤트가 있을 때만 데이터가 흘러 부담이 작다. */
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) {
+    if (streamActive) { streamResumeOnShow = true; clearTimeout(streamRetryTimer); disconnectStream(); }
+  } else {
+    if (streamResumeOnShow) { streamResumeOnShow = false; streamRetryMs = 2000; connectStream(); }
+    pollStatus();
+  }
+});
 pollStatus();
 refreshAlertSummary();
 setInterval(refreshAlertSummary, 60000);
@@ -3126,12 +3153,14 @@ async function forceDoorClosed() {
   const btn = document.getElementById("btn-force-closed");
   if (btn) btn.disabled = true;
   try {
-    await fetch(`http://${location.hostname}:${port}/door/force-closed`, { method: "POST" });
+    /* authFetch: LAN 기기에서는 PIN 이 필요하다(plain fetch 는 403 인데도 "닫힘"으로 보였음). */
+    const res = await authFetch(`http://${location.hostname}:${port}/door/force-closed`, { method: "POST" });
+    if (!res.ok) throw Error(res.status === 403 ? "권한이 없습니다(PIN 확인)" : `HTTP ${res.status}`);
     /* 즉시 배지 갱신 — pollStatus가 3초 뒤 덮어씀 */
     const badge = document.getElementById("door-state-badge");
     if (badge) { badge.className = "door-pill closed"; badge.textContent = "닫힘"; }
     if (btn) btn.style.display = "none";
-  } catch (_) {}
+  } catch (e) { alert("문 상태를 바꾸지 못했습니다: " + e.message); }
   if (btn) btn.disabled = false;
 }
 
@@ -3555,6 +3584,7 @@ loadLogList();
 
 /* 30초마다 로그 목록 갱신 */
 setInterval(async () => {
+  if (document.hidden) return;
   try {
     const res = await fetch("/api/logs");
     const files = await res.json();
