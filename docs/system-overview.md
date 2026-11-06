@@ -68,7 +68,7 @@
 
 | 상황 | 결과 | 상태 |
 |---|---|---|
-| **폭행·싸움** | 두 사람 근접 × 팔다리 속도 특징의 분리도 AUC 0.96(전체)/0.835(같은 클립 내부). 1차 룰만으로는 기준 미달 | **평가만 완료** — 2차 소형 AI 후보 |
+| **폭행·싸움** | 1차 규칙 게이트(두 사람 근접)를 통과한 3초 구간에서만 소형 분류기(1D-CNN 22k 파라미터, 91KB, FP32)를 호출. AI-Hub 평가: 교차검증 재현율 0.87, **test 재현율 0.80 / 오탐 3.2건/시간(음성 0.94시간뿐이라 기준 2.0 충족 여부 판단 불가)** | **프로토타입 구현, 기본 꺼짐**(`fight_enabled`, 알림 `person_fight`, 출시 프로파일에서는 그림자 권장) — 카페 오탐 미측정 |
 | 흡연·절도·유기·방화·기물 파손 | 어떤 특징도 AUC 0.70을 넘지 못함 | **미구현 / no-go** |
 
 상세: [1단계 측정 결과](anomaly-multiclass-stage1-dev-2026-11-06.md), [사전 등록](prereg_anomaly_multiclass.md). 연출 3fps 영상이라 현장 성능이 아닙니다.
@@ -329,6 +329,7 @@ PIN은 IP당 5회 실패 시 10분 잠금입니다. 모든 접속·변경·차�
 | | `fall_handoff_seconds`, `fall_handoff_reach` | 0(끔) | 트랙 인계(권고 3초 / 0.75) |
 | | `fall_wide_ratio`, `fall_wide_min_score` | 0(끔) | 넓은 박스 근거(권고 1.6 / 0.25) |
 | 알림 | `alert_<이름>` | `on` | `on` / `shadow` / `off` (대시보드 표시: **켜짐 (알림 O)** / **켜짐 (알림 X)** / **끔**) |
+| 폭행 2단계 | `fight_enabled` 0 | 1 이면 `models/fight_stage2.onnx` 로드. `fight_model`(경로), `fight_threshold` 0.98386, `fight_cooldown_seconds` 30. 모델이 없거나 실패하면 비활성 + 시작 로그에 이유 |
 | 문 | `door_open_seconds` | 30 | 개방 알림 기준 |
 | 보호 | `stream_privacy_mode` | 코드 1 | 보호 모드 |
 | | `stream_privacy_style` | 0 | 0 단색 / 1 엣지 그레이 / 2 열화상 |

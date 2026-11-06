@@ -129,6 +129,8 @@ if(ORT_INCLUDE_DIR AND ORT_LIBRARY AND FFMPEG_INCLUDE_DIR AND FFMPEG_FOUND)
         src/calib.c
         src/capture.c
         src/privacy_style.c
+        src/fight_stage2.c
+        src/fight_classifier.c
         src/reconnect.c
         src/door.c
         src/model_select.c
@@ -211,6 +213,7 @@ add_executable(test_core
     src/calib.c
     src/capture.c
     src/privacy_style.c
+    src/fight_stage2.c
     src/reconnect.c
     third_party/sqlite/sqlite3.c)
 target_include_directories(test_core PRIVATE include tests)

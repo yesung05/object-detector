@@ -15,6 +15,8 @@
 #include "table_mapper.h"
 #include "residue.h"
 #include "config.h"
+#include "fight_stage2.h"
+#include "fight_classifier.h"
 #include "gray.h"
 #include "log.h"
 #include "media.h"
@@ -132,6 +134,11 @@ typedef struct {
     /* Re-ID 부활 체류 초기화(reid_dwell_keep_seconds). cfg 가 tracks_init 전에 해제되므로 여기 보관했다가
      * tracks_init 뒤에 TrackList 로 옮긴다. reid_resets_logged 는 마지막으로 로그에 낸 누적 횟수. */
     double reid_dwell_keep;unsigned long reid_resets_logged;
+    /* 폭행 2단계(config fight_enabled, 기본 꺼짐). 소유: AppContext. fight_destroy / fight_classifier_destroy 로 종료·재설정 때 해제.
+       fight_model 은 현재 로드된 모델 경로(변경 감지용), fight_seconds 는 fight_update 누적 시간(로그용). */
+    FightMonitor *fight; FightClassifier *fight_clf; char fight_model[512];
+    double fight_cooldown, fight_seconds, fight_stats_log_time;
+    char fight_status[400]; int fight_status_level; /* 시작 시 설정을 읽을 때는 이벤트 로그가 아직 없어, 결과를 여기 두었다가 startup 로그로 낸다 */
     char alert_summary[400]; /* 마지막으로 로그에 낸 알림 모드 요약(바뀔 때만 다시 로그) */
     int              detect_every_obj;  /* Tier 2 실행 간격(프레임), 기본 90 */
     int              tier2_always;      /* 1=surface 활성 중에도 Tier 2 강제 실행 (개발용) */
@@ -1616,8 +1623,80 @@ static const char *const ALERT_TOKENS[] = {
     "overstay", "unordered_seated", "person_fallen", "person_unaccounted", "person_unaccounted_residue",
     "occupancy_exceeded", "person_motionless", "external_drink", "external_food", "animal_on_chair",
     "animal_on_table", "no_cup_seated", "residue_trash", "residue_spill", "residue_unknown", "door_open",
-    "slot_item_urgent",
+    "slot_item_urgent", "person_fight",
 };
+/* 폭행 2단계 설정. 시작 시와 hot-reload 양쪽에서 호출한다.
+ *   fight_enabled (0|1, 기본 0)        끄면 모델도 해제한다
+ *   fight_model   (기본 models/fight_stage2.onnx)
+ *   fight_threshold (기본 0.98386)     교차검증에서 정한 값(docs/fight-stage2-cv-2026-11-06.md). 바꾸면 모델 성능 근거가 달라진다
+ *   fight_cooldown_seconds (기본 30)   발화 뒤 재발화 금지
+ * 모델이 없거나 로드에 실패하면 기능을 끄고 이유를 로그로 남긴다(조용히 실패하지 않기). */
+static void apply_fight_config(AppContext *app, const Config *cfg) {
+    int enabled = (int)config_long(cfg, "fight_enabled", 0, 0, 1);
+    const char *model = NULL;
+    char path[512], err[300] = {0}, msg[700];
+    double thr = (double)config_float(cfg, "fight_threshold", 0.98386f, 0.5f, 0.9999f);
+    app->fight_cooldown = (double)config_float(cfg, "fight_cooldown_seconds", 30.0f, 0.0f, 3600.0f);
+    if (config_get(cfg, "fight_model", &model) != 0 || !model || !model[0]) model = "models/fight_stage2.onnx";
+    snprintf(path, sizeof(path), "%s", model);
+    if (!enabled) {
+        if (app->fight) {
+            fight_destroy(app->fight); app->fight = NULL;
+            fight_classifier_destroy(app->fight_clf); app->fight_clf = NULL;
+            app->fight_model[0] = '\0';
+            event_log_write(&app->event_log, LOG_INFO, "rules", "fight_stage2 비활성 (fight_enabled=0)");
+        }
+        app->fight_status[0] = '\0';   /* 꺼져 있는 것이 기본이라 시작 로그는 남기지 않는다 */
+        return;
+    }
+    if (app->fight && strcmp(path, app->fight_model) == 0) { fight_set_threshold(app->fight, thr); return; }
+    fight_destroy(app->fight); app->fight = NULL;
+    fight_classifier_destroy(app->fight_clf); app->fight_clf = NULL;
+    app->fight_clf = fight_classifier_create(path, 1, err, sizeof(err));
+    if (!app->fight_clf) {
+        snprintf(msg, sizeof(msg), "fight_stage2 비활성 — 모델 로드 실패: %s (%s)", err, path);
+        event_log_write(&app->event_log, LOG_WARN, "rules", msg);
+        snprintf(app->fight_status, sizeof(app->fight_status), "%s", msg); app->fight_status_level = LOG_WARN;
+        return;
+    }
+    app->fight = fight_create(thr, 1.0 / 3.0);
+    if (!app->fight) {
+        fight_classifier_destroy(app->fight_clf); app->fight_clf = NULL;
+        event_log_write(&app->event_log, LOG_WARN, "rules", "fight_stage2 비활성 — 메모리 부족");
+        return;
+    }
+    fight_set_scorer(app->fight, fight_classifier_score, app->fight_clf);
+    snprintf(app->fight_model, sizeof(app->fight_model), "%s", path);
+    snprintf(msg, sizeof(msg), "fight_stage2 활성 model=%s threshold=%.5f cooldown=%.0fs (AI-Hub 평가용 프로토타입, 알림 모드 alert_person_fight 로 on/shadow/off)",
+             path, thr, app->fight_cooldown);
+    event_log_write(&app->event_log, LOG_INFO, "rules", msg);
+    snprintf(app->fight_status, sizeof(app->fight_status), "%s", msg); app->fight_status_level = LOG_INFO;
+}
+
+/* 추론이 일어난 프레임마다 호출. 표본 간격·게이트·분류기·발화 규칙은 fight_stage2.c. 통계는 10분마다 한 줄. */
+static void fight_step(AppContext *app, double now) {
+    FightEvent ev;
+    double t0 = platform_monotonic_seconds();
+    int fired = fight_update(app->fight, &app->detections, now, app->fight_cooldown, &ev);
+    app->fight_seconds += platform_monotonic_seconds() - t0;
+    if (fired) {
+        char msg[160];
+        snprintf(msg, sizeof(msg), "person_fight score=%.3f windows=%d span=3s", ev.score, ev.hit_windows);
+        event_log_write(&app->event_log, LOG_WARN, "rules", msg);
+    }
+    if (now - app->fight_stats_log_time >= 600.0) {
+        FightStats st;
+        char msg[260];
+        fight_get_stats(app->fight, &st);
+        if (app->fight_stats_log_time > 0) {
+            snprintf(msg, sizeof(msg), "fight_stage2 상태 표본=%lu 게이트통과=%lu 분류기호출=%lu 임계초과=%lu 발화=%lu 처리시간합=%.2fs",
+                     st.samples, st.gate_pass, st.scorer_calls, st.hits, st.fires, app->fight_seconds);
+            event_log_write(&app->event_log, LOG_INFO, "rules", msg);
+        }
+        app->fight_stats_log_time = now;
+    }
+}
+
 static void apply_alert_config(AppContext *app, const Config *cfg) {
     char key[96], summary[400];
     size_t i;
@@ -1788,6 +1867,7 @@ static void reload_config(AppContext *app) {
     apply_vanish_config(&rules_cfg, &cfg);
     apply_fall_extra_config(&rules_cfg, &cfg);
     apply_alert_config(app, &cfg);
+    apply_fight_config(app, &cfg);
     apply_roi_kiosk(&rules_cfg, &cfg);
     rules_update_config(&app->rules, &rules_cfg);
 
@@ -2580,6 +2660,7 @@ static int process_frame(RgbFrame *frame, void *opaque,
             event_log_write(&app->event_log, LOG_INFO, "rules", rm);
             app->reid_resets_logged = app->tracks.reid_dwell_resets;
         }
+        if (app->fight) fight_step(app, now);   /* 폭행 2단계(기본 꺼짐): 사람 검출·관절이 갱신된 프레임에서만 */
         /* full_luma 준비: 원본 해상도 그레이스케일.
          * luma 평면이 있으면 그대로, 없으면 RGB→Gray(BT.601) 변환합니다. */
         {
@@ -3470,6 +3551,7 @@ int main(int argc, char **argv) {
         apply_vanish_config(&rules_cfg, &cfg);
         apply_fall_extra_config(&rules_cfg, &cfg);
         apply_alert_config(&app, &cfg);
+        apply_fight_config(&app, &cfg);
         apply_roi_kiosk(&rules_cfg, &cfg);
         /* 문 여닫이 설정 — door_load는 cfg 블록 밖에서 (data_dir 필요) */
         app.door.enabled                 = (int)config_long (&cfg, "door_enabled",        1,    0,    1);
@@ -3590,6 +3672,7 @@ int main(int argc, char **argv) {
             event_log_write(&app.event_log, LOG_INFO, "startup", am);
             snprintf(app.alert_summary, sizeof(app.alert_summary), "%s", sm);
         }
+        if (app.fight_status[0]) event_log_write(&app.event_log, app.fight_status_level, "startup", app.fight_status);
         if (app.video_clock)
             event_log_write(&app.event_log, LOG_INFO, "startup",
                             "video_clock=on — 룰·트래커·문 판정 시간을 영상 시간(프레임 번호/fps)으로 계산, "
@@ -3990,6 +4073,8 @@ done:
     privacy_scratch_destroy(app.privacy_scratch);   /* NULL 안전 */
     free(app.privacy_cache);
     slot_monitor_destroy(&app.slot_mon);
+    fight_destroy(app.fight);                       /* NULL 안전 */
+    fight_classifier_destroy(app.fight_clf);        /* NULL 안전 */
     rules_destroy(&app.rules);
     tracks_destroy(&app.tracks);
     camera_health_destroy(&app.cam_health);

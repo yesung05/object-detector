@@ -17,6 +17,7 @@
 #include "calib.h"
 #include "capture.h"
 #include "privacy_style.h"
+#include "fight_stage2.h"
 #include "reconnect.h"
 #include "../third_party/sqlite/sqlite3.h" /* count_events: 룰 발화 횟수 검증 */
 #include "infer_cache.h"
@@ -3730,6 +3731,113 @@ static void test_privacy_style_speed_report(void) {
     free(frame);
 }
 
+/* ── 폭행 2단계(fight_stage2): 특징·게이트·발화 규칙 ──────────────────────────── */
+
+static void fight_person(Detection *d, float cx, float top, float h, float score) {
+    memset(d, 0, sizeof(*d));
+    d->x1 = cx - h * 0.2f; d->x2 = cx + h * 0.2f; d->y1 = top; d->y2 = top + h;
+    d->score = score; d->keypoint_count = 17;
+    for (int k = 0; k < 17; ++k) { d->kp[k].x = cx + (k % 3 - 1) * h * 0.05f; d->kp[k].y = top + h * (0.1f + 0.05f * k); d->kp[k].score = 0.8f; }
+}
+
+static float fight_const_scorer(void *ctx, const float *w) { (void)w; return *(float *)ctx; }
+static int fight_scorer_calls;
+static float fight_counting_scorer(void *ctx, const float *w) { (void)w; ++fight_scorer_calls; return *(float *)ctx; }
+
+static void test_fight_features_pair_and_validity(void) {
+    Detection people[3];
+    DetectionList list;
+    float vec[FIGHT_D], close = -1;
+    int valid = -1;
+    list.items = people; list.capacity = 3;
+    fight_person(&people[0], 100, 100, 200, 0.9f);
+    fight_person(&people[1], 160, 100, 200, 0.9f);       /* 중심 거리 60, 평균 키 200 → d=0.3 → close=0.8 */
+    list.count = 2;
+    fight_frame_features(&list, vec, &valid, &close);
+    EXPECT_INT_EQ(valid, 1);
+    EXPECT_TRUE(fabsf(close - 0.8f) < 0.01f);
+    EXPECT_TRUE(fabsf(vec[102] - 0.3f / 4.0f) < 0.01f);  /* 거리/4 */
+    EXPECT_TRUE(vec[103] > 0.0f);                        /* 박스가 겹침 */
+    EXPECT_TRUE(fabsf(vec[105] - 0.5f) < 0.01f);         /* 사람 수 2/4 */
+    list.count = 1;                                      /* 한 명이면 유효하지 않고 사람 수만 기록 */
+    fight_frame_features(&list, vec, &valid, &close);
+    EXPECT_INT_EQ(valid, 0);
+    EXPECT_TRUE(fabsf(vec[105] - 0.25f) < 0.01f);
+    fight_person(&people[1], 160, 100, 200, 0.1f);       /* 점수 0.25 미만은 사람으로 세지 않는다 */
+    list.count = 2;
+    fight_frame_features(&list, vec, &valid, &close);
+    EXPECT_INT_EQ(valid, 0);
+}
+
+static void test_fight_monitor_gate_fires_and_cooldown(void) {
+    Detection near_pair[2], far_pair[2];
+    DetectionList near_list, far_list;
+    FightMonitor *m = fight_create(0.9, 1.0 / 3.0);
+    float p_high = 0.99f, p_low = 0.10f;
+    FightEvent ev;
+    int fires = 0;
+    double t = 0.0;
+    ASSERT_TRUE(m != NULL);
+    near_list.items = near_pair; near_list.count = 2; near_list.capacity = 2;
+    far_list.items = far_pair; far_list.count = 2; far_list.capacity = 2;
+    fight_person(&near_pair[0], 100, 100, 200, 0.9f); fight_person(&near_pair[1], 150, 100, 200, 0.9f);
+    fight_person(&far_pair[0], 100, 100, 200, 0.9f);  fight_person(&far_pair[1], 900, 100, 200, 0.9f);  /* d=4 → close=0 */
+
+    /* 게이트: 멀리 떨어진 두 사람이면 창이 차도 분류기를 부르지 않는다(평소 AI 호출 0) */
+    fight_scorer_calls = 0;
+    fight_set_scorer(m, fight_counting_scorer, &p_high);
+    for (int i = 0; i < 30; ++i, t += 1.0 / 3.0) fires += fight_update(m, &far_list, t, 30.0, &ev);
+    EXPECT_INT_EQ(fight_scorer_calls, 0);
+    EXPECT_INT_EQ(fires, 0);
+
+    /* 가까운 두 사람 + 높은 확률: 창 두 개(3표본 간격)가 임계값 이상이면 발화, 쿨다운 안에서는 다시 발화하지 않는다 */
+    fires = 0;
+    for (int i = 0; i < 40; ++i, t += 1.0 / 3.0) fires += fight_update(m, &near_list, t, 30.0, &ev);
+    EXPECT_TRUE(fight_scorer_calls > 0);
+    EXPECT_INT_EQ(fires, 1);                            /* 40표본(≈13초) 동안 한 번만 */
+    {
+        FightStats st;
+        fight_get_stats(m, &st);
+        EXPECT_TRUE(st.gate_pass >= 2);
+        EXPECT_INT_EQ((int)st.fires, 1);
+    }
+
+    /* 낮은 확률이면 분류기는 불리지만 발화하지 않는다 */
+    fight_destroy(m);
+    m = fight_create(0.9, 1.0 / 3.0);
+    fight_set_scorer(m, fight_const_scorer, &p_low);
+    fires = 0; t = 0.0;
+    for (int i = 0; i < 40; ++i, t += 1.0 / 3.0) fires += fight_update(m, &near_list, t, 30.0, &ev);
+    EXPECT_INT_EQ(fires, 0);
+    fight_destroy(m);
+}
+
+static void test_fight_monitor_gap_resets_window(void) {
+    Detection near_pair[2];
+    DetectionList list;
+    FightMonitor *m = fight_create(0.9, 1.0 / 3.0);
+    float p_high = 0.99f;
+    FightEvent ev;
+    int fires = 0;
+    double t = 0.0;
+    list.items = near_pair; list.count = 2; list.capacity = 2;
+    fight_person(&near_pair[0], 100, 100, 200, 0.9f); fight_person(&near_pair[1], 150, 100, 200, 0.9f);
+    fight_set_scorer(m, fight_const_scorer, &p_high);
+    /* 표본 6개 → 4초 공백(추론이 쉬었거나 카메라 끊김) → 6개: 창이 이어지지 않으므로 9표본이 차지 않아 발화·호출이 없다 */
+    for (int i = 0; i < 6; ++i, t += 1.0 / 3.0) fires += fight_update(m, &list, t, 30.0, &ev);
+    t += 4.0;
+    for (int i = 0; i < 6; ++i, t += 1.0 / 3.0) fires += fight_update(m, &list, t, 30.0, &ev);
+    {
+        FightStats st;
+        fight_get_stats(m, &st);
+        EXPECT_INT_EQ((int)st.scorer_calls, 0);
+    }
+    EXPECT_INT_EQ(fires, 0);
+    fight_update(NULL, &list, t, 30.0, &ev);             /* NULL 안전 */
+    fight_destroy(m);
+    fight_destroy(NULL);
+}
+
 static void test_capture_writes_jpeg_and_respects_privacy(void) {
     enum { W = 64, H = 48 };
     EventCapture cap;
@@ -4250,6 +4358,9 @@ int main(void) {
     RUN_TEST(test_privacy_style_thermal_colors_depend_only_on_luma);
     RUN_TEST(test_privacy_style_thermal_bright_is_warmer_than_dark);
     RUN_TEST(test_privacy_style_speed_report);
+    RUN_TEST(test_fight_features_pair_and_validity);
+    RUN_TEST(test_fight_monitor_gate_fires_and_cooldown);
+    RUN_TEST(test_fight_monitor_gap_resets_window);
     RUN_TEST(test_tracker_invalid_create);
     RUN_TEST(test_tracker_null_args);
     RUN_TEST(test_tracker_stationary);
