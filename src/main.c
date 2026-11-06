@@ -1000,14 +1000,16 @@ static void apply_security_config(AppContext *app, const Config *cfg) {
         pp.cell       = (int)config_long(cfg, "privacy_mosaic_cell", 24, 8, 64);
         pp.edge_low   = (int)config_long(cfg, "privacy_edge_low", 40, 5, 250);
         pp.edge_high  = (int)config_long(cfg, "privacy_edge_high", 110, 5, 255);
+        pp.edge_blur  = (int)config_long(cfg, "privacy_edge_blur", 3, 1, 8);
         privacy_params_sanitize(&pp);
         app->privacy_style_fps = (int)config_long(cfg, "privacy_style_fps", 5, 1, 30);
         if (pp.style != app->privacy_params.style || pp.cell != app->privacy_params.cell ||
-            pp.edge_low != app->privacy_params.edge_low || pp.edge_high != app->privacy_params.edge_high) {
+            pp.edge_low != app->privacy_params.edge_low || pp.edge_high != app->privacy_params.edge_high ||
+            pp.edge_blur != app->privacy_params.edge_blur) {
             char smsg[200];
-            snprintf(smsg, sizeof(smsg), "privacy_style=%s cell=%d edge=%d/%d fps<=%d",
+            snprintf(smsg, sizeof(smsg), "privacy_style=%s cell=%d edge=%d/%d blur=%d fps<=%d",
                      pp.style == PRIVACY_STYLE_EDGE_GRAY ? "edge_gray" : "solid", pp.cell, pp.edge_low,
-                     pp.edge_high, app->privacy_style_fps);
+                     pp.edge_high, pp.edge_blur, app->privacy_style_fps);
             event_log_write(&app->event_log, LOG_INFO, "access", smsg);
             app->privacy_cache_time = 0; /* 새 모양이 바로 보이도록 캐시를 무효화 */
         }

@@ -15,7 +15,7 @@
  *   2) 배경 = 칸(cell) 단위 박스 평균(정보 제거) → 축소 이미지에서 3x3 가우시안 → 쌍선형 확대
  *      축소 이미지에서 블러하는 이유: 원본 해상도에서 시그마 0.7*cell(수십 px)의 가우시안을 거는 것과 거의 같은
  *      결과를 수백 배 적은 연산으로 얻는다(i5-4200U 2코어 예산).
- *   3) 엣지 = 약한 가우시안(5탭, 시그마≈1) → Sobel(|gx|+|gy|) → 기울기 방향 비최대 억제 → 이력 임계
+ *   3) 엣지 = 약한 가우시안(5탭을 edge_blur 번, 시그마≈√n) → Sobel(|gx|+|gy|) → 기울기 방향 비최대 억제 → 이력 임계
  *      Canny 와 같은 구성이지만 이력 추적을 한 번의 이웃 검사로 줄였다(강한 엣지에 닿은 약한 엣지만 남김).
  *      체인을 끝까지 따라가는 재귀 추적은 프레임당 시간이 들쭉날쭉해지고, 한 단계 차이는 시각적으로 구분되지 않는다.
  *   4) 합성: 엣지 위치(2x2로 두껍게)는 흰색, 나머지는 배경. R=G=B 라서 색 정보가 전혀 남지 않는다.
@@ -60,6 +60,7 @@ PrivacyParams privacy_params_default(void) {
     p.cell = 24;
     p.edge_low = 40;
     p.edge_high = 110;
+    p.edge_blur = 3;
     return p;
 }
 
@@ -73,6 +74,8 @@ void privacy_params_sanitize(PrivacyParams *p) {
     if (p->edge_low > 250) p->edge_low = 250;
     if (p->edge_high < p->edge_low) p->edge_high = p->edge_low;
     if (p->edge_high > 255) p->edge_high = 255;
+    if (p->edge_blur < 1) p->edge_blur = 1;
+    if (p->edge_blur > 8) p->edge_blur = 8;
 }
 
 static void fill_solid(uint8_t *rgb, int width, int height, int stride, int gray) {
@@ -195,7 +198,11 @@ int privacy_style_apply(PrivacyScratch *scratch, uint8_t *rgb, int width, int he
     }
 
     /* 3) 엣지 */
+    /* 5탭 가우시안을 여러 번 겹쳐 시그마를 키운다(√n). 큰 커널 하나보다 단순하고, 한 번씩 가로·세로 두 패스라
+       n 이 작을 때(기본 3) 비용이 선형으로만 는다. 두 번째부터는 제자리(src==dst)로 돌려도 안전하다:
+       가로 패스가 tmp 에 쓰고 세로 패스가 tmp 에서 읽어 dst 에 쓰므로 src 는 가로 패스 뒤 더 읽지 않는다. */
     gaussian5(s->gray, s->tmp, s->blur, width, height);
+    for (x = 1; x < p.edge_blur; ++x) gaussian5(s->blur, s->tmp, s->blur, width, height);
     lo = p.edge_low; hi = p.edge_high;
     memset(s->mag, 0, (size_t)width * height);
     memset(s->dir, 0, (size_t)width * height);

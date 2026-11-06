@@ -3589,6 +3589,31 @@ static void test_capture_privacy_edge_style_writes_gray_copy(void) {
     EXPECT_INT_EQ(test_rmdir(dir), 0);
 }
 
+static void test_privacy_style_edge_blur_reduces_fine_edges(void) {
+    enum { W = 160, H = 96 };
+    static uint8_t noisy[W * H * 3], a[W * H * 3], b[W * H * 3];
+    PrivacyScratch *s = privacy_scratch_create();
+    PrivacyParams p = privacy_params_default();
+    int white_weak = 0, white_strong = 0;
+    p.style = PRIVACY_STYLE_EDGE_GRAY;
+    /* 거친 노이즈 위에 굵은 사각형: 사각형 윤곽은 남고 잔 노이즈 엣지는 블러가 셀수록 줄어야 한다. */
+    for (int y = 0; y < H; ++y)
+        for (int x = 0; x < W; ++x) {
+            int v = (int)(((unsigned)(x * 2654435761u) ^ (unsigned)(y * 40503u)) >> 3 & 63) + 96;
+            if (x > 50 && x < 110 && y > 25 && y < 70) v += 90;
+            memset(noisy + ((size_t)y * W + x) * 3, v > 255 ? 255 : v, 3);
+        }
+    memcpy(a, noisy, sizeof(a)); memcpy(b, noisy, sizeof(b));
+    p.edge_blur = 1;
+    ASSERT_INT_EQ(privacy_style_apply(s, a, W, H, W * 3, &p), 0);
+    p.edge_blur = 6;
+    ASSERT_INT_EQ(privacy_style_apply(s, b, W, H, W * 3, &p), 0);
+    for (int i = 0; i < W * H; ++i) { if (a[i * 3] == 255) ++white_weak; if (b[i * 3] == 255) ++white_strong; }
+    EXPECT_TRUE(white_strong < white_weak);             /* 블러가 셀수록 엣지 픽셀이 줄어든다 */
+    EXPECT_TRUE(white_strong > 0);                      /* 굵은 윤곽은 그대로 남는다 */
+    privacy_scratch_destroy(s);
+}
+
 static void test_privacy_style_speed_report(void) {
     /* 통과/실패 기준 없음: 이 PC 에서 1280x720 한 장을 가리는 데 걸리는 시간을 출력한다(i5-4200U 실측 아님). */
     enum { W = 1280, H = 720 };
@@ -4125,6 +4150,7 @@ int main(void) {
     RUN_TEST(test_privacy_style_failures_never_leave_original_pixels);
     RUN_TEST(test_privacy_style_respects_stride_padding_and_sanitizes);
     RUN_TEST(test_capture_privacy_edge_style_writes_gray_copy);
+    RUN_TEST(test_privacy_style_edge_blur_reduces_fine_edges);
     RUN_TEST(test_privacy_style_speed_report);
     RUN_TEST(test_tracker_invalid_create);
     RUN_TEST(test_tracker_null_args);

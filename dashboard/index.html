@@ -1667,6 +1667,11 @@ details.dev-accordion[open] > summary { color: var(--red) !important; }
             <input type="number" class="setting-input" id="cfg-privacy_edge_high" min="5" max="255" value="110">
           </div>
           <div class="setting-row">
+            <div><div class="setting-label">엣지 블러 (1~8)</div></div>
+            <input type="number" class="setting-input" id="cfg-privacy_edge_blur" min="1" max="8" value="3">
+            <span></span>
+          </div>
+          <div class="setting-row">
             <div><div class="setting-label">엣지 갱신 (회/초)</div></div>
             <input type="number" class="setting-input" id="cfg-privacy_style_fps" min="1" max="30" value="5">
             <span></span>
@@ -2384,7 +2389,7 @@ async function loadSettings() {
       "slot_warn_seconds","slot_urgent_seconds","slot_ttl_seconds",
       "slot_dirty_threshold","slot_min_dirty_blocks","perf_log_interval_seconds","log_max_total_mb",
       "show_animal","show_food","show_drink","show_furniture","tier2_always",
-      "stream_privacy_mode","stream_privacy_style","privacy_mosaic_cell","privacy_edge_low","privacy_edge_high",
+      "stream_privacy_mode","stream_privacy_style","privacy_mosaic_cell","privacy_edge_low","privacy_edge_high","privacy_edge_blur",
       "privacy_style_fps","privacy_unlock_max_seconds","access_pin",
       "door_auto_capture","door_auto_quiet_seconds","door_auto_open_hold_seconds","door_auto_open_l1",
       "residue_auto_capture","residue_auto_quiet_seconds",
@@ -2472,6 +2477,7 @@ async function saveSettings() {
     privacy_mosaic_cell:            cfgVal("privacy_mosaic_cell"),
     privacy_edge_low:               cfgVal("privacy_edge_low"),
     privacy_edge_high:              cfgVal("privacy_edge_high"),
+    privacy_edge_blur:              cfgVal("privacy_edge_blur"),
     privacy_style_fps:              cfgVal("privacy_style_fps"),
     privacy_unlock_max_seconds:     cfgVal("privacy_unlock_max_seconds"),
     access_pin:                     cfgVal("access_pin"),
