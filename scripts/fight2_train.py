@@ -8,6 +8,9 @@
   만족하는 가장 낮은 임계값을 정하고 재현율·매장별 최저 재현율·1차 필터 단독 기준선과 비교한다.
 - 선택한 모델을 전체 데이터로 다시 학습해 ONNX(FP32)로 내보내고 크기·지연을 잰다.
 결과는 <work>/cv_result.json 과 표준 출력에 남긴다.
+
+쓰러짐 2차(docs/prereg_fall_stage2.md)도 같은 절차로 돌린다: --positive-class 07 --fa-target 0.5 --name fall_stage2.
+입력 차원은 windows.npz 에서 읽는다. 기본값은 폭행 2차와 같아서 폭행 결과 재현에는 영향이 없다.
 """
 
 import argparse
@@ -164,10 +167,16 @@ def main():
     ap.add_argument("--work", required=True)
     ap.add_argument("--index", required=True)
     ap.add_argument("--epochs", type=int, default=40)
+    ap.add_argument("--positive-class", default="13", help="양성 클래스 코드(폭행 13, 쓰러짐 07)")
+    ap.add_argument("--fa-target", type=float, default=2.0, help="음성 시간당 오탐 상한(사전 등록 값)")
+    ap.add_argument("--name", default="fight_stage2", help="출력 파일 이름(ONNX·pt)")
     a = ap.parse_args()
+    global D, FA_TARGET
+    FA_TARGET = a.fa_target
     work = Path(a.work)
     z = np.load(work / "windows.npz", allow_pickle=False)
     X, y, clip, store, w0 = z["X"], z["y"].astype(np.int64), z["clip"], z["store"], z["w0"]
+    D = X.shape[2]                                   # 모델 입력 차원(폭행 106, 쓰러짐 56)
     assert set(np.unique(z["split"])) <= {"dev", "pool"}, "test 분할이 섞여 있다"
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"창 {len(y)}개 (양성 {int(y.sum())}), 매장 {sorted(set(store))}, device={device}", flush=True)
@@ -178,8 +187,8 @@ def main():
         r = rows[c]
         sel = np.where(clip == c)[0]
         order = sel[np.argsort(w0[sel])]
-        gt = json.loads(r["events"]) if r["class_code"] == "13" else []
-        clips[c] = (r["class_code"] == "13", gt, int(r["frames"]), w0[order], r["store"], order)
+        gt = json.loads(r["events"]) if r["class_code"] == a.positive_class else []
+        clips[c] = (r["class_code"] == a.positive_class, gt, int(r["frames"]), w0[order], r["store"], order)
 
     stores = sorted(set(store))
     preds = {}
@@ -194,12 +203,16 @@ def main():
         print(f"[{name}] PR-AUC {average_precision(y, p):.4f}  ({time.time() - t0:.0f}s)", flush=True)
     best = max(preds, key=lambda n: average_precision(y, preds[n]))
     print("선택 모델:", best, flush=True)
+    np.save(work / "cv_pred.npy", preds[best])   # 클래스별(예: 쓰러짐의 휠체어 14) 오탐 분석용 교차검증 예측
 
     def score_fn(pred):
         return lambda c: pred[clips[c][5]]
     result = {"models": {n: {"pr_auc": average_precision(y, preds[n])} for n in preds}, "selected": best}
-    base_all = baseline_score(X)
-    for tag, pred in (("model", preds[best]), ("baseline", base_all / max(base_all.max(), 1e-9))):
+    runs = [("model", preds[best])]
+    if D == 106:                                     # 1차 필터 기준선(fight_score 근사)은 폭행 특징에서만 정의된다
+        base_all = baseline_score(X)
+        runs.append(("baseline", base_all / max(base_all.max(), 1e-9)))
+    for tag, pred in runs:
         cl = {c: v[:5] for c, v in clips.items()}
         table = []
         for thr in np.unique(np.round(np.quantile(pred, np.linspace(0.0, 0.999, 300)), 5)):
@@ -225,7 +238,7 @@ def main():
     m = fit(best, X, y, device, a.epochs)
     m.eval().cpu()
     dummy = torch.zeros(1, T, D)
-    onnx_path = work / "fight_stage2.onnx"
+    onnx_path = work / f"{a.name}.onnx"
     torch.onnx.export(m, dummy, str(onnx_path), input_names=["x"], output_names=["logit"], opset_version=13,
                       dynamic_axes=None)
     import onnxruntime as ort
@@ -241,7 +254,7 @@ def main():
     info = {"model": best, "params": n_params, "onnx_bytes": onnx_path.stat().st_size, "latency_ms_dev_pc_1thread": ms,
             "threshold": result["model"].get("threshold")}
     (work / "model_info.json").write_text(json.dumps(info, indent=1), encoding="utf-8")
-    torch.save(m.state_dict(), work / "fight_stage2.pt")
+    torch.save(m.state_dict(), work / f"{a.name}.pt")
     print("모델 정보:", info, flush=True)
 
 
