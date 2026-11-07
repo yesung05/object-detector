@@ -25,6 +25,7 @@ import json
 import random
 import shutil
 import subprocess
+import xml.etree.ElementTree as ET
 import sys
 from collections import defaultdict
 from pathlib import Path
@@ -39,8 +40,25 @@ STRIDE = {"07": 4, "13": 11, "08": 11}   # 전도는 촘촘히, 서 있는 클�
 OUT_W = 960                              # 1920→960: 라벨은 정규화 좌표라 축소해도 같다(디스크·학습 I/O 절약)
 
 
-def coco_line(joints, w, h):
-    xs = [p[0] for p in joints.values()]; ys = [p[1] for p in joints.values()]
+def load_heads(xml_path):
+    """{(frame, person_id): (x, y)} — Center head. COCO 관절로는 쓰지 않지만(코와 위치가 다름) 사람 박스에는 넣어야 한다.
+    1차 학습에서 박스를 머리 없이(목까지) 만들어 COCO 박스 mAP50-95 가 0.68→0.34 로 무너진 원인(사전등록 변경 이력)."""
+    out = {}
+    for tr in ET.parse(xml_path).getroot().iter("track"):
+        if tr.get("label") != "Center head":
+            continue
+        for pt in tr.iter("points"):
+            if pt.get("outside") == "1":
+                continue
+            pid = next(((a.text or "0").strip() for a in pt.iter("attribute") if a.get("name") == "ID"), "0")
+            x, y = (float(v) for v in pt.get("points").split(";")[0].split(","))
+            out[(int(pt.get("frame")), pid)] = (x, y)
+    return out
+
+
+def coco_line(joints, w, h, head=None):
+    pts = list(joints.values()) + ([head] if head else [])
+    xs = [p[0] for p in pts]; ys = [p[1] for p in pts]
     m = 0.15 * max(max(xs) - min(xs), max(ys) - min(ys), 20.0)
     x1, y1 = max(0.0, min(xs) - m), max(0.0, min(ys) - m)
     x2, y2 = min(float(w), max(xs) + m), min(float(h), max(ys) + m)
@@ -69,9 +87,9 @@ def extract(video, frames, out_dir, stem):
 def prepare(root: Path):
     if (root / "audit.json").exists():
         return root / "pose.yaml"
-    assert not root.exists() or not any(root.iterdir()), f"새 폴더를 쓰세요: {root}"
+    # 이미 뽑은 프레임은 다시 디코딩하지 않는다(라벨만 다시 만들 때). 라벨 폴더는 호출자가 비워 둔다.
     img_dir, lab_dir = root / "images" / "train", root / "labels" / "train"
-    img_dir.mkdir(parents=True); lab_dir.mkdir(parents=True)
+    img_dir.mkdir(parents=True, exist_ok=True); lab_dir.mkdir(parents=True, exist_ok=True)
     rows = []
     with open(INDEX, encoding="utf-8-sig") as f:
         for r in csv.DictReader(f):
@@ -82,21 +100,24 @@ def prepare(root: Path):
         sub = "Training" if r["split_orig"] == "Training" else "Validation"
         xml = next((INDEX.parent / sub / "라벨링데이터").glob(f"{r['class_code']}.*/{r['clip']}.xml"))
         gt = load_gt(xml)
+        heads = load_heads(xml)
         by_frame = defaultdict(list)
-        for (fr, _pid), joints in gt.items():
+        for (fr, pid), joints in gt.items():
             if len(joints) >= 6:
-                by_frame[fr].append(joints)
+                by_frame[fr].append((joints, heads.get((fr, pid))))
         frames = sorted(by_frame)[:: STRIDE[r["class_code"]]]
         if not frames:
             continue
         w, h = int(r["width"]), int(r["height"])
         stem = r["clip"]
-        extract(r["video"], frames, img_dir, stem)
+        missing = [f for f in frames if not (img_dir / f"{stem}_{f:04d}.jpg").exists()]
+        if missing:
+            extract(r["video"], missing, img_dir, stem)
         for fr in frames:
             if not (img_dir / f"{stem}_{fr:04d}.jpg").exists():
                 continue
             (lab_dir / f"{stem}_{fr:04d}.txt").write_text(
-                "\n".join(coco_line(j, w, h) for j in by_frame[fr]) + "\n", encoding="utf-8")
+                "\n".join(coco_line(j, w, h, hd) for j, hd in by_frame[fr]) + "\n", encoding="utf-8")
             counts[r["class_code"]] += 1
         if n % 50 == 0:
             print(f"[PREPARE] {n}/{len(rows)} {dict(counts)}", flush=True)
