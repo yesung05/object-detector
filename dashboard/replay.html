@@ -13,7 +13,7 @@ let events=[],sessions=[],selected=null,data=null,index=0,playing=false,playStar
 const say=text=>$('message').textContent=text;
 const labels={unreviewed:'미검토',expected:'정상 감지로 판단',suspected_false:'오탐 의심',unknown:'판단 불가'};
 const objectNames=['고양이','강아지','병','컵','바나나','사과','샌드위치','오렌지','브로콜리','당근','핫도그','피자','도넛','케이크','의자','테이블'];
-const names={person_fallen:'쓰러짐 의심',probably_ordered:'아마 주문',door_open:'문 열림',door_closed:'문 닫힘',unordered_seated:'미주문 체류',overstay:'장기 체류'};
+const names={person_fallen:'쓰러짐 의심',probably_ordered:'아마 주문',door_open:'문 열림',door_closed:'문 닫힘',unordered_seated:'미주문 체류',overstay:'장기 체류',person_fight:'몸싸움 의심',residue_trash:'쓰레기·잔류물',residue_spill:'흘림',residue_unknown:'바닥 변화'};
 async function request(url,options={}){const headers={...(options.headers||{})},pin=sessionStorage.getItem('hunikPin');if(pin)headers['X-Hunik-Pin']=pin;let r=await fetch(url,{...options,headers}),j=await r.json();if(r.status===403&&(j.error==='pin_required'||j.error==='pin_wrong')){const input=prompt('검토 저장에 필요한 접근 PIN을 입력하세요.');if(input!==null){sessionStorage.setItem('hunikPin',input.trim());return request(url,options);}}if(!r.ok)throw Error(j.error==='no_coordinate_recording'?'이 파일에는 좌표 기록이 없습니다. 기능 적용 후의 기록 파일을 선택하세요.':j.error||'요청 실패');return j;}
 const query=extra=>new URLSearchParams({file:$('files').value,...extra}).toString();
 function stop(){playing=false;cancelAnimationFrame(raf);$('play').textContent='재생';}

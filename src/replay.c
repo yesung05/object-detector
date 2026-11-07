@@ -35,7 +35,10 @@ void replay_close(ReplayLog *r,EventLog *log) {
 void replay_observe(void *context,long long id,LogLevel level,const char *module,const char *message) {
  ReplayLog *r=(ReplayLog*)context;sqlite3_stmt *st=NULL;
  if(!r||!r->db||!r->ring||r->now<=0)return;
- if(strcmp(module,"rules")&&strcmp(module,"door")&&strcmp(module,"surface")&&strcmp(module,"camera")&&strcmp(module,"residue"))return; /* residue: 잔류물·item_left 도 다시보기 타임라인에 */
+ if(strcmp(module,"rules")&&strcmp(module,"door")&&strcmp(module,"surface")&&strcmp(module,"camera")&&strcmp(module,"residue"))return;
+ /* residue 는 점주에게 알리는 확정 3종만 다시보기에 남긴다. residue_cleared·baseline_missing 같은 상태 기록은 클립마다
+    쌓여 목록을 덮고 기록 용량만 쓴다(AI-Hub 평가에서 클립당 수십 건). */
+ if(!strcmp(module,"residue")&&strncmp(message,"residue_trash",13)&&strncmp(message,"residue_spill",13)&&strncmp(message,"residue_unknown",15))return;
  if(level==LOG_INFO&&!strstr(message,"probably_ordered")&&!strstr(message,"door_closed")&&!strstr(message,"camera_ok"))return;
  if(sqlite3_prepare_v2(r->db,"INSERT OR IGNORE INTO replay_events(event_id,session,mono) VALUES(?,?,?)",-1,&st,NULL)!=SQLITE_OK){r->errors++;return;}
  sqlite3_bind_int64(st,1,id);sqlite3_bind_int64(st,2,r->session);sqlite3_bind_double(st,3,r->now);
