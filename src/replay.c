@@ -35,7 +35,7 @@ void replay_close(ReplayLog *r,EventLog *log) {
 void replay_observe(void *context,long long id,LogLevel level,const char *module,const char *message) {
  ReplayLog *r=(ReplayLog*)context;sqlite3_stmt *st=NULL;
  if(!r||!r->db||!r->ring||r->now<=0)return;
- if(strcmp(module,"rules")&&strcmp(module,"door")&&strcmp(module,"surface")&&strcmp(module,"camera"))return;
+ if(strcmp(module,"rules")&&strcmp(module,"door")&&strcmp(module,"surface")&&strcmp(module,"camera")&&strcmp(module,"residue"))return; /* residue: 잔류물·item_left 도 다시보기 타임라인에 */
  if(level==LOG_INFO&&!strstr(message,"probably_ordered")&&!strstr(message,"door_closed")&&!strstr(message,"camera_ok"))return;
  if(sqlite3_prepare_v2(r->db,"INSERT OR IGNORE INTO replay_events(event_id,session,mono) VALUES(?,?,?)",-1,&st,NULL)!=SQLITE_OK){r->errors++;return;}
  sqlite3_bind_int64(st,1,id);sqlite3_bind_int64(st,2,r->session);sqlite3_bind_double(st,3,r->now);
