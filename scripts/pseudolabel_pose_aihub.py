@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import random
 import statistics
 import sys
@@ -145,7 +146,7 @@ def main():
             txt.append(" ".join(f"{a:.6f}" if isinstance(a, float) else str(a) for a in v))
         src = SRC / "images/train" / f"{stem}.jpg"; dst = DST / "images/train" / f"{stem}.jpg"
         if not dst.exists():
-            os.link(src, dst)   # 같은 드라이브 하드링크 — 이미지 복사 없음
+            shutil.copyfile(src, dst)   # H: 는 하드링크를 지원하지 않는 파일 시스템이라 복사
         (DST / "labels/train" / f"{stem}.txt").write_text("\n".join(txt) + "\n", encoding="utf-8")
         st["frames_written"] += 1
     aihub = sorted(p.as_posix() for p in (DST / "images/train").glob("*.jpg"))
