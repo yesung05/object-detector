@@ -1,5 +1,5 @@
 ﻿param(
-    [string]$Version = '0.1.0-alpha.7',
+    [string]$Version = '0.1.0-alpha.8',
     [string]$BuildDir = 'build-g',
     [string]$FfmpegRoot = '',
     [string]$OrtRoot = '',

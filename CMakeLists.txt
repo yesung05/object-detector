@@ -4,7 +4,7 @@ project(yolo11_person C)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 # 표시 버전. 런처와 감지 프로그램(로그의 run_info 에 기록)이 같은 값을 쓰도록 한 곳에서 정한다.
-set(HUNIK_VERSION "0.1.0-alpha.7" CACHE STRING "Displayed release version")
+set(HUNIK_VERSION "0.1.0-alpha.8" CACHE STRING "Displayed release version")
 set(CMAKE_C_EXTENSIONS OFF)
 
 # 배포 대상 CPU의 명령어 집합 수준입니다.
