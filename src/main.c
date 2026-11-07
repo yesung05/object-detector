@@ -77,14 +77,12 @@ static int residue_at_box(const AppContext *app, const Detection *box) {
 }
 
 /* 활성 트랙 bbox 를 GrayRect 배열로 모읍니다. 문·잔류물 자동 캡처와 잔류물 판정이 공유합니다. */
-/* ids: 같은 순서의 트랙 id(호출자 소유 배열, max 이상). NULL 이면 채우지 않는다. */
-int collect_person_rects(const AppContext *app, GrayRect *out, int *ids, int max) {
+int collect_person_rects(const AppContext *app, GrayRect *out, int max) {
     int n = 0;
     size_t i;
     for (i = 0; i < app->tracks.count && n < max; ++i) {
         const Track *t = &app->tracks.items[i];
         if (!t->active) continue;
-        if (ids) ids[n] = t->id;
         out[n].x1 = t->box.x1; out[n].y1 = t->box.y1;
         out[n].x2 = t->box.x2; out[n].y2 = t->box.y2;
         n++;
@@ -1282,8 +1280,7 @@ static int process_frame(RgbFrame *frame, void *opaque,
     /* 사람 bbox — 문 판정·문 자동 캡처·잔류물이 모두 씁니다. door_check 가 가림 여부를
        판단해야 하므로 판정보다 먼저 수집합니다. */
     GrayRect person_rects[64];
-    int person_ids[64];
-    int pcount = collect_person_rects(app, person_rects, person_ids, 64);
+    int pcount = collect_person_rects(app, person_rects, 64);
     int cam_ok = app->cam_health.state == CAM_OK;
 
     if (app->door.enabled && app->door.roi_w > 0 && app->door.roi_h > 0 &&
@@ -1475,8 +1472,7 @@ static int process_frame(RgbFrame *frame, void *opaque,
 #endif
         }
     }
-    if (!surface_monitor_enabled(app->surface_monitor) && app->residue.config.enabled &&
-        (app->residue.baseline_ready || app->residue.config.learn_background)) {
+    if (!surface_monitor_enabled(app->surface_monitor) && app->residue.config.enabled && app->residue.baseline_ready) {
         /* 가구 bbox 배열 구성 (Tier 2 결과에서 chair/dining_table만 수집) */
         GrayRect furn_rects[16];
         int fcount = 0;
@@ -1493,13 +1489,10 @@ static int process_frame(RgbFrame *frame, void *opaque,
             }
         }
         started = platform_monotonic_seconds();
-        if (residue_learn_background(&app->residue, &app->gray, person_rects, pcount, now) != 0)
-            event_log_write(&app->event_log, LOG_WARN, "residue", "residue_learn_background: out of memory");
         residue_evaluate(&app->residue, &app->gray,
                          person_rects, pcount,
                          fcount > 0 ? furn_rects : NULL, fcount,
                          now, &app->event_log);
-        residue_track_owners(&app->residue, person_rects, person_ids, pcount, now, &app->event_log);
         app->residue_seconds += platform_monotonic_seconds() - started;
 
         /* 슬롯 기반 감지: residue와 같은 person_rects/furn_rects를 재사용합니다.

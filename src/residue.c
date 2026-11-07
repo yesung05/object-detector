@@ -79,10 +79,8 @@ void residue_destroy(ResidueMonitor *r) {
     if (!r) return;
     free(r->baseline);
     free(r->candidate);
-    free(r->known);
     r->baseline  = NULL;
     r->candidate = NULL;
-    r->known     = NULL;
 }
 
 int residue_refresh_baseline(ResidueMonitor *r, const GrayBuf *gray, double now) {
@@ -100,8 +98,6 @@ int residue_refresh_baseline(ResidueMonitor *r, const GrayBuf *gray, double now)
     memcpy(r->baseline, gray->data, npix);
     r->baseline_ready = 1;
     r->baseline_stamp = now;
-    /* 통째로 새 기준을 잡았으면 모든 블록을 본 것으로 친다(학습 모드의 안전 시점 갱신 포함). */
-    if (r->known) memset(r->known, 1, npix);
     return 0;
 }
 
@@ -265,8 +261,7 @@ int residue_evaluate(ResidueMonitor *r,
         for (int bx = 0; bx < bw; ++bx) {
             int diff = block_diff(r->baseline, gray->data, bx, by, bw);
             r->candidate[by * bw + bx] =
-                (diff >= r->config.diff_threshold &&
-                 (!r->known || r->known[by * bw + bx])) ? 1 : 0;
+                (diff >= r->config.diff_threshold) ? 1 : 0;
             if (r->candidate[by * bw + bx]) candidate_count++;
         }
     }
@@ -485,105 +480,6 @@ next_block:;
     free(stk_x);
     free(stk_y);
     return confirmed_this_frame;
-}
-
-/* 사람 박스(+margin 블록)를 블록 마스크에 1 로 표시. mask 는 호출자 소유(bw*bh). */
-static void mark_persons(uint8_t *mask, int bw, int bh, int ds, int margin,
-                         const GrayRect *persons, int person_count) {
-    memset(mask, 0, (size_t)bw * bh);
-    for (int pi = 0; pi < person_count; ++pi) {
-        int px1 = (int)(persons[pi].x1 / (float)ds) - margin;
-        int py1 = (int)(persons[pi].y1 / (float)ds) - margin;
-        int px2 = (int)(persons[pi].x2 / (float)ds) + margin;
-        int py2 = (int)(persons[pi].y2 / (float)ds) + margin;
-        if (px1 < 0) px1 = 0;
-        if (py1 < 0) py1 = 0;
-        if (px2 >= bw) px2 = bw - 1;
-        if (py2 >= bh) py2 = bh - 1;
-        for (int by = py1; by <= py2; ++by)
-            for (int bx = px1; bx <= px2; ++bx)
-                mask[by * bw + bx] = 1;
-    }
-}
-
-int residue_learn_background(ResidueMonitor *r, const GrayBuf *gray,
-                             const GrayRect *persons, int person_count, double now) {
-    if (!r || !gray || !gray->data || !r->config.enabled || !r->config.learn_background) return 0;
-    int bw = gray->width, bh = gray->height, ds = gray->downsample > 0 ? gray->downsample : 1;
-    size_t n = (size_t)bw * bh;
-    /* 고정 기준(파일·자동 캡처·안전 시점 갱신)이 있고 학습 중이 아니었다면 손대지 않는다. */
-    if (r->baseline_ready && !r->known) return 0;
-    if (!r->known || r->baseline_w != bw || r->baseline_h != bh) {
-        free(r->known);
-        free(r->baseline);
-        r->known = (uint8_t *)calloc(n, 1);       /* ResidueMonitor 소유 — residue_destroy 가 free */
-        r->baseline = (uint8_t *)calloc(n, 1);    /* 〃 */
-        if (!r->known || !r->baseline) {
-            free(r->known); free(r->baseline);
-            r->known = r->baseline = NULL;
-            r->baseline_ready = 0;
-            return -1;
-        }
-        r->baseline_w = bw; r->baseline_h = bh;
-        r->baseline_stamp = now;
-        r->baseline_ready = 1;                    /* known 이 0 인 블록은 evaluate 에서 후보가 되지 않는다 */
-    }
-    /* candidate 버퍼를 사람 마스크 작업 공간으로 빌린다 — evaluate 가 매 프레임 처음부터 다시 채우므로 덮어써도 된다. */
-    if (!r->candidate || r->blocks_x != bw || r->blocks_y != bh) {
-        free(r->candidate);
-        r->candidate = (uint8_t *)calloc(n, 1);   /* ResidueMonitor 소유 — residue_destroy 가 free */
-        if (!r->candidate) return -1;
-        r->blocks_x = bw; r->blocks_y = bh;
-    }
-    mark_persons(r->candidate, bw, bh, ds, r->config.person_margin_blocks, persons, person_count);
-    for (size_t i = 0; i < n; ++i) {
-        int cur = gray->data[i], base = r->baseline[i];
-        if (r->candidate[i]) continue;
-        if (!r->known[i]) { r->baseline[i] = (uint8_t)cur; r->known[i] = 1; continue; }
-        if (absdiff(cur, base) < r->config.diff_threshold)
-            r->baseline[i] = (uint8_t)(base + (cur - base) / 8);
-    }
-    return 0;
-}
-
-int residue_track_owners(ResidueMonitor *r, const GrayRect *persons, const int *person_ids,
-                         int person_count, double now, EventLog *elog) {
-    int fired = 0;
-    if (!r || r->config.owner_reach <= 0.0f) return 0;
-    for (int ri = 0; ri < RESIDUE_MAX_REGIONS; ++ri) {
-        ResidueRegion *reg = &r->regions[ri];
-        float cx, cy;
-        if (!reg->in_use) continue;
-        cx = (reg->x1 + reg->x2) * 0.5f; cy = (reg->y1 + reg->y2) * 0.5f;
-        if (!reg->owner_checked) {
-            /* 영역이 처음 보인 순간에만 정한다. 나중에 지나간 사람을 주인으로 삼으면 "놓고 갔다"의 근거가 없다. */
-            float best = 1e30f;
-            reg->owner_checked = 1;
-            reg->owner_id = -1;
-            for (int pi = 0; pi < person_count; ++pi) {
-                float h = persons[pi].y2 - persons[pi].y1;
-                float px = (persons[pi].x1 + persons[pi].x2) * 0.5f, py = (persons[pi].y1 + persons[pi].y2) * 0.5f;
-                float d = sqrtf((px - cx) * (px - cx) + (py - cy) * (py - cy));
-                if (d <= h * r->config.owner_reach && d < best) { best = d; reg->owner_id = person_ids ? person_ids[pi] : pi; }
-            }
-        }
-        if (reg->confirmed && !reg->left_fired && reg->owner_id >= 0) {
-            int present = 0;
-            for (int pi = 0; pi < person_count && person_ids; ++pi)
-                if (person_ids[pi] == reg->owner_id) present = 1;
-            if (!present) {
-                reg->left_fired = 1;
-                fired++;
-                if (elog) {
-                    char msg[160];
-                    snprintf(msg, sizeof(msg), "item_left owner=%d blocks=%d x=%.0f y=%.0f held=%.0fs",
-                             reg->owner_id, reg->blocks, cx, cy, now - reg->first_seen);
-                    event_log_write(elog, LOG_WARN, "residue", msg);
-                }
-            }
-        }
-    }
-    return fired;
 }
 
 int residue_auto_init(ResidueMonitor *r, const GrayBuf *gray,

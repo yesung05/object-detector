@@ -44,11 +44,6 @@ typedef struct {
     double      last_seen;    /* 마지막으로 관측된 시각 */
     int         blocks;       /* 구성 블록 수 — 면적의 대용 */
     float       x1, y1, x2, y2;
-    /* 주인 추정(residue_track_owners): 영역이 처음 잡힌 순간 가장 가까이 있던 사람 트랙.
-     * owner_checked=0 이면 아직 판정 전, owner_id<0 이면 주변에 사람이 없었음. */
-    int         owner_checked;
-    int         owner_id;
-    int         left_fired;   /* item_left 를 이미 발화했는가 */
 } ResidueRegion;
 
 typedef struct {
@@ -64,12 +59,6 @@ typedef struct {
        현재 gray 를 기준으로 삼습니다. 설치 직후 "대시보드에서 캡처하세요" 단계를 없앱니다. */
     int    auto_enabled;             /* residue_auto_capture (기본 1) */
     double auto_quiet_seconds;       /* residue_auto_quiet_seconds (기본 15) */
-    /* 기준 학습(residue_learn_background, 기본 0=끔). 1 이면 "빈 매장 사진" 없이 사람이 없는 블록에서 배경을
-     * 배워 기준으로 쓴다. 손님이 끊이지 않아 빈 매장 순간이 없는 매장(AI-Hub 클립 42개 중 0개가 자동 기준을 잡음)용. */
-    int    learn_background;         /* residue_learn_background */
-    /* 주인 거리 배율: 영역이 처음 잡힐 때 사람 박스 중심에서 (박스 높이 × 이 값) 안에 있으면 그 사람을 주인으로 본다.
-     * 주인이 사라진 뒤 영역이 확정되면 item_left 를 남긴다. 0 이면 주인 추정 끔. */
-    float  owner_reach;              /* residue_owner_reach (기본 1.0) */
 } ResidueConfig;
 
 typedef struct {
@@ -95,9 +84,6 @@ typedef struct {
     double auto_quiet_since;     /* 조건 시작 시각, 0=미충족 */
     double auto_wait_seconds;    /* 대시보드 표시용 */
     int    size_mismatch_logged; /* 기준 크기 불일치 경고를 한 번만 남기기 위한 래치 */
-    /* 학습 모드에서 블록별로 배경을 본 적이 있는지(1) 없는지(0). 본 적 없는 블록은 후보가 되지 않는다.
-     * ResidueMonitor 소유 — residue_destroy 에서 free. 고정 기준 모드에서는 NULL. */
-    uint8_t *known;
 } ResidueMonitor;
 
 /*
@@ -141,25 +127,6 @@ int residue_refresh_baseline(ResidueMonitor *r, const GrayBuf *gray, double now)
  * 기준을 잡으면 1 을 반환하고 baseline_ready=1 이 됩니다. 이 모듈은 gray 만 가지므로
  * 파일은 쓰지 않습니다 — 호출자가 원본 RGB 를 raw_rgb_save 로 저장하면 재시작 후에도 남습니다.
  */
-/*
- * 기준 학습 한 단계(config.learn_background=1 일 때만 동작). residue_evaluate 앞에서 매 프레임 호출합니다.
- * 사람 박스(+person_margin_blocks)에 덮이지 않은 블록만 배운다:
- *   - 처음 보는 블록: 현재 값을 그대로 기준으로(known=1)
- *   - 이미 아는 블록: 기준과 차이가 diff_threshold 미만이면 1/8 씩 따라감(조명·그림자 서서히 변하는 것)
- *   - 차이가 큰 블록(후보)은 배우지 않는다 — 놓고 간 물건이 배경에 흡수되면 영원히 못 잡는다.
- * 고정 기준(파일·자동 캡처)이 이미 있으면 아무것도 하지 않는다. 반환 0, 메모리 부족이면 -1.
- */
-int residue_learn_background(ResidueMonitor *r, const GrayBuf *gray,
-                             const GrayRect *persons, int person_count, double now);
-
-/*
- * 영역의 주인을 추정하고, 주인이 떠난 뒤 확정된 영역에 item_left 를 남깁니다. residue_evaluate 뒤에 호출합니다.
- * persons/person_ids: 활성 사람 트랙 박스와 트랙 id(같은 순서, 호출자 소유·읽기만). config.owner_reach<=0 이면 끔.
- * 반환: 이번 호출에서 발화한 item_left 수.
- */
-int residue_track_owners(ResidueMonitor *r, const GrayRect *persons, const int *person_ids,
-                         int person_count, double now, EventLog *elog);
-
 int residue_auto_init(ResidueMonitor *r, const GrayBuf *gray,
                       int person_count, int camera_ok, double motion_ratio, double now);
 

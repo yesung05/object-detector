@@ -154,10 +154,6 @@ void apply_residue_config(AppContext *app, const Config *cfg) {
         (double)config_float(cfg, "residue_baseline_refresh_seconds", 300.0f, 30.0f, 86400.0f);
     app->residue.config.global_change_ratio =
         config_float(cfg, "residue_global_change_ratio", 0.5f, 0.1f, 1.0f);
-    app->residue.config.learn_background =
-        (int)config_long(cfg, "residue_learn_background", 0, 0, 1);
-    app->residue.config.owner_reach =
-        config_float(cfg, "residue_owner_reach", 1.0f, 0.0f, 5.0f);
 }
 
 void apply_slot_config(AppContext *app, const Config *cfg) {
@@ -275,7 +271,7 @@ static const char *const ALERT_TOKENS[] = {
     "overstay", "unordered_seated", "person_fallen", "person_unaccounted", "person_unaccounted_residue",
     "occupancy_exceeded", "person_motionless", "external_drink", "external_food", "animal_on_chair",
     "animal_on_table", "no_cup_seated", "residue_trash", "residue_spill", "residue_unknown", "door_open",
-    "slot_item_urgent", "person_fight", "animal_present", "item_left",
+    "slot_item_urgent", "person_fight", "animal_present",
 };
 /* 폭행 2단계 설정. 시작 시와 hot-reload 양쪽에서 호출한다.
  *   fight_enabled (0|1, 기본 0)        끄면 모델도 해제한다
