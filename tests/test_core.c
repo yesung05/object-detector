@@ -2557,6 +2557,46 @@ static GrayBuf make_gray1(int value) {
     return g;
 }
 
+/* 학습 기준 + 주인 추정: 빈 매장 사진 없이 사람이 없는 블록에서 배경을 배우고, 사람 옆에 생긴 물건이
+ * 그 사람이 떠난 뒤 확정되면 item_left 를 남긴다. 10x6 블록(원본 80x48px, ds 8).
+ * owner_mode: 0 주인이 떠남, 1 주인이 계속 있음, 2 물건이 생길 때 주변에 아무도 없음 */
+static int residue_left_case(int owner_mode) {
+    ResidueMonitor r = make_residue_monitor();
+    GrayBuf g; EventLog elog; GrayRect p_far = {56, 0, 79, 47}, p_near = {24, 0, 39, 47}; int id = 7, fired;
+    r.config.min_blocks = 1; r.config.confirm_seconds = 5.0;
+    r.config.learn_background = 1; r.config.owner_reach = 1.0f;
+    memset(&g, 0, sizeof(g)); g.width = 10; g.height = 6; g.downsample = 8;
+    g.data = (uint8_t *)malloc(60); memset(g.data, 50, 60);
+    event_log_open(&elog, ":memory:", LOG_INFO, 0);
+    /* t=0: 사람이 오른쪽에 — 왼쪽 블록들의 배경을 배운다 */
+    residue_learn_background(&r, &g, &p_far, 1, 0.0);
+    residue_evaluate(&r, &g, &p_far, 1, NULL, 0, 0.0, &elog);
+    /* t=1: 사람이 가운데로 와서 블록 (1,3) 에 물건을 놓음 */
+    g.data[3 * 10 + 1] = 150;
+    {
+        GrayRect *p = owner_mode == 2 ? &p_far : &p_near;
+        residue_learn_background(&r, &g, p, 1, 1.0);
+        residue_evaluate(&r, &g, p, 1, NULL, 0, 1.0, &elog);
+        residue_track_owners(&r, p, &id, 1, 1.0, &elog);
+    }
+    /* t=2..8: 주인이 떠남(사람 0명) 또는 그대로 */
+    for (int t = 2; t <= 8; ++t) {
+        int n = owner_mode == 1 ? 1 : 0;
+        residue_learn_background(&r, &g, &p_near, n, t);
+        residue_evaluate(&r, &g, &p_near, n, NULL, 0, t, &elog);
+        residue_track_owners(&r, &p_near, &id, n, t, &elog);
+    }
+    fired = count_events(&elog, "item_left owner=7");
+    free(g.data); residue_destroy(&r); event_log_close(&elog);
+    return fired;
+}
+
+static void test_residue_learned_item_left(void) {
+    EXPECT_INT_EQ(residue_left_case(0), 1);  /* 놓고 떠남 → item_left */
+    EXPECT_INT_EQ(residue_left_case(1), 0);  /* 주인이 아직 있음 → 잔류물만, item_left 없음 */
+    EXPECT_INT_EQ(residue_left_case(2), 0);  /* 생길 때 주변에 사람 없음 → 주인 없음 */
+}
+
 static void test_residue_no_event_before_confirm(void) {
     /* confirm_seconds 경과 전에는 이벤트가 발화하지 않아야 합니다. */
     ResidueMonitor r = make_residue_monitor();
@@ -4544,6 +4584,7 @@ int main(void) {
     RUN_TEST(test_rules_occupancy_exceeded);
     RUN_TEST(test_rules_motionless_standing);
     /* 잔류물 감지 단위 테스트 */
+    RUN_TEST(test_residue_learned_item_left);
     RUN_TEST(test_residue_no_event_before_confirm);
     RUN_TEST(test_residue_confirms_after_hold);
     RUN_TEST(test_residue_excludes_person_overlap);

@@ -291,7 +291,7 @@ void calib_step(AppContext *app, double now) {
         return;
     }
 
-    n = collect_person_rects(app, people, 64);
+    n = collect_person_rects(app, people, NULL, 64);
     calib_tick(&app->calib, &app->gray, people, n, app->block_min_changed, now);
 
     if (now - app->calib_progress_log_time >= 60.0) {

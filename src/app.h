@@ -441,7 +441,7 @@ void preview_frame(AppContext *app, const RgbFrame *frame);
 const char *provider_name(DetectorProvider provider);
 int write_metrics(const char *path, const Arguments *args, const AppContext *app, const MediaStats *media, double wall_seconds, double cpu_seconds, char *error, size_t error_size);
 /* main.c */
-int collect_person_rects(const AppContext *app, GrayRect *out, int max);
+int collect_person_rects(const AppContext *app, GrayRect *out, int *ids, int max);
 int should_stop(void *opaque);
 
 #endif

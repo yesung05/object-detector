@@ -16,7 +16,7 @@
 static const char *const ALERT_TOKEN_LIST[] = {
     "overstay", "unordered_seated", "person_fallen", "person_unaccounted", "person_unaccounted_residue",
     "occupancy_exceeded", "person_motionless", "external_drink", "external_food", "animal_on_chair",
-    "animal_on_table", "no_cup_seated", "residue_trash", "residue_spill", "residue_unknown", "door_open",
+    "animal_on_table", "no_cup_seated", "residue_trash", "residue_spill", "residue_unknown", "item_left", "door_open",
     "slot_item_urgent", "person_fight", "animal_present",
 };
 
