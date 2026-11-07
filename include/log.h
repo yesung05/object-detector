@@ -24,6 +24,11 @@ typedef struct {
     void (*observer)(void *, long long, LogLevel, const char *, const char *);
     void *observer_context;
     int           echo_stderr; /* 1이면 SQLite 저장과 동시에 stderr 출력 */
+    /* 분석용 부가 열(events.run/mono/frame). 시간별 파일 전환이 EventLog 를 통째로 바꾸므로 log_rotation.c 가 복사한다. */
+    long long     run_id;      /* 프로세스 시작 시각(epoch 초). 0 이면 run 열을 NULL 로 */
+    long long     ctx_frame;   /* 지금 처리 중인 프레임 번호 */
+    double        ctx_mono;    /* 그 프레임의 룰 시각(실시간=단조 시계, --video-clock=영상 시간) — replay_events.mono 와 같은 기준 */
+    int           ctx_valid;   /* 0 이면 frame/mono 열을 NULL 로(시작·종료 같은 프레임 밖 이벤트) */
 } EventLog;
 
 /* path: DB 파일 경로, 또는 ":memory:" (인메모리, 테스트용)
@@ -32,6 +37,29 @@ typedef struct {
 int  event_log_open(EventLog *log, const char *path,
                     LogLevel min_level, int echo_stderr);
 void event_log_close(EventLog *log);
+
+/*
+ * 이벤트 구조화 열 — 메시지 문자열은 그대로 두고, 같은 정보를 질의하기 쉬운 열로 함께 저장한다(정규식 파싱 제거).
+ *   run   프로세스 시작 시각. 시간별 파일 여러 개를 합쳐도 어느 실행의 이벤트인지 알 수 있다.
+ *   mono/frame  이벤트가 나온 프레임의 시각·번호(event_log_set_context). 프레임 밖 이벤트는 NULL.
+ *   kind  메시지 첫 단어(알림 모드가 쓰는 토큰과 같음). "state=ok" 처럼 key=value 로 시작하면 module 이름.
+ *   track 메시지의 track=N.
+ *   data  메시지의 key=value 쌍을 JSON 객체로(숫자 뒤 단위 s/ms/px/% 는 떼고 숫자로). 400바이트 상한 — 넘으면 남는 쌍은 생략.
+ * 용량: 이벤트당 수십 바이트(분석 대상 이벤트는 시간당 수십~수백 건이라 합계가 리플레이 좌표의 1% 미만).
+ */
+void event_log_set_run(EventLog *log, long long run_id);
+void event_log_set_context(EventLog *log, long long frame, double mono);
+void event_log_clear_context(EventLog *log);
+
+/* 파일 하나당 실행 정보(버전·빌드·인수·설정)를 run_info 테이블에 한 행 저장한다. 12KB 를 넘으면 -1(저장 안 함). */
+int  event_log_write_run_info(EventLog *log, const char *manifest_json);
+
+/* 가장 최근 이벤트 id(없으면 0). 시간별 요약이 "그 뒤의 이벤트"만 세는 기준점. */
+long long event_log_last_id(EventLog *log);
+
+/* since_id 뒤의 알림성 이벤트(WARN 이상, 룰·문·슬롯·잔류물·표면 모듈)를 종류별로 센다. 건수 많은 순, 최대 max 개. 반환: 채운 개수. */
+typedef struct { char kind[48]; int count; int tracks; } EventKindCount;
+int  event_log_kind_counts(EventLog *log, long long since_id, EventKindCount *out, int max);
 
 /*
  * 출력 형식 (stderr echo):

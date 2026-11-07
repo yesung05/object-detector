@@ -160,6 +160,9 @@ typedef struct {
     int64_t perf_gate_l3_base;
     int64_t perf_inf_runs_base;
     int64_t perf_obj_runs_base;
+    /* 로깅 v2 perf 열의 주기 시작 스냅샷(위 *_base 와 같은 방식) */
+    double  perf_pre_base, perf_inf_base, perf_post_base, perf_t2_base, perf_track_base, perf_cambad_base;
+    int64_t perf_frames_base, perf_wait_base, perf_drop_base;
     DetectorRunStats detector_stats;
     /* Tier 2 — 물체 감지 (고양이/강아지/음식/병/컵/의자/테이블) */
     Detector        *obj_detector;      /* NULL 이면 Tier 2 비활성 */
@@ -325,6 +328,19 @@ typedef struct {
     InferJob       job;
     InferWorker    worker;
     int            infer_async;       /* 1 = 워커 스레드에서 추론, 0 = 프레임 콜백 안에서(파일 평가 재현성) */
+
+    /* ── 로깅 v2(src/app_logging.c) ── */
+    char       manifest_static[2048]; /* 시작 때 한 번 만든 JSON 조각(버전·빌드·인수·모델 해시). 파일마다 run_info 에 같이 저장 */
+    int        log_segment;           /* 시간별 파일 순번(0 = 첫 파일) */
+    long long  summary_since_id;      /* 현재 파일에서 이미 요약한 마지막 이벤트 id(파일마다 id 가 1부터라 전환 때 0 으로) */
+    long long  summary_perf_since;    /* 〃 perf 행 id */
+    double     summary_start_mono;    /* 요약 창 시작 시각(0 = 아직 프레임 없음) */
+    double     last_mono;             /* 마지막으로 처리한 프레임의 룰 시각 — 종료 요약의 창 끝 */
+    double     cam_bad_seconds;       /* 카메라 상태가 OK 가 아니었던 누적 시간 */
+    double     fps_win_start;         /* 처리 fps 추정 창(1초 이상 모아 프레임 수 ÷ 시간) */
+    int64_t    fps_win_frames;
+    Config     last_cfg;              /* 직전에 읽은 설정 파일 내용 — 변경 기록 비교용. 소유: app_log_config_changed 가 교체·해제, main 종료 때 해제 */
+    int        last_cfg_ready;
     int            infer_pending;     /* 추론 요청이 왔는데 워커가 바빠 아직 못 넘김 — idle 되면 최신 프레임으로 */
     int64_t        infer_wait_frames; /* 요청이 대기한 프레임 수(워커가 따라가지 못하는 정도) */
     int64_t        infer_dropped_results; /* 해상도가 바뀌어 버린 결과 수(재연결) */
@@ -432,6 +448,13 @@ void reload_config(AppContext *app);
 void reload_door_references(AppContext *app);
 void reload_residue_reference(AppContext *app);
 void split_low_list(DetectionList *dets, DetectionList *low, float keep_score, int reset);
+/* app_logging.c */
+size_t app_json_quote(char *out, size_t cap, const char *s);
+void app_log_run_info(AppContext *app, EventLog *events);
+void app_log_summary(AppContext *app, EventLog *events, int final);
+void app_log_hook_before(void *context, EventLog *events);
+void app_log_hook_after(void *context, EventLog *events);
+void app_log_config_changed(AppContext *app, const Config *now_cfg);
 /* app_output.c */
 void apply_privacy_mask(AppContext *app, RgbFrame *frame, int has_observer);
 void capture_fall_events(AppContext *app, const RgbFrame *frame);

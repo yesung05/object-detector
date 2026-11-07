@@ -100,7 +100,11 @@ def read_events(db, fps, module="rules"):
     """해당 모듈의 이벤트를 (프레임, 레벨, 토큰, 메시지) 로 돌려준다. 영상 시간이 없는 이벤트는 프레임 None."""
     con = sqlite3.connect(f"file:{str(db).replace(chr(92), '/')}?mode=ro", uri=True)
     try:
-        q = ("SELECT e.id, e.level, e.module, e.message, r.mono FROM events e "
+        # 로깅 v2 의 events.mono(모든 이벤트에 있음)를 우선하고, 없으면(옛 DB) replay_events.mono 로 폴백한다.
+        # 예전에는 replay_events 에 기록되는 모듈(rules/door/surface/camera)만 영상 시각을 가져 다른 모듈 이벤트가 "시각 없음"으로 빠졌다.
+        cols = {r[1] for r in con.execute("PRAGMA table_info(events)")}
+        mono_expr = "COALESCE(e.mono, r.mono)" if "mono" in cols else "r.mono"
+        q = ("SELECT e.id, e.level, e.module, e.message, " + mono_expr + " FROM events e "
              "LEFT JOIN replay_events r ON r.event_id = e.id WHERE e.module = ? ORDER BY e.id")
         out = []
         for _id, level, mod, msg, mono in con.execute(q, (module,)):

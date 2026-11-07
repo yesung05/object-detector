@@ -4,6 +4,10 @@
  * 출력(가림·증거 사진·CSV·preview·metrics)은 app_output.c 에 있습니다.
  */
 #include "app.h"
+
+#ifndef HUNIK_VERSION
+#define HUNIK_VERSION "dev"   /* CMake 가 -DHUNIK_VERSION 으로 덮는다. 로그 run_info 에 기록되는 값 */
+#endif
 /* SIGINT/SIGTERM 처리기는 비동기 신호에 안전한 sig_atomic_t 값만 변경합니다. */
 static volatile sig_atomic_t stop_requested = 0;
 #ifdef _WIN32
@@ -543,6 +547,11 @@ static void note_detection(AppContext *app, double now) {
 static int consume_inference(AppContext *app, RgbFrame *inf, double inf_now,
                              RgbFrame *cur, char *error, size_t error_size) {
     double started;
+    /* 비동기: 룰·증거 사진은 추론한 프레임과 그 시각으로 평가하므로 이벤트의 frame/mono 도 그쪽으로 맞춘다(끝에서 원복). 동기에서는 같은 값이다. */
+    const long long keep_frame = app->event_log.ctx_frame;
+    const double keep_mono = app->event_log.ctx_mono;
+    const int keep_valid = app->event_log.ctx_valid;
+    if (inf != cur) event_log_set_context(&app->event_log, inf->index, inf_now);
     if (app->job.dets != &app->detections) {
         /* 비동기: job 소유 목록 → app 목록 복사(용량은 둘 다 max_candidates). */
         app->detections.count = app->job.dets->count;
@@ -687,6 +696,8 @@ static int consume_inference(AppContext *app, RgbFrame *inf, double inf_now,
         }
         app->tracking_seconds += platform_monotonic_seconds() - started;
     }
+    if (keep_valid) event_log_set_context(&app->event_log, keep_frame, keep_mono);
+    else event_log_clear_context(&app->event_log);
     return 0;
 }
 
@@ -735,6 +746,9 @@ static int process_frame(RgbFrame *frame, void *opaque,
     double started;
     double now = app->video_clock ? video_clock_now(app, frame)
                                   : platform_monotonic_seconds();
+    /* 이 프레임에서 나오는 모든 이벤트에 프레임 번호·룰 시각을 붙인다(events.frame/mono). 시각이 없던 이벤트도 분석에서 영상 시각에 놓을 수 있게. */
+    event_log_set_context(&app->event_log, frame->index, now);
+    if (app->summary_start_mono <= 0.0) app->summary_start_mono = now;
     /* Tier 2 박스 수명. Tier 2 는 표면 감시 중 건너뛰거나 주기가 길어, 마지막 결과가 영구히 화면에 남아
      * 정적 배경의 오탐 가구(TABLE/CHAIR)가 사라지지 않았다. 마지막 Tier 2 실행 후 obj_box_ttl 초가
      * 지나면 비운다. 룰은 실행 시점에만 평가하므로 비워도 판정에는 영향이 없다. */
@@ -895,14 +909,28 @@ static int process_frame(RgbFrame *frame, void *opaque,
 
     /* 카메라 FPS EMA 업데이트 — 프레임 간격의 역수로 순간 FPS 계산.
      * α=0.15로 약 7~8 프레임 반응폭을 가집니다. */
-    if (app->last_frame_time > 0.0) {
-        double interval = now - app->last_frame_time;
-        if (interval > 0.001) { /* 1ms 미만 이상치 무시 */
-            double inst = 1.0 / interval;
-            app->realtime_cam_fps = app->realtime_cam_fps * 0.85 + inst * 0.15;
+    /* (위 설명은 예전 방식 — 아래로 대체) 처리 FPS: 1초 이상 모아 "창 안 프레임 수 ÷ 창 길이". 예전 1/Δt 의 EMA 는 프레임이 몰려 오면
+     * 실제보다 크게 나왔다(30fps 카메라에서 중앙값 34.6, 최대 103 — 2026-10-06 현장 로그). 창의 첫 프레임은 세지 않아 간격 수와 맞춘다. */
+    if (app->fps_win_start <= 0.0) {
+        app->fps_win_start = now;
+        app->fps_win_frames = 0;
+    } else {
+        app->fps_win_frames++;
+        if (now - app->fps_win_start >= 1.0) {
+            double inst = (double)app->fps_win_frames / (now - app->fps_win_start);
+            app->realtime_cam_fps = app->realtime_cam_fps > 0.0 ? app->realtime_cam_fps * 0.5 + inst * 0.5 : inst;
+            app->fps_win_start = now;
+            app->fps_win_frames = 0;
         }
     }
+    /* 카메라 상태가 OK 가 아니었던 시간(암전·정지 등): 지난 프레임 이후의 간격을 더한다. 2초 이상의 공백은 연결 끊김이라
+     * 상태 시간으로 세지 않는다(끊김은 camera 이벤트가 따로 남긴다). */
+    if (app->last_frame_time > 0.0 && app->cam_health.state != CAM_OK) {
+        double gap = now - app->last_frame_time;
+        if (gap > 0.0 && gap < 2.0) app->cam_bad_seconds += gap;
+    }
     app->last_frame_time = now;
+    app->last_mono = now;
 
     /* CPU 사용률 EMA (α=0.2): process_cpu_seconds 델타 / 경과 시간.
      * 1코어 기준 % 이므로 멀티스레드 추론 시 100% 초과 가능합니다.
@@ -1516,7 +1544,9 @@ static int process_frame(RgbFrame *frame, void *opaque,
         /* CPU 사용률: 프로세스 CPU 시간 / 경과 시간. 단일 코어 기준 % */
         pm.cpu_pct    = (wall > 0.0) ? (int)(cpu_t / wall * 100.0 + 0.5) : 0;
         pm.cpu_temp   = app->cached_temperature;  /* 2초마다 갱신되는 캐시값 재사용 */
-        pm.cam_fps    = app->realtime_cam_fps;
+        pm.frames     = (long)(app->frames - app->perf_frames_base);
+        /* 처리 프레임/초 = 주기 내 프레임 수 ÷ 경과 시간(EMA 가 아니다 — perf_log.h) */
+        pm.cam_fps    = wall > 0.0 ? (double)pm.frames / wall : 0.0;
         pm.inf_fps    = app->realtime_inf_fps;
         pm.mem_kb     = platform_process_memory_kb();
         /* 주기 내 누적 타이밍: 현재 누적값 - 주기 시작 시점 스냅샷 */
@@ -1531,6 +1561,19 @@ static int process_frame(RgbFrame *frame, void *opaque,
         pm.gate_l3    = (long)(app->gate_l3_hits         - app->perf_gate_l3_base);
         pm.inf_runs   = (long)(app->inference_runs       - app->perf_inf_runs_base);
         pm.obj_runs   = (long)(app->obj_inference_runs   - app->perf_obj_runs_base);
+        {
+            double t2_total = app->obj_detector_stats.preprocess_seconds + app->obj_detector_stats.inference_seconds +
+                              app->obj_detector_stats.postprocess_seconds;
+            pm.pre_ms      = (app->detector_stats.preprocess_seconds  - app->perf_pre_base)  * s2ms;
+            pm.inf_ms      = (app->detector_stats.inference_seconds   - app->perf_inf_base)  * s2ms;
+            pm.post_ms     = (app->detector_stats.postprocess_seconds - app->perf_post_base) * s2ms;
+            pm.t2_ms       = (t2_total - app->perf_t2_base) * s2ms;
+            pm.track_ms    = (app->tracking_seconds - app->perf_track_base) * s2ms;
+            pm.cam_bad_s   = app->cam_bad_seconds - app->perf_cambad_base;
+            pm.wait_frames = (long)(app->infer_wait_frames      - app->perf_wait_base);
+            pm.dropped     = (long)(app->infer_dropped_results  - app->perf_drop_base);
+            app->perf_t2_base = t2_total;
+        }
 
         perf_log_write(&app->perf_log, &pm);
 
@@ -1548,6 +1591,14 @@ static int process_frame(RgbFrame *frame, void *opaque,
         app->perf_gate_l3_base  = app->gate_l3_hits;
         app->perf_inf_runs_base = app->inference_runs;
         app->perf_obj_runs_base = app->obj_inference_runs;
+        app->perf_pre_base      = app->detector_stats.preprocess_seconds;
+        app->perf_inf_base      = app->detector_stats.inference_seconds;
+        app->perf_post_base     = app->detector_stats.postprocess_seconds;
+        app->perf_track_base    = app->tracking_seconds;
+        app->perf_cambad_base   = app->cam_bad_seconds;
+        app->perf_frames_base   = app->frames;
+        app->perf_wait_base     = app->infer_wait_frames;
+        app->perf_drop_base     = app->infer_dropped_results;
     }
 
     replay_capture_step(app,frame,now,kind);
@@ -1993,6 +2044,8 @@ int main(int argc, char **argv) {
             fprintf(stderr, "failed to open event log: %s\n", db_path);
             goto done;
         }
+        /* 실행 id: 이 프로세스의 시작 시각. 시간별 파일이 여러 개여도 events.run 으로 같은 실행임을 안다. */
+        event_log_set_run(&app.event_log, (long long)time(NULL));
     }
     {
         char metadata[512];
@@ -2000,6 +2053,30 @@ int main(int argc, char **argv) {
             __DATE__,__TIME__,replay_model_hash(args.model),replay_model_hash(args.obj_model),
             detector_input_width(app.detector),detector_input_height(app.detector),args.detector.threads,(int)args.detector.provider);
         log_rotation_init(&app.log_rotation,args.event_log_path,metadata,platform_monotonic_seconds());
+        log_rotation_set_hooks(&app.log_rotation,app_log_hook_before,app_log_hook_after,&app);
+        {   /* run_info.static — 파일마다 같은 값이라 한 번만 만든다. 길이는 각 항목을 잘라 2KB 안에 맞춘다(넘으면 최소 형태로 대체). */
+            char argline[300],model_s[160],obj_s[160],build[48];
+            char q_arg[640],q_model[340],q_obj[340],q_ver[80],q_build[80];
+            size_t ap=0;int ai;
+            argline[0]='\0';
+            for(ai=1;ai<argc&&ap+2<sizeof(argline);++ai)
+                ap+=(size_t)snprintf(argline+ap,sizeof(argline)-ap,"%s%s",ai>1?" ":"",argv[ai]);
+            snprintf(model_s,sizeof(model_s),"%s",args.model?args.model:"");
+            snprintf(obj_s,sizeof(obj_s),"%s",args.obj_model?args.obj_model:"");
+            snprintf(build,sizeof(build),"%s %s",__DATE__,__TIME__);
+            if(!app_json_quote(q_arg,sizeof(q_arg),argline))strcpy(q_arg,"\"\"");
+            if(!app_json_quote(q_model,sizeof(q_model),model_s))strcpy(q_model,"\"\"");
+            if(!app_json_quote(q_obj,sizeof(q_obj),obj_s))strcpy(q_obj,"\"\"");
+            if(!app_json_quote(q_ver,sizeof(q_ver),HUNIK_VERSION))strcpy(q_ver,"\"\"");
+            if(!app_json_quote(q_build,sizeof(q_build),build))strcpy(q_build,"\"\"");
+            if(snprintf(app.manifest_static,sizeof(app.manifest_static),
+                "{\"version\":%s,\"build\":%s,\"argv\":%s,\"person_model\":%s,\"person_model_hash\":\"%016llx\",\"object_model\":%s,"
+                "\"object_model_hash\":\"%016llx\",\"input\":[%d,%d],\"threads\":%d,\"provider\":%d}",
+                q_ver,q_build,q_arg,q_model,replay_model_hash(args.model),q_obj,replay_model_hash(args.obj_model),
+                detector_input_width(app.detector),detector_input_height(app.detector),args.detector.threads,
+                (int)args.detector.provider)>=(int)sizeof(app.manifest_static))
+                snprintf(app.manifest_static,sizeof(app.manifest_static),"{\"version\":%s}",q_ver);
+        }
         app.replay_geometry_revision=-1;
         if(replay_open(&app.replay,&app.event_log,metadata))fprintf(stderr,"coordinate recorder initialization failed\n");
     }
@@ -2398,8 +2475,12 @@ int main(int argc, char **argv) {
                  args.camera ? "camera" : (app.infer_async ? "flag" : "file"), args.detector.threads);
         event_log_write(&app.event_log, LOG_INFO, "startup", m);
     }
-    if (media_process(args.input, args.output, &args.media, process_frame, &app,
-                      error, sizeof(error)) != 0) {
+    /* 첫 파일의 실행 정보. 설정·모델·비동기 결정이 모두 끝난 뒤라 effective 값이 실제로 쓰는 값이다. */
+    app.last_cfg_ready = app.config_reload_path[0] && config_load(&app.last_cfg, app.config_reload_path, NULL, 0) == 0;
+    app_log_run_info(&app, &app.event_log);
+    const int media_rc = media_process(args.input, args.output, &args.media, process_frame, &app, error, sizeof(error));
+    event_log_clear_context(&app.event_log);   /* 종료 이벤트는 프레임 밖 — frame/mono 를 NULL 로 */
+    if (media_rc != 0) {
         char fail_msg[640];
         fprintf(stderr, "processing failed: %s\n", error);
         snprintf(fail_msg, sizeof(fail_msg), "exit=%d reason=%s",
@@ -2457,6 +2538,8 @@ int main(int argc, char **argv) {
 done:
     /* 워커가 detector·job 버퍼를 쓰고 있을 수 있으므로 가장 먼저 멈춘다(실행 중이면 추론 한 번 기다림). */
     infer_worker_stop(&app.worker);
+    /* 마지막 파일의 요약(최근 요약 이후 구간). 첫 프레임 전에 실패했으면 요약할 구간이 없다. */
+    if (app.event_log.db && app.summary_start_mono > 0.0) app_log_summary(&app, &app.event_log, 1);
     if (app.stream_port > 0) stream_stop();
     /*
      * C에는 자동 자원 정리가 없으므로 성공/실패 모두 이 지점을 거치게 합니다.
@@ -2495,6 +2578,7 @@ done:
     detection_list_destroy(&app.job.own_dets);
     detection_list_destroy(&app.job.own_low);
     detection_list_destroy(&app.low_detections);
+    config_destroy(&app.last_cfg);
     free(app.job.rotated_rgb);
     free(app.job.buf_rgb);
     free(app.job.buf_luma);

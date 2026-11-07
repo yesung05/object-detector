@@ -1077,6 +1077,110 @@ static void test_infer_worker_roundtrip(void) {
     EXPECT_INT_EQ(w.started, 0);
 }
 
+/* ── 로깅 v2: 이벤트 구조화 열, 옛 DB 이전, 실행 정보, 종류별 집계 ───────────────────────── */
+static int lv2_int(EventLog *e, const char *sql) {
+    sqlite3_stmt *st = NULL; /* 소유: 이 함수, finalize 로 해제 */
+    int v = -1;
+    if (sqlite3_prepare_v2(e->db, sql, -1, &st, NULL) != SQLITE_OK) return -2;
+    if (sqlite3_step(st) == SQLITE_ROW) v = sqlite3_column_type(st, 0) == SQLITE_NULL ? -1000 : sqlite3_column_int(st, 0);
+    sqlite3_finalize(st);
+    return v;
+}
+
+static void test_event_log_structured_columns(void) {
+    EventLog e;
+    ASSERT_INT_EQ(event_log_open(&e, ":memory:", LOG_INFO, 0), 0);
+    event_log_set_run(&e, 1234);
+    event_log_set_context(&e, 77, 12.5);
+    event_log_write(&e, LOG_WARN, "rules", "person_fallen track=3 hold=3.0s score=0.55 evidence=upright_to_horizontal hits=3/5 x=-4 id=007");
+    EXPECT_INT_EQ(lv2_int(&e, "SELECT count(*) FROM events WHERE kind='person_fallen' AND track=3 AND frame=77 AND mono=12.5 AND run=1234"), 1);
+    /* 숫자는 단위(s)를 떼고 숫자로, 분수·앞자리 0 은 문자열로 */
+    EXPECT_INT_EQ(lv2_int(&e, "SELECT count(*) FROM events WHERE data LIKE '%\"hold\":3.0,%' AND data LIKE '%\"x\":-4%'"), 1);
+    EXPECT_INT_EQ(lv2_int(&e, "SELECT count(*) FROM events WHERE data LIKE '%\"hits\":\"3/5\"%' AND data LIKE '%\"id\":\"007\"%' AND data LIKE '%\"evidence\":\"upright_to_horizontal\"%'"), 1);
+    /* key=value 로 시작하는 메시지는 kind 가 module 이름, 같은 키는 처음 값만 */
+    event_log_write(&e, LOG_INFO, "camera", "state=blackout");
+    EXPECT_INT_EQ(lv2_int(&e, "SELECT count(*) FROM events WHERE kind='camera' AND data='{\"state\":\"blackout\"}'"), 1);
+    event_log_write(&e, LOG_WARN, "rules", "overstay track=1 track=2");
+    EXPECT_INT_EQ(lv2_int(&e, "SELECT track FROM events WHERE kind='overstay'"), 1);
+    /* 콜론으로 끝나는 첫 단어 */
+    event_log_write(&e, LOG_WARN, "door", "door_open: 30초 이상 개방 상태 지속");
+    EXPECT_INT_EQ(lv2_int(&e, "SELECT count(*) FROM events WHERE kind='door_open' AND data IS NULL"), 1);
+    /* 분석 대상이 아닌 모듈(startup)은 data 를 만들지 않는다(용량) */
+    event_log_write(&e, LOG_INFO, "startup", "block_gate=on ignore_roi=0");
+    EXPECT_INT_EQ(lv2_int(&e, "SELECT count(*) FROM events WHERE module='startup' AND data IS NULL AND kind='startup'"), 1);
+    /* 프레임 밖 이벤트는 frame/mono NULL */
+    event_log_clear_context(&e);
+    event_log_write(&e, LOG_INFO, "shutdown", "exit=0 reason=input_finished");
+    EXPECT_INT_EQ(lv2_int(&e, "SELECT count(*) FROM events WHERE module='shutdown' AND frame IS NULL AND mono IS NULL AND run=1234"), 1);
+    /* data 상한: 키가 아주 많아도 400바이트를 넘지 않고 JSON 이 닫혀 있다 */
+    {
+        char big[1000];
+        int i, n = 0;
+        n += snprintf(big, sizeof(big), "burst");
+        for (i = 0; i < 60; ++i) n += snprintf(big + n, sizeof(big) - (size_t)n, " key%02d=value%02d", i, i);
+        event_log_write(&e, LOG_WARN, "rules", big);
+        EXPECT_TRUE(lv2_int(&e, "SELECT length(data) FROM events WHERE kind='burst'") <= 400);
+        EXPECT_INT_EQ(lv2_int(&e, "SELECT count(*) FROM events WHERE kind='burst' AND substr(data,-1)='}' AND substr(data,1,1)='{'"), 1);
+    }
+    event_log_close(&e);
+}
+
+static void test_event_log_migrates_old_schema_and_run_info(void) {
+    sqlite3 *old = NULL; /* 소유: 이 함수, close 로 해제 */
+    EventLog e;
+    remove("lv2-old.db"); remove("lv2-old.db-wal"); remove("lv2-old.db-shm");
+    ASSERT_INT_EQ(sqlite3_open("lv2-old.db", &old), SQLITE_OK);
+    /* 옛 빌드가 만든 6열 스키마 */
+    ASSERT_INT_EQ(sqlite3_exec(old,
+        "CREATE TABLE events(id INTEGER PRIMARY KEY, ts_unix REAL NOT NULL, ts_iso TEXT NOT NULL, level TEXT NOT NULL,"
+        " module TEXT NOT NULL, message TEXT NOT NULL);"
+        "INSERT INTO events(ts_unix,ts_iso,level,module,message) VALUES(1,'2026-11-01T00:00:00','WARN','rules','overstay track=9');",
+        NULL, NULL, NULL), SQLITE_OK);
+    sqlite3_close(old);
+    ASSERT_INT_EQ(event_log_open(&e, "lv2-old.db", LOG_INFO, 0), 0);          /* ALTER 로 열이 붙어야 한다 */
+    EXPECT_INT_EQ(lv2_int(&e, "SELECT count(*) FROM pragma_table_info('events') WHERE name IN ('run','mono','frame','kind','track','data')"), 6);
+    EXPECT_INT_EQ(lv2_int(&e, "SELECT count(*) FROM events WHERE kind IS NULL"), 1);   /* 옛 행은 그대로 */
+    event_log_write(&e, LOG_WARN, "rules", "overstay track=10");
+    EXPECT_INT_EQ(lv2_int(&e, "SELECT count(*) FROM events WHERE kind='overstay' AND track=10"), 1);
+    /* 실행 정보: 파일에 한 행씩, 12KB 초과는 거부 */
+    event_log_set_run(&e, 55);
+    EXPECT_INT_EQ(event_log_write_run_info(&e, "{\"a\":1}"), 0);
+    EXPECT_INT_EQ(event_log_write_run_info(&e, "{\"a\":2}"), 0);
+    EXPECT_INT_EQ(lv2_int(&e, "SELECT count(*) FROM run_info WHERE run=55"), 2);
+    {
+        static char huge[13000];
+        memset(huge, 'x', sizeof(huge) - 1); huge[0] = '{'; huge[sizeof(huge) - 1] = '\0';
+        EXPECT_INT_EQ(event_log_write_run_info(&e, huge), -1);
+    }
+    EXPECT_INT_EQ(lv2_int(&e, "SELECT count(*) FROM run_info"), 2);
+    event_log_close(&e);
+    remove("lv2-old.db"); remove("lv2-old.db-wal"); remove("lv2-old.db-shm");
+}
+
+static void test_event_log_kind_counts(void) {
+    EventLog e;
+    EventKindCount k[4];
+    long long since;
+    int n;
+    ASSERT_INT_EQ(event_log_open(&e, ":memory:", LOG_INFO, 0), 0);
+    event_log_write(&e, LOG_WARN, "rules", "overstay track=1");
+    event_log_write(&e, LOG_WARN, "rules", "overstay track=1");
+    event_log_write(&e, LOG_WARN, "rules", "overstay track=2");
+    event_log_write(&e, LOG_ERROR, "rules", "person_fallen track=3");
+    event_log_write(&e, LOG_INFO, "rules", "probably_ordered track=4");          /* INFO 는 알림이 아니다 */
+    event_log_write(&e, LOG_WARN, "startup", "something_warned x=1");           /* 알림 모듈이 아니다 */
+    n = event_log_kind_counts(&e, 0, k, 4);
+    ASSERT_INT_EQ(n, 2);
+    EXPECT_TRUE(strcmp(k[0].kind, "overstay") == 0 && k[0].count == 3 && k[0].tracks == 2);
+    EXPECT_TRUE(strcmp(k[1].kind, "person_fallen") == 0 && k[1].count == 1 && k[1].tracks == 1);
+    since = event_log_last_id(&e);
+    event_log_write(&e, LOG_WARN, "door", "door_open: x");
+    n = event_log_kind_counts(&e, since, k, 4);                                  /* 기준점 이후만 */
+    ASSERT_INT_EQ(n, 1);
+    EXPECT_TRUE(strcmp(k[0].kind, "door_open") == 0 && k[0].count == 1);
+    event_log_close(&e);
+}
+
 /* fall_hold_max_misses: 누운 사람 9관측(100~108초, hold 5초) 중 일부를 결손(점수 .29)이나 직립으로 바꾼다.
  * miss_a/miss_b: 결손으로 만들 관측 번호(-1 이면 없음), upright_at: 직립으로 만들 관측 번호. */
 static int fall_miss_scenario(int max_misses, int miss_a, int miss_b, int upright_at) {
@@ -4508,6 +4612,9 @@ int main(void) {
     RUN_TEST(test_fall_false_positive_regressions);
     RUN_TEST(test_fall_hold_tolerates_missed_observations);
     RUN_TEST(test_infer_worker_roundtrip);
+    RUN_TEST(test_event_log_structured_columns);
+    RUN_TEST(test_event_log_migrates_old_schema_and_run_info);
+    RUN_TEST(test_event_log_kind_counts);
     RUN_TEST(test_rules_fall_requires_hold);
     RUN_TEST(test_rules_unordered_seated);
     RUN_TEST(test_rules_unordered_suppressed_by_probable_order);

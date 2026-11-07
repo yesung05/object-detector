@@ -3,6 +3,8 @@ project(yolo11_person C)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
+# 표시 버전. 런처와 감지 프로그램(로그의 run_info 에 기록)이 같은 값을 쓰도록 한 곳에서 정한다.
+set(HUNIK_VERSION "0.1.0-alpha.7" CACHE STRING "Displayed release version")
 set(CMAKE_C_EXTENSIONS OFF)
 
 # 배포 대상 CPU의 명령어 집합 수준입니다.
@@ -106,6 +108,7 @@ if(ORT_INCLUDE_DIR AND ORT_LIBRARY AND FFMPEG_INCLUDE_DIR AND FFMPEG_FOUND)
 
     add_executable(yolo11-person
         src/main.c
+        src/app_logging.c
         src/app_args.c
         src/app_config.c
         src/app_calib.c
@@ -146,6 +149,7 @@ if(ORT_INCLUDE_DIR AND ORT_LIBRARY AND FFMPEG_INCLUDE_DIR AND FFMPEG_FOUND)
         third_party/sqlite/sqlite3.c)
     target_include_directories(yolo11-person PRIVATE
         include "${ORT_INCLUDE_DIR}" "${FFMPEG_INCLUDE_DIR}")
+    target_compile_definitions(yolo11-person PRIVATE HUNIK_VERSION="${HUNIK_VERSION}")
     # iphlpapi: netaccess.c 가 GetIpAddrTable 로 인터페이스 넷마스크를 읽습니다.
     target_link_libraries(yolo11-person PRIVATE "${ORT_LIBRARY}" ${FFMPEG_LIBRARIES} ws2_32 psapi iphlpapi)
 
@@ -336,7 +340,6 @@ endif()
 add_test(NAME replay_unit COMMAND test_replay)
 
 if(WIN32)
-    set(HUNIK_VERSION "0.1.0-alpha.7" CACHE STRING "Displayed release version")
     add_executable(hunik-launcher WIN32 src/launcher.c)
     target_compile_definitions(hunik-launcher PRIVATE UNICODE _UNICODE _CRT_SECURE_NO_WARNINGS HUNIK_VERSION="${HUNIK_VERSION}")
     target_compile_options(hunik-launcher PRIVATE /utf-8 /W4)

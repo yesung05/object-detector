@@ -455,6 +455,7 @@ void reload_config(AppContext *app) {
         fprintf(stderr, "config reload failed: %s\n", err);
         return;
     }
+    app_log_config_changed(app, &cfg);   /* 바뀐 키만 한 건(module=config). 저장 한 번에 한 건이라 빈도가 낮다. */
 
     /* 모션 게이트 설정 */
     app->motion_gate_enabled    = (int)config_long(&cfg, "motion_gate", 1, 0, 1);

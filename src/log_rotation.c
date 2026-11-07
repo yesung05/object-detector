@@ -16,6 +16,10 @@ void log_rotation_init(LogRotation *r,const char *path,const char *metadata,doub
     r->next=now+3600;
 }
 
+void log_rotation_set_hooks(LogRotation *r,LogRotationHook before_switch,LogRotationHook after_switch,void *context) {
+    r->before_switch=before_switch;r->after_switch=after_switch;r->hook_context=context;
+}
+
 int log_rotation_tick(LogRotation *r,EventLog *events,ReplayLog *replay,PerfLog *perf,double now) {
     EventLog next_events={0}; ReplayLog next_replay={0}; PerfLog next_perf={0};
     char path[750],perf_path[750];
@@ -42,14 +46,20 @@ int log_rotation_tick(LogRotation *r,EventLog *events,ReplayLog *replay,PerfLog 
         replay_geometry(&next_replay,sqlite3_column_int(geometry,0),(const char*)sqlite3_column_text(geometry,1));
     sqlite3_finalize(geometry);
     if(rc!=SQLITE_DONE || next_replay.errors)goto fail;
+    if(r->before_switch)r->before_switch(r->hook_context,events);   /* 옛 파일의 마지막 기록 */
     memcpy(next_replay.ring,replay->ring,sizeof(ReplayFrame)*REPLAY_RING);
     next_replay.next=replay->next;next_replay.count=replay->count;
     next_replay.now=replay->now;next_replay.until=replay->until;
     next_replay.pending=replay->pending;
     /* Counters/quota restart per file; event IDs remain local to each database. */
-    replay_close(replay,events);event_log_close(events);perf_log_close(perf);
-    *events=next_events;*replay=next_replay;*perf=next_perf;
+    {   /* 분석용 부가 열의 문맥(실행 id, 현재 프레임)은 파일이 바뀌어도 이어진다. */
+        EventLog old=*events;   /* 포인터 멤버는 아래에서 닫혀 무효 — 값 멤버만 읽는다 */
+        replay_close(replay,events);event_log_close(events);perf_log_close(perf);
+        *events=next_events;*replay=next_replay;*perf=next_perf;
+        events->run_id=old.run_id;events->ctx_frame=old.ctx_frame;events->ctx_mono=old.ctx_mono;events->ctx_valid=old.ctx_valid;
+    }
     events->observer_context=replay;
+    if(r->after_switch)r->after_switch(r->hook_context,events);   /* 새 파일의 첫 기록 */
     r->next=now+3600;
     fprintf(stderr,"[log] hourly rotation: %s\n",path);fflush(stderr);
     event_log_write(events,LOG_INFO,"logging","hourly log segment started");
