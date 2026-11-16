@@ -72,6 +72,7 @@ static const RulesConfig DEFAULT_RULES = {
     10.0,    /* max_occupancy_hold_seconds */
     300.0,   /* still_seconds */
     0.10f,   /* still_motion_threshold */
+    .vanish_backoff_max_seconds = 60.0,   /* 소실 경고 반복 억제 상한(rules.h) */
 };
 
 const RulesConfig *rules_default_config(void) { return &DEFAULT_RULES; }
@@ -579,6 +580,7 @@ int rules_check_vanish(RulesEngine *re, Track *t, const VanishEvidence *ev,
         if (t->vanish_warned) {
             snprintf(msg, sizeof(msg), "person_unaccounted_cleared track=%d", t->id);
             event_log_write(elog, LOG_INFO, "rules", msg);
+            t->vanish_cycles++;
         }
         t->vanish_warned    = 0;
         t->vanish_escalated = 0;
@@ -586,7 +588,16 @@ int rules_check_vanish(RulesEngine *re, Track *t, const VanishEvidence *ev,
     }
 
     gone = now - t->last_seen;
-    if (gone < re->config.vanish_hold_seconds) return 0;
+    {
+        /* 다시 보였던 적이 있는 트랙은 같은 자리에서 가려졌다 나타나는 중일 가능성이 크다 — 소실 시간을 2배씩 늘려 요구한다. */
+        double need = re->config.vanish_hold_seconds;
+        const double cap = re->config.vanish_backoff_max_seconds;
+        int k;
+        if (cap > need)
+            for (k = 0; k < t->vanish_cycles && need < cap; ++k) need *= 2.0;
+        if (need > cap && cap > re->config.vanish_hold_seconds) need = cap;
+        if (gone < need) return 0;
+    }
 
     /* 깜빡이던 트랙이나 원래 흐릿하던 탐지가 사라진 것은 정보가 아닙니다.
      * 여기를 막지 않으면 잡동사니를 사람으로 잘못 잡았다가 놓칠 때마다 경고가 납니다. */
@@ -621,13 +632,14 @@ int rules_check_vanish(RulesEngine *re, Track *t, const VanishEvidence *ev,
         t->vanish_warned = 1;
         snprintf(msg, sizeof(msg),
                  "person_unaccounted track=%d last=%.0f,%.0f score=%.2f dwell=%.0fs "
-                 "gone=%.0fs where=%s door=%s residue=%s",
+                 "gone=%.0fs where=%s door=%s residue=%s repeat=%d",
                  t->id, cx, cy, t->box.score, t->dwell_seconds, gone,
                  ev->near_door ? "door" : ev->near_edge ? "frame_edge" : "interior",
                  ev->door_can_exit == 1 ? "opened" :
                  ev->door_can_exit == 0 ? "closed" : "unknown",
                  ev->residue_at_spot == 1 ? "yes" :
-                 ev->residue_at_spot == 0 ? "no" : "unknown");
+                 ev->residue_at_spot == 0 ? "no" : "unknown",
+                 t->vanish_cycles);
         event_log_write(elog, LOG_WARN, "rules", msg);
         return 1;
     }

@@ -36,6 +36,18 @@ typedef struct {
      * 옷만 보이는 짧은 순간도 같은 값을 냅니다.
      */
     int   low_contrast_hold_frames;
+    /*
+     * 복구 지연: 비정상 상태에서 정상으로 돌아오려면 "정상 프레임"이 연속으로 이 수만큼 이어져야 한다(기본 30, 15fps 에서 약 2초).
+     * 0 이면 정상 프레임 1장에 바로 복구한다(이전 동작). 뒤에 붙은 필드라 위치 초기화하는 기존 코드는 자동으로 0(이전 동작).
+     * 이유: 임계값 경계에서 밝기가 오르내리는 저조도 웹캠은 진입(5프레임) 뒤 정상 프레임 한 장에 바로 복구돼 암전↔정상이 수 초마다
+     * 번갈아 기록됐다(2026-11-06~09 노트북 로그 80시간: 81회, 지속 중앙값 4초). 상태 이벤트가 쏟아지고 암전 중 판정 중단(문·잔류물·표면)도 덜컹거린다.
+     */
+    int   recover_hold_frames;
+    /*
+     * 복구 밝기 여유: 암흑은 black_threshold + 이 값 이상, 백화는 white_threshold - 이 값 이하일 때만 "정상 프레임"으로 센다(기본 4).
+     * 진입과 복구에 같은 임계값을 쓰면 경계의 미세한 밝기 변화만으로 상태가 뒤집히므로 두 임계값 사이에 틈(히스테리시스)을 둔다. 0 이면 끔.
+     */
+    int   recover_margin;
 } CameraHealthConfig;
 
 /*
@@ -51,6 +63,7 @@ typedef struct {
     int      anomaly_streak; /* 현재 이상 조건 연속 프레임 수 */
     int      frozen_streak;  /* 변화 없는 프레임 연속 수 */
     int      low_contrast_streak; /* 선명도 비율 미달 연속 프레임 수 */
+    int      recover_streak;      /* 비정상 상태에서 정상 프레임이 연속된 수(recover_hold_frames 도달 시 복구) */
     CamState state;
 } CameraHealth;
 

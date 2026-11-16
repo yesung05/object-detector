@@ -1181,6 +1181,28 @@ static void test_event_log_kind_counts(void) {
     event_log_close(&e);
 }
 
+/* 시스템 정보: 값이 "그럴듯한 범위"인지만 본다(CI·개발 PC·매장 PC 어디서나 통과해야 하므로 특정 사양을 가정하지 않는다). */
+static void test_platform_system_info(void) {
+    PlatformSystemInfo si;
+    ASSERT_INT_EQ(platform_system_info(NULL, NULL), -1);
+    ASSERT_INT_EQ(platform_system_info(&si, NULL), 0);
+    EXPECT_TRUE(si.logical_cpus >= 1 && si.logical_cpus <= 1024);
+    EXPECT_TRUE(si.ram_total_mb >= 256);                       /* 256MB 이하 기기에서는 이 프로그램이 돌지 않는다 */
+    EXPECT_TRUE(si.ram_avail_mb <= si.ram_total_mb);
+    EXPECT_TRUE(si.os[0] != '\0' && si.arch[0] != '\0');
+    EXPECT_TRUE(si.physical_cores == 0 || si.physical_cores <= si.logical_cpus);
+    EXPECT_TRUE(si.power_ac >= -1 && si.power_ac <= 1);
+    EXPECT_TRUE(si.disk_total_mb == -1 || si.disk_free_mb <= si.disk_total_mb);
+    {   /* 정리된 문자열: 제어문자·연속 공백·앞뒤 공백이 없다 */
+        const char *t = si.cpu;
+        size_t i;
+        for (i = 0; t[i]; ++i) EXPECT_TRUE((unsigned char)t[i] >= 0x20 && !(t[i] == ' ' && t[i + 1] == ' '));
+        EXPECT_TRUE(i == 0 || (t[0] != ' ' && t[i - 1] != ' '));
+    }
+    ASSERT_INT_EQ(platform_system_info(&si, "no-such-directory-for-test"), 0);   /* 없는 경로여도 나머지 값은 채운다 */
+    EXPECT_INT_EQ((int)(si.disk_free_mb == -1 || si.disk_free_mb >= 0), 1);
+}
+
 /* fall_hold_max_misses: 누운 사람 9관측(100~108초, hold 5초) 중 일부를 결손(점수 .29)이나 직립으로 바꾼다.
  * miss_a/miss_b: 결손으로 만들 관측 번호(-1 이면 없음), upright_at: 직립으로 만들 관측 번호. */
 static int fall_miss_scenario(int max_misses, int miss_a, int miss_b, int upright_at) {
@@ -1544,6 +1566,80 @@ static void test_camera_health_whiteout(void) {
     EXPECT_INT_EQ((int)state, (int)CAM_WHITEOUT);
     gray_buf_destroy(&g);
     camera_health_destroy(&health);
+}
+
+/* 복구 히스테리시스: 저조도 웹캠처럼 임계값 경계에서 밝기가 오르내려도 상태가 번갈아 뒤집히지 않아야 한다.
+ * (2026-11-06~09 노트북 로그: 암전↔정상 81회, 지속 중앙값 4초). 프레임을 GrayStats 로 직접 만들어 넣는다. */
+static int health_feed(CameraHealth *h, int luma, int *transitions) {
+    GrayStats st;
+    CamState state;
+    memset(&st, 0, sizeof(st));
+    st.pixels = 100;
+    st.luma_sum = (unsigned long)(luma * 100);
+    st.changed_health = 50;          /* 움직임 있음 — 정지 판정과 섞이지 않게 */
+    st.grad_sum = st.luma_sum;       /* 선명도는 충분 */
+    st.grad_count = 100;
+    if (camera_health_update(h, &st, &state)) ++*transitions;
+    return (int)state;
+}
+
+static void test_camera_health_recovery_hysteresis(void) {
+    CameraHealth h;
+    char error[128] = {0};
+    int i, cycle, t = 0;
+    ASSERT_INT_EQ(camera_health_init(&h, NULL, error, sizeof(error)), 0);   /* 기본값: 복구 30프레임, 여유 4 */
+    for (i = 0; i < 5; ++i) health_feed(&h, 5, &t);
+    EXPECT_INT_EQ((int)h.state, (int)CAM_BLACKOUT);
+    EXPECT_INT_EQ(t, 1);
+    /* 정상 프레임이 한 장 끼어도(예전에는 바로 OK) 암전이 이어진다 */
+    health_feed(&h, 100, &t);
+    EXPECT_INT_EQ((int)h.state, (int)CAM_BLACKOUT);
+    /* 경계 떨림: 어두움 5 / 정상 1 을 반복해도 전환은 처음 한 번뿐 */
+    for (cycle = 0; cycle < 10; ++cycle) {
+        for (i = 0; i < 5; ++i) health_feed(&h, 5, &t);
+        health_feed(&h, 100, &t);
+    }
+    EXPECT_INT_EQ(t, 1);
+    /* 임계값(12) 바로 위지만 복구 여유(16) 아래의 밝기는 정상 프레임으로 세지 않는다 */
+    for (i = 0; i < 60; ++i) health_feed(&h, 14, &t);
+    EXPECT_INT_EQ((int)h.state, (int)CAM_BLACKOUT);
+    /* 충분히 밝은 프레임이 연속 30장 이어져야 복구: 29장째까지는 암전, 30장째에 OK */
+    for (i = 0; i < 29; ++i) health_feed(&h, 100, &t);
+    EXPECT_INT_EQ((int)h.state, (int)CAM_BLACKOUT);
+    health_feed(&h, 100, &t);
+    EXPECT_INT_EQ((int)h.state, (int)CAM_OK);
+    EXPECT_INT_EQ(t, 2);                                   /* 암전 진입 1회 + 복구 1회 */
+    /* 중간에 어두운 프레임이 끼면 복구 카운트가 처음부터 */
+    for (i = 0; i < 5; ++i) health_feed(&h, 5, &t);
+    for (i = 0; i < 20; ++i) health_feed(&h, 100, &t);
+    health_feed(&h, 5, &t);
+    for (i = 0; i < 29; ++i) health_feed(&h, 100, &t);
+    EXPECT_INT_EQ((int)h.state, (int)CAM_BLACKOUT);
+    health_feed(&h, 100, &t);
+    EXPECT_INT_EQ((int)h.state, (int)CAM_OK);
+    /* 설정 0 이면 이전 동작(정상 프레임 1장에 복구) */
+    {
+        CameraHealthConfig old_behavior = {240, 12, 150, 5, 8, 0.045f, 300, 0, 0};
+        CameraHealth h2;
+        int t2 = 0;
+        ASSERT_INT_EQ(camera_health_init(&h2, &old_behavior, error, sizeof(error)), 0);
+        for (i = 0; i < 5; ++i) health_feed(&h2, 5, &t2);
+        health_feed(&h2, 100, &t2);
+        EXPECT_INT_EQ((int)h2.state, (int)CAM_OK);
+        EXPECT_INT_EQ(t2, 2);
+    }
+    /* 백화도 같은 방식(white=240, 여유 4 → 236 이하여야 정상) */
+    {
+        CameraHealth h3;
+        int t3 = 0;
+        ASSERT_INT_EQ(camera_health_init(&h3, NULL, error, sizeof(error)), 0);
+        for (i = 0; i < 5; ++i) health_feed(&h3, 250, &t3);
+        EXPECT_INT_EQ((int)h3.state, (int)CAM_WHITEOUT);
+        for (i = 0; i < 60; ++i) health_feed(&h3, 238, &t3);
+        EXPECT_INT_EQ((int)h3.state, (int)CAM_WHITEOUT);
+        for (i = 0; i < 30; ++i) health_feed(&h3, 128, &t3);
+        EXPECT_INT_EQ((int)h3.state, (int)CAM_OK);
+    }
 }
 
 static void test_camera_health_frozen(void) {
@@ -3407,6 +3503,44 @@ static void test_vanish_clears_on_reappear(void) {
     rules_destroy(&re); event_log_close(&el);
 }
 
+static void test_vanish_repeat_backoff(void) {
+    /* 같은 트랙이 사라졌다 다시 보일수록 다음 경고에 필요한 소실 시간이 2배씩 늘고(5→10→20→40→60 상한),
+     * 0 으로 두면 이전 동작(항상 5초). 첫 경고는 처음 사라질 때 그대로 5초에 나간다. */
+    static const double need[] = { 5.0, 10.0, 20.0, 40.0, 60.0, 60.0 };
+    RulesConfig cfg = *rules_default_config();
+    RulesEngine re; Track t; VanishEvidence ev; EventLog el;
+    double base = 100.0;
+    size_t i;
+    ASSERT_INT_EQ(rules_init(&re, 8, &cfg, NULL, 0), 0);
+    event_log_open(&el, ":memory:", LOG_INFO, 0);
+    vanish_track(&t);
+    ev.door_can_exit = 0; ev.residue_at_spot = 0; ev.near_edge = 0; ev.near_door = 0;
+    for (i = 0; i < sizeof(need) / sizeof(need[0]); ++i) {
+        t.misses = 1; t.active = 1; t.last_seen = base;
+        EXPECT_INT_EQ(rules_check_vanish(&re, &t, &ev, base + need[i] - 1.0, &el), 0);   /* 아직 모자람 */
+        EXPECT_INT_EQ(rules_check_vanish(&re, &t, &ev, base + need[i], &el), 1);
+        t.misses = 0;                                                                        /* 다시 보임 → 해소 */
+        EXPECT_INT_EQ(rules_check_vanish(&re, &t, &ev, base + need[i] + 1.0, &el), 0);
+        base += 200.0;
+    }
+    EXPECT_INT_EQ(t.vanish_cycles, 6);
+    EXPECT_INT_EQ(count_events(&el, "person_unaccounted_cleared"), 6);
+    EXPECT_INT_EQ(count_events(&el, "person_unaccounted track=7"), 6);
+    rules_destroy(&re);
+    /* 끄면(0) 몇 번을 반복해도 5초 */
+    cfg.vanish_backoff_max_seconds = 0.0;
+    ASSERT_INT_EQ(rules_init(&re, 8, &cfg, NULL, 0), 0);
+    vanish_track(&t);
+    for (i = 0; i < 4; ++i) {
+        t.misses = 1; t.active = 1; t.last_seen = base;
+        EXPECT_INT_EQ(rules_check_vanish(&re, &t, &ev, base + 5.0, &el), 1);
+        t.misses = 0;
+        EXPECT_INT_EQ(rules_check_vanish(&re, &t, &ev, base + 6.0, &el), 0);
+        base += 200.0;
+    }
+    rules_destroy(&re); event_log_close(&el);
+}
+
 /* ── 적응형 감속 ──────────────────────────────────────────────────────────── */
 
 static ThrottleConfig throttle_cfg(void) {
@@ -4542,6 +4676,7 @@ int main(void) {
     RUN_TEST(test_vanish_interior_and_escalation);
     RUN_TEST(test_vanish_ignores_weak_and_brief_tracks);
     RUN_TEST(test_vanish_clears_on_reappear);
+    RUN_TEST(test_vanish_repeat_backoff);
     RUN_TEST(test_netaccess_subnet_and_pin_header);
     RUN_TEST(test_door_passage_pair);
     RUN_TEST(test_door_auto_stall_detection);
@@ -4612,6 +4747,7 @@ int main(void) {
     RUN_TEST(test_fall_false_positive_regressions);
     RUN_TEST(test_fall_hold_tolerates_missed_observations);
     RUN_TEST(test_infer_worker_roundtrip);
+    RUN_TEST(test_platform_system_info);
     RUN_TEST(test_event_log_structured_columns);
     RUN_TEST(test_event_log_migrates_old_schema_and_run_info);
     RUN_TEST(test_event_log_kind_counts);
@@ -4622,6 +4758,7 @@ int main(void) {
     RUN_TEST(test_rules_fall_with_hip_fires);
     RUN_TEST(test_config_rect_and_time);
     RUN_TEST(test_camera_health_whiteout);
+    RUN_TEST(test_camera_health_recovery_hysteresis);
     RUN_TEST(test_camera_health_frozen);
     RUN_TEST(test_gray_luma_matches_plane);
     RUN_TEST(test_gray_analyze_single_pass);

@@ -51,6 +51,8 @@ void perf_log_close(PerfLog *pl);
  * frames:     주기 내 처리한 프레임 수. cam_fps 는 이제 frames / 경과 시간이다(예전 값은 1/Δt 의 EMA 라 간격이 흔들리면 실제보다 크게 나왔다).
  * cam_bad_s:  주기 내 카메라 상태가 OK 가 아니었던 시간(초, 암전·정지 등).
  * wait_frames: 비동기 추론 요청이 워커가 바빠 대기한 프레임 수. dropped: 해상도가 바뀌어 버린 결과 수.
+ * skipped_frames: 카메라가 보냈지만 처리가 느려 건너뛴 프레임 수(주기 내 프레임 번호 증가분 - 처리한 프레임 수). 처리가 카메라를 못 따라가는
+ *                 정도이며 "끊김"의 직접 지표다(2026-11-06 노트북 로그: 동기 모드에서 13% 폐기, 종료 요약 한 줄로만 알 수 있었다).
  */
 typedef struct {
     int    cpu_pct;
@@ -78,6 +80,7 @@ typedef struct {
     double cam_bad_s;
     long   wait_frames;
     long   dropped;
+    long   skipped_frames;
 } PerfMetrics;
 
 void perf_log_write(PerfLog *pl, const PerfMetrics *m);
@@ -91,7 +94,7 @@ typedef struct {
     long   last_id;
     int    cpu_med, cpu_max;      /* 단일 코어 기준 % */
     double fps_med;               /* frames/초 */
-    long   inf_runs, wait_frames, dropped, frames;
+    long   inf_runs, wait_frames, dropped, frames, skipped_frames;
     double inf_ms, cam_bad_s;
 } PerfSummary;
 int perf_log_summary(PerfLog *pl, long long since_id, PerfSummary *out);

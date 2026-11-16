@@ -322,7 +322,7 @@ void event_log_write(EventLog *log, LogLevel level,
         /* data 는 분석 대상 모듈만. 시작·종료·스로틀 같은 일회성 안내문은 message 와 같은 내용을 한 번 더 저장할 뿐이다(용량 낭비). */
         if (!module || !(!strcmp(module, "rules") || !strcmp(module, "door") || !strcmp(module, "slot_monitor") ||
                          !strcmp(module, "residue") || !strcmp(module, "surface") || !strcmp(module, "camera") ||
-                         !strcmp(module, "summary") || !strcmp(module, "config")))
+                         !strcmp(module, "summary") || !strcmp(module, "config") || !strcmp(module, "system")))
             data[0] = '\0';
         sqlite3_reset(log->stmt_ins);
         sqlite3_bind_double(log->stmt_ins, 1, now_d);

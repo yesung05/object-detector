@@ -95,10 +95,11 @@ int main(int argc,char **argv) {
             "gray_ms REAL,door_ms REAL,residue_ms REAL,stream_ms REAL,draw_ms REAL,gate_l0 INTEGER,gate_l1 INTEGER,gate_l2 INTEGER,gate_l3 INTEGER,inf_runs INTEGER,obj_runs INTEGER);",NULL,NULL,NULL)==SQLITE_OK);
         sqlite3_close(old);
         CHECK(!perf_log_open(&pl,"perf-old.db"));
-        CHECK(scalar(pl.db,"SELECT count(*) FROM pragma_table_info('perf') WHERE name IN ('pre_ms','inf_ms','post_ms','t2_ms','track_ms','frames','cam_bad_s','wait_frames','dropped')")==9);
-        for(i=0;i<5;++i){m.cpu_pct=10+i*10;m.cam_fps=20.0+i;m.inf_runs=100;m.inf_ms=6000.0;m.frames=1800;m.cam_bad_s=i==4?60.0:0.0;m.wait_frames=i;perf_log_write(&pl,&m);}
+        CHECK(scalar(pl.db,"SELECT count(*) FROM pragma_table_info('perf') WHERE name IN ('pre_ms','inf_ms','post_ms','t2_ms','track_ms','frames','cam_bad_s','wait_frames','dropped','skipped_frames')")==10);
+        for(i=0;i<5;++i){m.cpu_pct=10+i*10;m.cam_fps=20.0+i;m.inf_runs=100;m.inf_ms=6000.0;m.frames=1800;m.cam_bad_s=i==4?60.0:0.0;m.wait_frames=i;m.skipped_frames=100+i;perf_log_write(&pl,&m);}
         CHECK(!perf_log_summary(&pl,0,&s));
         CHECK(s.rows==5 && s.cpu_med==30 && s.cpu_max==50 && s.fps_med==22.0);
+        CHECK(s.skipped_frames==510);
         CHECK(s.inf_runs==500 && s.inf_ms==30000.0 && s.cam_bad_s==60.0 && s.wait_frames==10 && s.frames==9000);
         CHECK(!perf_log_summary(&pl,s.last_id,&s) && s.rows==0);                               /* 기준점 이후만 */
         perf_log_close(&pl);

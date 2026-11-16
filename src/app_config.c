@@ -36,6 +36,10 @@ void apply_camera_health_config(AppContext *app, const Config *cfg) {
     c->low_contrast_hold_frames =
         (int)config_long(cfg, "camera_low_contrast_hold_frames",
                          d.low_contrast_hold_frames, 1, 100000);
+    c->recover_hold_frames =
+        (int)config_long(cfg, "camera_recover_frames", d.recover_hold_frames, 0, 100000);
+    c->recover_margin =
+        (int)config_long(cfg, "camera_recover_margin", d.recover_margin, 0, 100);
     /* 이미 동작 중이면 연속 카운터는 두고 임계값만 교체합니다. */
     app->cam_health.config = *c;
 }
@@ -394,6 +398,8 @@ void apply_vanish_config(RulesConfig *rc, const Config *cfg) {
         config_float(cfg, "vanish_edge_margin", 0.08f, 0.0f, 0.4f);
     rc->vanish_require_residue =
         (int)config_long(cfg, "vanish_require_residue", 0, 0, 1);
+    rc->vanish_backoff_max_seconds =
+        (double)config_float(cfg, "vanish_backoff_max_seconds", (float)rules_default_config()->vanish_backoff_max_seconds, 0.0f, 3600.0f);
 }
 
 /*

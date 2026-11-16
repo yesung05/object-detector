@@ -53,6 +53,30 @@ int platform_cpu_times(CpuTimes *out);
  */
 int platform_set_priority(int level);
 
+/*
+ * 시스템 정보(OS·CPU·메모리·전원·저장 공간). 시작할 때 한 번 로그에 남겨 "이 기록이 어떤 사양의 기기에서 나왔는가"를
+ * 로그만으로 알 수 있게 한다(예: 같은 설정인데 노트북과 매장 PC 의 CPU 사용률이 왜 다른가).
+ * 문자열은 제어문자를 지우고 공백을 정리한 값이다. 알 수 없는 값은 빈 문자열, 0 또는 -1.
+ * 호스트 이름·사용자 이름·IP 는 개인 식별 정보라 수집하지 않는다.
+ */
+typedef struct {
+    char os[96];                 /* 예: "Windows 11 25H2 (build 26200)" */
+    char arch[16];               /* x64, arm64, x86 */
+    char cpu[96];                /* CPU 이름 */
+    char model[96];              /* 제조사 + 제품명(노트북·PC 모델) */
+    char features[48];           /* 명령어 집합: avx2,avx,sse4.2 — 추론 속도 차이의 흔한 원인 */
+    unsigned int logical_cpus;   /* 논리 프로세서 수 */
+    unsigned int physical_cores; /* 물리 코어 수(0 = 알 수 없음) */
+    unsigned int cpu_mhz;        /* 정격(기본) 클럭 MHz(0 = 알 수 없음) */
+    unsigned long long ram_total_mb, ram_avail_mb;   /* 0 = 알 수 없음 */
+    int power_ac;                /* 1 = 전원 연결, 0 = 배터리, -1 = 알 수 없음 */
+    int battery_percent;         /* -1 = 알 수 없음 */
+    long long disk_free_mb, disk_total_mb;   /* disk_path 가 있는 드라이브. -1 = 알 수 없음 */
+} PlatformSystemInfo;
+
+/* disk_path: 로그를 쓰는 폴더(UTF-8). NULL 이면 현재 폴더. 반환 0 = 일부라도 채움, -1 = 인자 오류. */
+int platform_system_info(PlatformSystemInfo *out, const char *disk_path);
+
 /* 단일 인스턴스 잠금.
  * Windows: 이름 있는 뮤텍스 "Global\hunik-detector"
  * Linux/macOS: /tmp/hunik-detector.lock + flock(LOCK_NB)

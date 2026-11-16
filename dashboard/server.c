@@ -439,14 +439,15 @@ static void serve_history(SOCKET s, const char *filename) {
     }
 
     sqlite3_stmt *stmt = NULL;
-    /* 그림자 모드 알림(메시지 끝 " mode=shadow", src/log.c)도 점주 피드에서 제외합니다 — 기록·리플레이에는 남습니다.
+    /* 메시지 끝에 " mode=shadow"(src/log.c)가 붙은 이벤트도 일반 이벤트와 똑같이 보냅니다. 예전에는 점주 피드에서 제외했지만 지금은
+     * 모든 기능이 데이터 측정용으로 돌고 있어 그림자와 일반 켜짐을 나눌 이유가 없습니다(대시보드는 켜짐/끔 두 가지만 다룹니다).
      * module='perf' 항목은 이벤트 피드에서 제외합니다.
      * 구형 DB에는 CPU 사용률이 이 module로 기록되어 있고, 신형 DB는
      * 별도 *_perf.db에 기록하므로 events 테이블에 perf 항목이 없습니다.
      * 어느 경우든 이벤트 피드에는 이상 감지 이벤트만 표시합니다. */
     const char *sql =
         "SELECT ts_iso, level, module, message, id FROM events"
-        " WHERE module != 'perf' AND message NOT LIKE '% mode=shadow' ORDER BY id";
+        " WHERE module != 'perf' ORDER BY id";
     if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) {
         sqlite3_close(db);
         send_header(s, 200, "application/json", 2);
@@ -540,7 +541,7 @@ static void serve_stream(SOCKET s, const char *filename) {
             sqlite3_stmt *stmt = NULL;
             const char *sql =
                 "SELECT id, ts_iso, level, module, message "
-                "FROM events WHERE id > ? AND module != 'perf' AND message NOT LIKE '% mode=shadow' ORDER BY id";
+                "FROM events WHERE id > ? AND module != 'perf' ORDER BY id";
             if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) == SQLITE_OK) {
                 sqlite3_bind_int64(stmt, 1, last_id);
                 while (sqlite3_step(stmt) == SQLITE_ROW) {

@@ -129,7 +129,9 @@ void apply_privacy_mask(AppContext *app, RgbFrame *frame, int has_observer) {
             app->privacy_cache_time = 0;
             return;
         }
-        if (app->privacy_renders == 1 || app->privacy_renders % 600 == 0) {
+        /* 첫 렌더에서만 한 줄. 예전에는 600회마다 남겨(보는 사람이 있으면 약 2분마다) 현장 로그의 access 이벤트 1,735건 중
+         * 1,665건(96%)이 이 통계 줄이었고 정작 접근 기록(열림·해제·거부)이 묻혔다. 이후 통계는 시간별 summary 이벤트에 들어간다. */
+        if (app->privacy_renders == 1) {
             char m[200];
             snprintf(m, sizeof(m), "privacy_style 렌더 %lux 평균 %.1fms (최근 %.1fms) 캐시 재사용 %lux",
                      app->privacy_renders, app->privacy_render_seconds / (double)app->privacy_renders * 1000.0,

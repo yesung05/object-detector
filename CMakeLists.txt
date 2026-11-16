@@ -4,7 +4,7 @@ project(yolo11_person C)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 # 표시 버전. 런처와 감지 프로그램(로그의 run_info 에 기록)이 같은 값을 쓰도록 한 곳에서 정한다.
-set(HUNIK_VERSION "0.1.0-alpha.8" CACHE STRING "Displayed release version")
+set(HUNIK_VERSION "0.1.0-alpha.9" CACHE STRING "Displayed release version")
 set(CMAKE_C_EXTENSIONS OFF)
 
 # 배포 대상 CPU의 명령어 집합 수준입니다.
@@ -151,7 +151,7 @@ if(ORT_INCLUDE_DIR AND ORT_LIBRARY AND FFMPEG_INCLUDE_DIR AND FFMPEG_FOUND)
         include "${ORT_INCLUDE_DIR}" "${FFMPEG_INCLUDE_DIR}")
     target_compile_definitions(yolo11-person PRIVATE HUNIK_VERSION="${HUNIK_VERSION}")
     # iphlpapi: netaccess.c 가 GetIpAddrTable 로 인터페이스 넷마스크를 읽습니다.
-    target_link_libraries(yolo11-person PRIVATE "${ORT_LIBRARY}" ${FFMPEG_LIBRARIES} ws2_32 psapi iphlpapi)
+    target_link_libraries(yolo11-person PRIVATE "${ORT_LIBRARY}" ${FFMPEG_LIBRARIES} ws2_32 psapi iphlpapi advapi32)
 
     if(MSVC)
         target_compile_definitions(yolo11-person PRIVATE
@@ -229,7 +229,7 @@ if(MSVC)
     target_compile_options(test_core PRIVATE /O1 /W4 /utf-8)
     target_compile_definitions(test_core PRIVATE
         WIN32_LEAN_AND_MEAN _WIN32_WINNT=0x0601 _CRT_SECURE_NO_WARNINGS)
-    target_link_libraries(test_core PRIVATE psapi ws2_32 iphlpapi)
+    target_link_libraries(test_core PRIVATE psapi ws2_32 iphlpapi advapi32)
 else()
     target_compile_options(test_core PRIVATE
         -O1 -g -Wall -Wextra -Wpedantic -Wconversion -Wshadow)

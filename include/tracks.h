@@ -62,6 +62,7 @@ typedef struct {
      * 새 사람에게 새지 않습니다. */
     int        vanish_warned;              /* person_unaccounted 발화함 */
     int        vanish_escalated;           /* person_unaccounted_residue 발화함 */
+    int        vanish_cycles;              /* 소실 경고 뒤 다시 보인(해소된) 횟수 — 반복할수록 같은 트랙의 재경고에 더 긴 소실 시간을 요구한다 */
 
     /* 박스 중심 속도(px/s, EMA). 매칭 시 예상 위치에서 IoU 를 재기 위해 씁니다.
      * 새 트랙·Re-ID 부활 시 0 에서 시작하므로 첫 매칭은 기존과 똑같이 동작합니다. */

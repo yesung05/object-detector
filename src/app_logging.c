@@ -85,8 +85,8 @@ void app_log_run_info(AppContext *app, EventLog *events) {
     Config cfg = {0};
     int have_cfg = 0, truncated = 0;
     if (!buf) return;
-    jadd(buf, CAP, &pos, "{\"run\":%lld,\"segment\":%d,\"static\":%s,", events->run_id, app->log_segment,
-         app->manifest_static[0] ? app->manifest_static : "{}");
+    jadd(buf, CAP, &pos, "{\"run\":%lld,\"segment\":%d,\"static\":%s,\"system\":%s,", events->run_id, app->log_segment,
+         app->manifest_static[0] ? app->manifest_static : "{}", app->system_json[0] ? app->system_json : "{}");
     jadd(buf, CAP, &pos,
          "\"effective\":{\"person_conf\":%.3f,\"object_conf\":%.3f,\"new_person_conf\":%.3f,\"table_conf\":%.3f,"
          "\"detect_every\":%d,\"detect_every_obj\":%d,\"tracking\":%d,\"async_infer\":%d,\"motion_gate\":%d,"
@@ -127,6 +127,62 @@ void app_log_run_info(AppContext *app, EventLog *events) {
     free(buf);
 }
 
+/* ── 시스템 정보(system) ───────────────────────────────────────────────────── */
+
+/* key=value 메시지의 값에서 공백을 밑줄로 바꾼다(공백이 있으면 로그 열(data)의 토큰 파싱이 값을 자른다). */
+static void token_text(const char *in, char *out, size_t n) {
+    size_t i;
+    for (i = 0; in[i] && i + 1 < n; ++i) out[i] = (in[i] == ' ' || in[i] == '=') ? '_' : in[i];
+    out[i] = '\0';
+}
+
+/*
+ * 시작할 때 한 번: 기기 사양을 이벤트(module=system)와 JSON(app->system_json, 파일마다 run_info 에 포함)으로 남긴다.
+ * 이유: 같은 설정이어도 CPU·전원·메모리에 따라 처리 속도가 크게 달라서, 로그만으로 "어떤 기기에서 나온 기록인가"를 알아야
+ * 현장 로그를 비교할 수 있다(예: 노트북이 배터리로 돌았는지, AVX2 가 없는 CPU 인지). 시작 한 번이라 용량 영향은 없다.
+ * log_path: 이벤트 로그 파일 경로 — 그 폴더가 있는 드라이브의 남은 공간을 잰다(로그가 디스크를 채우는 문제를 로그만으로 알도록).
+ */
+void app_log_system_info(AppContext *app, const char *log_path) {
+    PlatformSystemInfo si;
+    char dir[512], os[128], cpu[128], model[128], msg[900], q[200];
+    size_t pos = 0;
+    char *slash, *back;   /* dir 안을 가리킨다 — dir 은 이 함수의 지역 배열 */
+    dir[0] = '\0';
+    if (log_path && log_path[0]) {
+        snprintf(dir, sizeof(dir), "%s", log_path);
+        slash = strrchr(dir, '/');
+        back = strrchr(dir, '\\');
+        if (back && (!slash || back > slash)) slash = back;
+        if (slash) *slash = '\0'; else dir[0] = '\0';
+    }
+    if (platform_system_info(&si, dir[0] ? dir : NULL) != 0) return;
+    token_text(si.os, os, sizeof(os));
+    token_text(si.cpu, cpu, sizeof(cpu));
+    token_text(si.model, model, sizeof(model));
+    snprintf(msg, sizeof(msg),
+             "system os=%s arch=%s cpu=%s model=%s cores=%u/%u mhz=%u features=%s ram_mb=%llu ram_avail_mb=%llu power=%s battery_pct=%d disk_free_gb=%lld disk_total_gb=%lld",
+             os[0] ? os : "unknown", si.arch[0] ? si.arch : "unknown", cpu[0] ? cpu : "unknown", model[0] ? model : "unknown",
+             si.physical_cores, si.logical_cpus, si.cpu_mhz, si.features[0] ? si.features : "none", si.ram_total_mb, si.ram_avail_mb,
+             si.power_ac == 1 ? "ac" : si.power_ac == 0 ? "battery" : "unknown", si.battery_percent,
+             si.disk_free_mb >= 0 ? si.disk_free_mb / 1024 : -1, si.disk_total_mb >= 0 ? si.disk_total_mb / 1024 : -1);
+    event_log_write(&app->event_log, LOG_INFO, "system", msg);
+
+    /* 같은 내용을 run_info 용 JSON 으로(문자열은 원문 그대로, 공백 유지). 넘치면 빈 객체로 둔다. */
+    app->system_json[0] = '\0';
+    jadd(app->system_json, sizeof(app->system_json), &pos, "{");
+    app_json_quote(q, sizeof(q), si.os);       jadd(app->system_json, sizeof(app->system_json), &pos, "\"os\":%s,", q);
+    app_json_quote(q, sizeof(q), si.arch);     jadd(app->system_json, sizeof(app->system_json), &pos, "\"arch\":%s,", q);
+    app_json_quote(q, sizeof(q), si.cpu);      jadd(app->system_json, sizeof(app->system_json), &pos, "\"cpu\":%s,", q);
+    app_json_quote(q, sizeof(q), si.model);    jadd(app->system_json, sizeof(app->system_json), &pos, "\"model\":%s,", q);
+    app_json_quote(q, sizeof(q), si.features); jadd(app->system_json, sizeof(app->system_json), &pos, "\"features\":%s,", q);
+    if (jadd(app->system_json, sizeof(app->system_json), &pos,
+             "\"logical_cpus\":%u,\"physical_cores\":%u,\"cpu_mhz\":%u,\"ram_total_mb\":%llu,\"ram_avail_mb\":%llu,"
+             "\"power_ac\":%d,\"battery_percent\":%d,\"disk_free_mb\":%lld,\"disk_total_mb\":%lld}",
+             si.logical_cpus, si.physical_cores, si.cpu_mhz, si.ram_total_mb, si.ram_avail_mb, si.power_ac, si.battery_percent,
+             si.disk_free_mb, si.disk_total_mb) != 0)
+        snprintf(app->system_json, sizeof(app->system_json), "{}");
+}
+
 /* ── 시간별 요약(summary) ───────────────────────────────────────────────────── */
 
 /*
@@ -161,12 +217,21 @@ void app_log_summary(AppContext *app, EventLog *events, int final) {
     }
     perf_log_summary(&app->perf_log, app->summary_perf_since, &ps);
     if (window < 0.0) window = 0.0;
-    snprintf(msg, sizeof(msg),
-             "summary window=%.0fs final=%d alerts=%d kinds=%s cam_bad_pct=%.1f longest_track_s=%.0f cpu_med=%d cpu_max=%d "
-             "fps_med=%.1f inf_runs=%ld inf_ms_avg=%.1f async_wait=%ld async_drop=%ld perf_rows=%d",
-             window, final ? 1 : 0, alerts, kind_text, window > 0.0 ? 100.0 * ps.cam_bad_s / window : 0.0, longest,
-             ps.cpu_med, ps.cpu_max, ps.fps_med, ps.inf_runs, ps.inf_runs > 0 ? ps.inf_ms / (double)ps.inf_runs : 0.0,
-             ps.wait_frames, ps.dropped, ps.rows);
+    {
+        /* 카메라 이상 비율은 100% 를 넘을 수 없다. perf 행의 주기와 요약 창의 경계가 어긋나 100.1 이 나온 적이 있다(현장 로그). */
+        double bad_pct = window > 0.0 ? 100.0 * ps.cam_bad_s / window : 0.0;
+        if (bad_pct > 100.0) bad_pct = 100.0;
+        snprintf(msg, sizeof(msg),
+                 "summary window=%.0fs final=%d alerts=%d kinds=%s cam_bad_pct=%.1f longest_track_s=%.0f cpu_med=%d cpu_max=%d "
+                 "fps_med=%.1f inf_runs=%ld inf_ms_avg=%.1f async_wait=%ld async_drop=%ld perf_rows=%d "
+                 "skipped_pct=%.1f privacy_renders=%lu privacy_ms_avg=%.1f",
+                 window, final ? 1 : 0, alerts, kind_text, bad_pct, longest,
+                 ps.cpu_med, ps.cpu_max, ps.fps_med, ps.inf_runs, ps.inf_runs > 0 ? ps.inf_ms / (double)ps.inf_runs : 0.0,
+                 ps.wait_frames, ps.dropped, ps.rows,
+                 ps.frames + ps.skipped_frames > 0 ? 100.0 * (double)ps.skipped_frames / (double)(ps.frames + ps.skipped_frames) : 0.0,
+                 app->privacy_renders,
+                 app->privacy_renders > 0 ? app->privacy_render_seconds / (double)app->privacy_renders * 1000.0 : 0.0);
+    }
     event_log_write(events, LOG_INFO, "summary", msg);
     /* 같은 파일에서 다시 요약해도(종료 직전 등) 이미 센 구간을 되풀이하지 않게 기준점을 앞으로 옮긴다. */
     app->summary_since_id = event_log_last_id(events);

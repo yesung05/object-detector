@@ -163,6 +163,7 @@ typedef struct {
     /* 로깅 v2 perf 열의 주기 시작 스냅샷(위 *_base 와 같은 방식) */
     double  perf_pre_base, perf_inf_base, perf_post_base, perf_t2_base, perf_track_base, perf_cambad_base;
     int64_t perf_frames_base, perf_wait_base, perf_drop_base;
+    int64_t perf_index_base;   /* 주기 시작 시점의 프레임 번호 — 카메라가 보낸 프레임 수(번호 증가분)와 처리한 수의 차이로 건너뛴 프레임을 센다 */
     DetectorRunStats detector_stats;
     /* Tier 2 — 물체 감지 (고양이/강아지/음식/병/컵/의자/테이블) */
     Detector        *obj_detector;      /* NULL 이면 Tier 2 비활성 */
@@ -331,6 +332,7 @@ typedef struct {
 
     /* ── 로깅 v2(src/app_logging.c) ── */
     char       manifest_static[2048]; /* 시작 때 한 번 만든 JSON 조각(버전·빌드·인수·모델 해시). 파일마다 run_info 에 같이 저장 */
+    char       system_json[1024];     /* 시작 때 한 번 읽은 기기 정보(OS·CPU·메모리 등) JSON. 파일마다 run_info 에 같이 저장 */
     int        log_segment;           /* 시간별 파일 순번(0 = 첫 파일) */
     long long  summary_since_id;      /* 현재 파일에서 이미 요약한 마지막 이벤트 id(파일마다 id 가 1부터라 전환 때 0 으로) */
     long long  summary_perf_since;    /* 〃 perf 행 id */
@@ -451,6 +453,7 @@ void split_low_list(DetectionList *dets, DetectionList *low, float keep_score, i
 /* app_logging.c */
 size_t app_json_quote(char *out, size_t cap, const char *s);
 void app_log_run_info(AppContext *app, EventLog *events);
+void app_log_system_info(AppContext *app, const char *log_path);
 void app_log_summary(AppContext *app, EventLog *events, int final);
 void app_log_hook_before(void *context, EventLog *events);
 void app_log_hook_after(void *context, EventLog *events);

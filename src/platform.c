@@ -1,5 +1,8 @@
 #include "platform.h"
 
+#include <stdlib.h>
+#include <string.h>
+
 #if defined(_WIN32)
 
 #ifndef WIN32_LEAN_AND_MEAN
@@ -104,6 +107,138 @@ void platform_single_instance_unlock(void) {
         CloseHandle(g_instance_mutex);
         g_instance_mutex = NULL;
     }
+}
+
+/* ── 시스템 정보 ─────────────────────────────────────────────────────────────── */
+
+/* 제어문자를 공백으로 바꾸고 연속 공백을 하나로 줄여 앞뒤를 자른다(레지스트리 값 끝에 공백이 붙는 CPU 이름 정리). */
+static void clean_text(char *s) {
+    size_t r, w = 0;
+    int space = 1;
+    for (r = 0; s[r]; ++r) {
+        unsigned char c = (unsigned char)s[r];
+        if (c < 0x20 || c == ' ') {
+            if (!space) { s[w++] = ' '; space = 1; }
+        } else {
+            s[w++] = (char)c;
+            space = 0;
+        }
+    }
+    if (w > 0 && s[w - 1] == ' ') --w;
+    s[w] = '\0';
+}
+
+/* 레지스트리 문자열. RegGetValueA 를 쓰는 이유: 값 끝 널 문자 보장과 형식 확인을 대신해 준다(Vista 이상). */
+static int reg_string(const char *subkey, const char *name, char *out, size_t out_size) {
+    DWORD size = (DWORD)out_size;
+    out[0] = '\0';
+    if (RegGetValueA(HKEY_LOCAL_MACHINE, subkey, name, RRF_RT_REG_SZ, NULL, out, &size) != ERROR_SUCCESS) {
+        out[0] = '\0';
+        return -1;
+    }
+    out[out_size - 1] = '\0';
+    clean_text(out);
+    return 0;
+}
+
+static unsigned int reg_dword(const char *subkey, const char *name) {
+    DWORD value = 0, size = (DWORD)sizeof(value);
+    if (RegGetValueA(HKEY_LOCAL_MACHINE, subkey, name, RRF_RT_REG_DWORD, NULL, &value, &size) != ERROR_SUCCESS) return 0;
+    return (unsigned int)value;
+}
+
+int platform_system_info(PlatformSystemInfo *out, const char *disk_path) {
+    typedef LONG (WINAPI *RtlGetVersionFn)(PRTL_OSVERSIONINFOW);
+    static const char *const CPU_KEY = "HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0";
+    static const char *const BIOS_KEY = "HARDWARE\\DESCRIPTION\\System\\BIOS";
+    static const char *const NT_KEY = "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion";
+    RTL_OSVERSIONINFOW ver;
+    SYSTEM_INFO si;
+    MEMORYSTATUSEX mem;
+    SYSTEM_POWER_STATUS power;
+    char display[24], maker[64], product[64];
+    HMODULE ntdll;
+    RtlGetVersionFn rtl_get_version;
+    DWORD length = 0;
+    int feature_pos = 0;
+
+    if (!out) return -1;
+    memset(out, 0, sizeof(*out));
+    out->power_ac = -1;
+    out->battery_percent = -1;
+    out->disk_free_mb = out->disk_total_mb = -1;
+
+    /* OS: GetVersionEx 는 매니페스트 없이 10.0 보다 낮은 값을 돌려줄 수 있어 RtlGetVersion 을 쓴다. */
+    memset(&ver, 0, sizeof(ver));
+    ver.dwOSVersionInfoSize = sizeof(ver);
+    ntdll = GetModuleHandleW(L"ntdll.dll");
+    rtl_get_version = ntdll ? (RtlGetVersionFn)(void *)GetProcAddress(ntdll, "RtlGetVersion") : NULL;
+    if (rtl_get_version && rtl_get_version(&ver) == 0) {
+        const char *name = ver.dwMajorVersion == 10 && ver.dwBuildNumber >= 22000 ? "Windows 11"
+                         : ver.dwMajorVersion == 10 ? "Windows 10" : NULL;
+        reg_string(NT_KEY, "DisplayVersion", display, sizeof(display));
+        if (name)
+            snprintf(out->os, sizeof(out->os), "%s%s%s (build %lu)", name, display[0] ? " " : "", display, (unsigned long)ver.dwBuildNumber);
+        else
+            snprintf(out->os, sizeof(out->os), "Windows %lu.%lu (build %lu)", (unsigned long)ver.dwMajorVersion,
+                     (unsigned long)ver.dwMinorVersion, (unsigned long)ver.dwBuildNumber);
+    }
+
+    GetNativeSystemInfo(&si);
+    snprintf(out->arch, sizeof(out->arch), "%s",
+             si.wProcessorArchitecture == PROCESSOR_ARCHITECTURE_AMD64 ? "x64" :
+             si.wProcessorArchitecture == PROCESSOR_ARCHITECTURE_ARM64 ? "arm64" :
+             si.wProcessorArchitecture == PROCESSOR_ARCHITECTURE_INTEL ? "x86" : "other");
+
+    reg_string(CPU_KEY, "ProcessorNameString", out->cpu, sizeof(out->cpu));
+    out->cpu_mhz = reg_dword(CPU_KEY, "~MHz");
+    reg_string(BIOS_KEY, "SystemManufacturer", maker, sizeof(maker));
+    reg_string(BIOS_KEY, "SystemProductName", product, sizeof(product));
+    snprintf(out->model, sizeof(out->model), "%s%s%s", maker, maker[0] && product[0] ? " " : "", product);
+
+    out->logical_cpus = platform_cpu_count();
+    /* 물리 코어: RelationProcessorCore 항목 수. 두 번 호출(필요 크기 → 채우기)하는 것이 이 API 의 규약이다. */
+    GetLogicalProcessorInformation(NULL, &length);
+    if (length >= sizeof(SYSTEM_LOGICAL_PROCESSOR_INFORMATION)) {
+        SYSTEM_LOGICAL_PROCESSOR_INFORMATION *info = (SYSTEM_LOGICAL_PROCESSOR_INFORMATION *)malloc(length);   /* 이 함수 소유 — 아래에서 free */
+        if (info && GetLogicalProcessorInformation(info, &length)) {
+            DWORD i, count = length / (DWORD)sizeof(*info);
+            for (i = 0; i < count; ++i)
+                if (info[i].Relationship == RelationProcessorCore) out->physical_cores++;
+        }
+        free(info);
+    }
+
+    /* 명령어 집합: 숫자는 winnt.h 의 PF_* 값(오래된 SDK 에는 이름이 없어 숫자로 쓴다). */
+    if (IsProcessorFeaturePresent(40)) feature_pos += snprintf(out->features + feature_pos, sizeof(out->features) - (size_t)feature_pos, "%savx2", feature_pos ? "," : "");
+    if (IsProcessorFeaturePresent(39)) feature_pos += snprintf(out->features + feature_pos, sizeof(out->features) - (size_t)feature_pos, "%savx", feature_pos ? "," : "");
+    if (IsProcessorFeaturePresent(38)) feature_pos += snprintf(out->features + feature_pos, sizeof(out->features) - (size_t)feature_pos, "%ssse4.2", feature_pos ? "," : "");
+    (void)feature_pos;
+
+    memset(&mem, 0, sizeof(mem));
+    mem.dwLength = sizeof(mem);
+    if (GlobalMemoryStatusEx(&mem)) {
+        out->ram_total_mb = mem.ullTotalPhys / (1024ULL * 1024ULL);
+        out->ram_avail_mb = mem.ullAvailPhys / (1024ULL * 1024ULL);
+    }
+
+    if (GetSystemPowerStatus(&power)) {
+        out->power_ac = power.ACLineStatus == 1 ? 1 : power.ACLineStatus == 0 ? 0 : -1;
+        out->battery_percent = power.BatteryLifePercent <= 100 ? (int)power.BatteryLifePercent : -1;
+    }
+
+    /* 로그 폴더가 있는 드라이브의 남은 공간. 경로는 UTF-8(한글 사용자 이름 가능)이라 와이드 문자로 바꿔 부른다. */
+    {
+        wchar_t wide[MAX_PATH];
+        ULARGE_INTEGER avail, total, total_free;
+        const char *path = disk_path && disk_path[0] ? disk_path : ".";
+        if (MultiByteToWideChar(CP_UTF8, 0, path, -1, wide, MAX_PATH) > 0 &&
+            GetDiskFreeSpaceExW(wide, &avail, &total, &total_free)) {
+            out->disk_free_mb = (long long)(avail.QuadPart / (1024ULL * 1024ULL));
+            out->disk_total_mb = (long long)(total.QuadPart / (1024ULL * 1024ULL));
+        }
+    }
+    return 0;
 }
 
 #else
@@ -235,6 +370,94 @@ int platform_cpu_temperature_celsius(void) {
     return -1;
 }
 #endif
+
+/* ── 시스템 정보(POSIX) ────────────────────────────────────────────────────────
+ * Linux: /proc, /etc/os-release, sysconf. 다른 POSIX(macOS 등)는 uname 과 sysconf 로 얻는 값만 채우고 나머지는 비워 둔다
+ * (이 프로그램의 배포 대상은 Windows 라 여기는 "컴파일되고 안전하게 비어 있음"이 목표다). */
+#include <sys/statvfs.h>
+#include <sys/utsname.h>
+
+static void clean_text(char *s) {
+    size_t r, w = 0;
+    int space = 1;
+    for (r = 0; s[r]; ++r) {
+        unsigned char c = (unsigned char)s[r];
+        if (c < 0x20 || c == ' ') {
+            if (!space) { s[w++] = ' '; space = 1; }
+        } else {
+            s[w++] = (char)c;
+            space = 0;
+        }
+    }
+    if (w > 0 && s[w - 1] == ' ') --w;
+    s[w] = '\0';
+}
+
+int platform_system_info(PlatformSystemInfo *out, const char *disk_path) {
+    struct utsname un;
+    struct statvfs vfs;
+    long pages, avail_pages, page_size;
+    if (!out) return -1;
+    memset(out, 0, sizeof(*out));
+    out->power_ac = -1;
+    out->battery_percent = -1;
+    out->disk_free_mb = out->disk_total_mb = -1;
+
+    if (uname(&un) == 0) {
+        snprintf(out->os, sizeof(out->os), "%s %s", un.sysname, un.release);
+        snprintf(out->arch, sizeof(out->arch), "%s", un.machine);
+    }
+#if defined(__linux__)
+    {
+        char line[256];
+        FILE *f = fopen("/etc/os-release", "r");
+        if (f) {
+            while (fgets(line, sizeof(line), f)) {
+                char *eq;
+                if (strncmp(line, "PRETTY_NAME=", 12) != 0) continue;
+                eq = line + 12;
+                if (*eq == '"') ++eq;
+                eq[strcspn(eq, "\"\r\n")] = '\0';
+                snprintf(out->os, sizeof(out->os), "%s (kernel %s)", eq, un.release);
+                break;
+            }
+            fclose(f);
+        }
+        f = fopen("/proc/cpuinfo", "r");
+        if (f) {
+            unsigned int cores_per_socket = 0;
+            while (fgets(line, sizeof(line), f)) {
+                char *colon = strchr(line, ':');
+                if (!colon) continue;
+                if (!out->cpu[0] && strncmp(line, "model name", 10) == 0) snprintf(out->cpu, sizeof(out->cpu), "%s", colon + 1);
+                else if (!out->cpu_mhz && strncmp(line, "cpu MHz", 7) == 0) out->cpu_mhz = (unsigned int)atof(colon + 1);
+                else if (!cores_per_socket && strncmp(line, "cpu cores", 9) == 0) cores_per_socket = (unsigned int)atoi(colon + 1);
+                if (strstr(line, "flags") == line) {
+                    int pos = 0;
+                    if (strstr(colon, " avx2")) pos += snprintf(out->features + pos, sizeof(out->features) - (size_t)pos, "%savx2", pos ? "," : "");
+                    if (strstr(colon, " avx ")) pos += snprintf(out->features + pos, sizeof(out->features) - (size_t)pos, "%savx", pos ? "," : "");
+                    if (strstr(colon, " sse4_2")) pos += snprintf(out->features + pos, sizeof(out->features) - (size_t)pos, "%ssse4.2", pos ? "," : "");
+                    (void)pos;
+                }
+            }
+            fclose(f);
+            out->physical_cores = cores_per_socket;   /* 소켓이 여러 개면 모자라는 값이지만, 매장용 PC 는 소켓 1개다 */
+        }
+    }
+#endif
+    out->logical_cpus = platform_cpu_count();
+    page_size = sysconf(_SC_PAGESIZE);
+    pages = sysconf(_SC_PHYS_PAGES);
+    avail_pages = sysconf(_SC_AVPHYS_PAGES);
+    if (page_size > 0 && pages > 0) out->ram_total_mb = (unsigned long long)pages * (unsigned long long)page_size / (1024ULL * 1024ULL);
+    if (page_size > 0 && avail_pages > 0) out->ram_avail_mb = (unsigned long long)avail_pages * (unsigned long long)page_size / (1024ULL * 1024ULL);
+    if (statvfs(disk_path && disk_path[0] ? disk_path : ".", &vfs) == 0) {
+        out->disk_free_mb = (long long)((unsigned long long)vfs.f_bavail * vfs.f_frsize / (1024ULL * 1024ULL));
+        out->disk_total_mb = (long long)((unsigned long long)vfs.f_blocks * vfs.f_frsize / (1024ULL * 1024ULL));
+    }
+    clean_text(out->cpu);
+    return 0;
+}
 
 #endif
 

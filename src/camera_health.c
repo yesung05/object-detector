@@ -4,7 +4,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-static const CameraHealthConfig DEFAULT_CONFIG = {240, 12, 150, 5, 8, 0.045f, 300};
+/* 앞 7개는 이전 값 그대로, 뒤 2개(recover_hold_frames, recover_margin)가 복구 히스테리시스(camera_health.h) */
+static const CameraHealthConfig DEFAULT_CONFIG = {240, 12, 150, 5, 8, 0.045f, 300, 30, 4};
 
 int camera_health_init(CameraHealth *h, const CameraHealthConfig *config,
                        char *error, size_t error_size) {
@@ -103,6 +104,23 @@ int camera_health_update(CameraHealth *h, const GrayStats *stats,
         new_state = CAM_OK;
     } else {
         new_state = h->state; /* 아직 hold 미달, 상태 유지 */
+    }
+
+    /* 복구 히스테리시스: 정상 프레임이 연속으로 충분히 이어지고(밝기 여유 포함) 나서야 OK 로 돌아간다. */
+    if (old_state != CAM_OK && new_state == CAM_OK) {
+        int clear_of_band = 1;
+        if (h->config.recover_margin > 0) {
+            if (old_state == CAM_BLACKOUT && (int)luma_avg < h->config.luma_black_threshold + h->config.recover_margin)
+                clear_of_band = 0;
+            if (old_state == CAM_WHITEOUT && (int)luma_avg > h->config.luma_white_threshold - h->config.recover_margin)
+                clear_of_band = 0;
+        }
+        if (clear_of_band) h->recover_streak++;
+        else h->recover_streak = 0;
+        if (!clear_of_band || h->recover_streak < h->config.recover_hold_frames)
+            new_state = old_state;
+    } else {
+        h->recover_streak = 0;
     }
 
     h->state  = new_state;

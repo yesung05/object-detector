@@ -39,7 +39,7 @@ static const char *CREATE_SQL =
 /* 로깅 v2 추가 열(perf_log.h 참조). 옛 파일에도 ALTER 로 붙여 INSERT 가 실패하지 않게 한다. */
 static const struct { const char *name, *type; } EXTRA_COLUMNS[] = {
     {"pre_ms", "REAL"}, {"inf_ms", "REAL"}, {"post_ms", "REAL"}, {"t2_ms", "REAL"}, {"track_ms", "REAL"},
-    {"frames", "INTEGER"}, {"cam_bad_s", "REAL"}, {"wait_frames", "INTEGER"}, {"dropped", "INTEGER"}};
+    {"frames", "INTEGER"}, {"cam_bad_s", "REAL"}, {"wait_frames", "INTEGER"}, {"dropped", "INTEGER"}, {"skipped_frames", "INTEGER"}};
 
 static void ensure_extra_columns(sqlite3 *db) {
     size_t i;
@@ -64,8 +64,8 @@ static const char *INSERT_SQL =
     " (ts_iso,cpu_pct,cpu_temp,cam_fps,inf_fps,mem_kb,"
     "  gray_ms,door_ms,residue_ms,stream_ms,draw_ms,"
     "  gate_l0,gate_l1,gate_l2,gate_l3,inf_runs,obj_runs,"
-    "  pre_ms,inf_ms,post_ms,t2_ms,track_ms,frames,cam_bad_s,wait_frames,dropped)"
-    " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?);";
+    "  pre_ms,inf_ms,post_ms,t2_ms,track_ms,frames,cam_bad_s,wait_frames,dropped,skipped_frames)"
+    " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?);";
 
 int perf_log_open(PerfLog *pl, const char *path) {
     memset(pl, 0, sizeof(*pl));
@@ -150,6 +150,7 @@ void perf_log_write(PerfLog *pl, const PerfMetrics *m) {
     sqlite3_bind_double (s, 24, m->cam_bad_s);
     sqlite3_bind_int64  (s, 25, (sqlite3_int64)m->wait_frames);
     sqlite3_bind_int64  (s, 26, (sqlite3_int64)m->dropped);
+    sqlite3_bind_int64  (s, 27, (sqlite3_int64)m->skipped_frames);
 
     if (sqlite3_step(s) != SQLITE_DONE)
         fprintf(stderr, "perf_log: INSERT failed: %s\n",
@@ -169,7 +170,7 @@ int perf_log_summary(PerfLog *pl, long long since_id, PerfSummary *out) {
     memset(out, 0, sizeof(*out));
     if (!pl || !pl->db) return -1;
     if (sqlite3_prepare_v2(pl->db,
-            "SELECT id, cpu_pct, cam_fps, inf_runs, inf_ms, wait_frames, dropped, cam_bad_s, frames FROM perf"
+            "SELECT id, cpu_pct, cam_fps, inf_runs, inf_ms, wait_frames, dropped, cam_bad_s, frames, skipped_frames FROM perf"
             " WHERE id > ? ORDER BY id LIMIT 512;", -1, &st, NULL) != SQLITE_OK) return -1;
     sqlite3_bind_int64(st, 1, since_id);
     while (n < MAX_ROWS && sqlite3_step(st) == SQLITE_ROW) {
@@ -182,6 +183,7 @@ int perf_log_summary(PerfLog *pl, long long since_id, PerfSummary *out) {
         out->dropped     += (long)sqlite3_column_int64(st, 6);
         out->cam_bad_s   += sqlite3_column_double(st, 7);
         out->frames      += (long)sqlite3_column_int64(st, 8);
+        out->skipped_frames += (long)sqlite3_column_int64(st, 9);
         if (cpu[n] > out->cpu_max) out->cpu_max = cpu[n];
         ++n;
     }

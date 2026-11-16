@@ -1572,6 +1572,10 @@ static int process_frame(RgbFrame *frame, void *opaque,
             pm.cam_bad_s   = app->cam_bad_seconds - app->perf_cambad_base;
             pm.wait_frames = (long)(app->infer_wait_frames      - app->perf_wait_base);
             pm.dropped     = (long)(app->infer_dropped_results  - app->perf_drop_base);
+            /* 카메라가 보낸 프레임 수 = 프레임 번호 증가분, 처리한 수 = pm.frames. 파일 입력은 번호가 1씩 늘어 0. 재연결로 번호가 되돌아가면 음수 → 0 */
+            pm.skipped_frames = (long)((frame->index - app->perf_index_base) - pm.frames);
+            if (pm.skipped_frames < 0) pm.skipped_frames = 0;
+            app->perf_index_base = frame->index;
             app->perf_t2_base = t2_total;
         }
 
@@ -2046,6 +2050,8 @@ int main(int argc, char **argv) {
         }
         /* 실행 id: 이 프로세스의 시작 시각. 시간별 파일이 여러 개여도 events.run 으로 같은 실행임을 안다. */
         event_log_set_run(&app.event_log, (long long)time(NULL));
+        /* 기기 사양(OS·CPU·메모리·전원·남은 디스크)을 한 번 기록 — 다른 기기의 로그와 비교할 때의 기준 */
+        app_log_system_info(&app, args.event_log_path);
     }
     {
         char metadata[512];
